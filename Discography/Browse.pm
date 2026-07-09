@@ -119,6 +119,46 @@ sub _dbg {
     else                          { $log->info("dsc: $msg") }
 }
 
+# Prose rows: Material's text-row CSS is padding:0 (flush to the viewport
+# edge), while icon/thumbnail rows start at the avatar column — ragged. Text
+# rows render via v-html, so the indent lives INSIDE the content: escaped text
+# wrapped in a margin-left div aligned to the avatar column (72px = Material's
+# list avatar slot). Images on text rows are NOT an option (0.7.2: text+image
+# mutates to a clamped one-line row).
+use constant PROSE_INDENT => '72px';
+
+sub _escHtml {
+    my $s = shift // '';
+    $s =~ s/&/&amp;/g; $s =~ s/</&lt;/g; $s =~ s/>/&gt;/g;
+    return $s;
+}
+
+sub _proseRow {
+    my ($text) = @_;
+    return {
+        name => "<div style='margin-left:" . PROSE_INDENT . "'>" . _escHtml($text) . '</div>',
+        type => 'text',
+    };
+}
+
+# A section-header divider (walk-stable: emitted whenever its rows exist, only
+# the type differs per client). Older Material forces a drill action on
+# 'header' items, so it points at its own child rows.
+sub _sectionHeader {
+    my ($client, $token, $useH, $image, $kids) = @_;
+    my $hdr = {
+        name  => cstring($client, $token),
+        type  => $useH ? _headerType() : 'text',
+        ($image ? (image => $image) : ()),
+    };
+    if ($useH) {
+        my @k = @{ $kids || [] };
+        $hdr->{url}         = sub { $_[1]->({ items => \@k }) };
+        $hdr->{passthrough} = [{}];
+    }
+    return $hdr;
+}
+
 # Material substitutes $VARS in the custom action's params from the tapped
 # item; a $VAR the item doesn't carry arrives as the literal token. Treat those
 # (and empties) as absent.
@@ -174,7 +214,7 @@ sub topLevel {
             && ($prev->{artist}    // '') eq ($artist   // '');
         $lastCtx{ _cid($client) } = {
             artist_id => $artistId, artist => $artist, features => $features,
-            $same ? ( bio => $prev->{bio}, rev => $prev->{rev} ) : (),
+            $same ? ( bio => $prev->{bio}, rev => $prev->{rev}, ver => $prev->{ver} ) : (),
         };
     }
     elsif (my $ctx = $lastCtx{ _cid($client) }) {
@@ -351,21 +391,26 @@ sub _buildList {
     my $ctx  = $lastCtx{ _cid($client) } ||= {};
     my $snap = $ctx->{snap} ||= {};
 
+    # Local library albums for this artist: ONE sync DB query per build, fed
+    # into every release's match. Local matches count for visibility (owned =
+    # shown) but do NOT mark a release streaming-resolved.
+    my $local = Plugins::Discography::Sources->localAlbums($opts->{artist_id}, $opts->{artist});
+
     my @shown;
     for my $rg (@$rgs) {
         next if grep { $HIDE_SECONDARY{$_} } @{ $rg->{secondary} };
         next unless $show->{ _groupOf($rg) };
 
-        my $peek = Plugins::Discography::Sources->peekMatches($opts->{artist}, $rg->{title});
+        my $peek = Plugins::Discography::Sources->peekMatches($opts->{artist}, $rg->{title}, $local);
         my $visible = exists $snap->{ $rg->{mbid} }
             ? $snap->{ $rg->{mbid} }
-            # Unresolved (no candidate cache yet) stays visible — only a
-            # RESOLVED no-match hides.
+            # Any match (local or streaming) shows; a miss only hides once
+            # streaming was actually RESOLVED (cached) — never on unresolved.
             : ($snap->{ $rg->{mbid} } =
-                (!$hideUnmatched || !defined $peek || @$peek) ? 1 : 0);
+                (!$hideUnmatched || @{ $peek->{sections} } || !$peek->{resolved}) ? 1 : 0);
         next unless $visible;
 
-        push @shown, [ $rg, $peek ];
+        push @shown, [ $rg, $peek->{sections} ];
     }
 
     unless (@shown) {
@@ -385,7 +430,7 @@ sub _buildList {
         my ($summary, $truncated) = _reviewSummary($bio);
         if ($expanded && $truncated) {
             push @bioRows,
-                map { (my $t = $_) =~ s/\s+/ /g; { name => $t, type => 'text' } }
+                map { (my $t = $_) =~ s/\s+/ /g; _proseRow($t) }
                 grep { /\S/ } split /\n{2,}/, $bio;
             push @bioRows, {
                 name        => cstring($client, 'PLUGIN_DISCOGRAPHY_SHOW_LESS'),
@@ -401,7 +446,7 @@ sub _buildList {
             };
         }
         else {
-            push @bioRows, { name => $summary, type => 'text' };
+            push @bioRows, _proseRow($summary);
             if ($truncated) {
                 push @bioRows, {
                     name        => cstring($client, 'PLUGIN_DISCOGRAPHY_READ_MORE'),
@@ -419,7 +464,14 @@ sub _buildList {
         }
     }
 
-    my @items = (@bioRows, _sortToggleItem($client, $opts), _refreshItem($client, $opts, $mbid));
+    unshift @bioRows, _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_BIOGRAPHY', $useH,
+        IMG_BASE . 'dsc-bio_MTL_icon_person.png', \@bioRows) if @bioRows;
+
+    my @optRows = (_sortToggleItem($client, $opts), _refreshItem($client, $opts, $mbid));
+    my @items = (@bioRows,
+        _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_OPTIONS', $useH,
+            IMG_BASE . 'dsc-opt_MTL_icon_tune.png', \@optRows),
+        @optRows);
 
     for my $g (@GROUP_ORDER) {
         my ($key, $token, $iconName) = @$g;
@@ -453,6 +505,45 @@ sub _buildList {
         }
 
         push @items, $hdr, @tiles;
+    }
+
+    # Safety net: library albums under this artist that NO release group
+    # claimed (MB gaps, odd editions, matcher misses) — nothing owned may
+    # silently vanish. Claims run across ALL non-hidden-secondary RGs
+    # (including type-filtered ones, so hiding e.g. Singles doesn't resurface
+    # a matched single here). These tiles ARE the playable node (their feed is
+    # the album tracklist), no MB detail to drill to.
+    if ($prefs->get('show_library_extras') && $local && @$local) {
+        my @rgPool = grep {
+            my $rg = $_;
+            !grep { $HIDE_SECONDARY{$_} } @{ $rg->{secondary} };
+        } @$rgs;
+        my $claimed = Plugins::Discography::Sources->claimedLocalIds(\@rgPool, $opts->{artist}, $local);
+        my @extras  = grep { !$claimed->{ $_->{_albumid} } } @$local;
+
+        if (@extras) {
+            my @dated   = sort { ($a->{_year} || 0) <=> ($b->{_year} || 0) } grep {  $_->{_year} } @extras;
+            my @undated =                                                    grep { !$_->{_year} } @extras;
+            @dated = reverse @dated if $sort eq 'newest';
+
+            my @tiles = map {
+                my %t = %$_;
+                $t{line2} = join(" \x{00B7} ", grep { length } ($t{_year} // ''), 'Local');
+                \%t;
+            } @dated, @undated;
+
+            my $hdr = {
+                name  => cstring($client, 'PLUGIN_DISCOGRAPHY_LIBRARY_EXTRAS') . ' (' . scalar(@tiles) . ')',
+                type  => $useH ? _headerType() : 'text',
+                image => IMG_BASE . 'dsc-lib_MTL_icon_library_music.png',
+            };
+            if ($useH) {
+                my @kids = @tiles;
+                $hdr->{url}         = sub { $_[1]->({ items => \@kids }) };
+                $hdr->{passthrough} = [{}];
+            }
+            push @items, $hdr, @tiles;
+        }
     }
 
     return \@items;
@@ -503,32 +594,35 @@ sub _refreshItem {
 # the list build stays sync and fast): before the artist's first drill-in the
 # tiles are untagged; afterwards matched tiles name their services.
 sub _releaseItem {
-    my ($client, $opts, $rg, $peek) = @_;
+    my ($client, $opts, $rg, $sections) = @_;
 
     my $year = ($rg->{date} =~ /^(\d{4})/) ? $1 : '';
     my $type = _displayType($client, $rg);
     my $image = Plugins::Discography::API->caaImage($rg->{mbid});
 
     my ($favurl, $playUrl, $svcTag);
-    if ($peek && @$peek) {
-        # Best = first section (orderedAdapters is svc_priority-sorted, so the
-        # preferred service wins and a service with no match simply isn't in
-        # the list — automatic fallback to the next one).
-        my $best = $peek->[0]{items}[0];
-        $favurl  = $best->{favorites_url};
-        $svcTag  = join('/', map { $_->{svc} } @$peek);
+    if ($sections && @$sections) {
+        $svcTag = join('/', map { $_->{svc} } @$sections);
 
-        # Play target: the native node's own play string when it has one, else
-        # the favurl minus our private ?cover=/&a= params — <svc>://album:<id>
-        # is the exact URL LMS Favorites replays, so the protocol handlers
-        # accept it.
-        $playUrl = (defined $best->{play} && !ref $best->{play}) ? $best->{play} : $favurl;
+        # Tile play = the PREFERRED source's play string — Local now has one
+        # (db:album.id=N, core-resolved like album Favorites), so local-first
+        # priority genuinely plays the library copy. The tile's own `play`
+        # attr is advisory; the real mechanism is the detail feed's first
+        # play-string row (XMLBrowser play collects those — see 0.9.4 log),
+        # which _releaseDetail keeps in the same priority order.
+        my $best = $sections->[0]{items}[0];
+        $playUrl = (defined $best->{play} && !ref $best->{play}) ? $best->{play} : $best->{favorites_url};
         $playUrl =~ s/\?.*$// if defined $playUrl;
 
-        my ($cover) = grep { defined && length } map { $_->{items}[0]{_cover} } @$peek;
-        # CAA misses 404 to a placeholder; a matched service always has art —
+        # favurl (LL add + emblem badge) stays streaming-only — no service
+        # scheme exists for a library album.
+        my ($stream) = grep { $_->{svc} ne 'Local' } @$sections;
+        $favurl = $stream->{items}[0]{favorites_url} if $stream;
+
+        my ($cover) = grep { defined && length } map { $_->{items}[0]{_cover} } @$sections;
+        # CAA misses 404 to a placeholder; a matched source always has art —
         # but CAA wins when present, so only known-missing art would benefit.
-        # We can't cheaply know a CAA 404 server-side; use service art only for
+        # We can't cheaply know a CAA 404 server-side; use source art only for
         # UNDATED releases (the obscure tail where CAA gaps live) — cheap
         # heuristic, refine later if it misfires.
         $image = $cover if !length($rg->{date}) && defined $cover;
@@ -675,11 +769,14 @@ sub _releaseDetail {
     my $rg     = $pass->{rg};
     my $artist = $pass->{artist} // '';
 
+    # Meta as an indented prose row (the view header already shows the
+    # artwork; an image here would mutate the row to a clamped one-liner).
+    my $metaTitle = _escHtml($rg->{title} . ($artist ? " \x{2013} $artist" : ''));
+    my $metaSub   = _escHtml(join(" \x{00B7} ", grep { length } $rg->{date}, _displayType($client, $rg)));
     my $meta = {
-        name  => $rg->{title} . ($artist ? " \x{2013} $artist" : ''),
-        line2 => join(" \x{00B7} ", grep { length } $rg->{date}, _displayType($client, $rg)),
-        type  => 'text',
-        image => Plugins::Discography::API->caaImage($rg->{mbid}, 500),
+        name => "<div style='margin-left:" . PROSE_INDENT . "'><b>$metaTitle</b>"
+              . (length $metaSub ? "<br/>$metaSub" : '') . '</div>',
+        type => 'text',
     };
     my $mbLink = {
         name    => cstring($client, 'PLUGIN_DISCOGRAPHY_VIEW_ON_MB'),
@@ -695,6 +792,7 @@ sub _releaseDetail {
     my ($links, $reviewDone, $review, $sectionsDone, $sections);
     my $compose = sub {
 
+        my $useHdr = _wantHeaders($pass->{features});
         my @rows;
 
         # Review under the artwork header. Material has NO inline expander for
@@ -712,7 +810,7 @@ sub _releaseDetail {
             my ($summary, $truncated) = _reviewSummary($review);
             if ($expanded && $truncated) {
                 push @rows,
-                    map { (my $t = $_) =~ s/\s+/ /g; { name => $t, type => 'text' } }
+                    map { (my $t = $_) =~ s/\s+/ /g; _proseRow($t) }
                     grep { /\S/ } split /\n{2,}/, $review;
                 push @rows, {
                     name        => cstring($client, 'PLUGIN_DISCOGRAPHY_SHOW_LESS'),
@@ -728,7 +826,7 @@ sub _releaseDetail {
                 };
             }
             else {
-                push @rows, { name => $summary, type => 'text' };
+                push @rows, _proseRow($summary);
                 if ($truncated) {
                     push @rows, {
                         name        => cstring($client, 'PLUGIN_DISCOGRAPHY_FULL_REVIEW'),
@@ -746,15 +844,47 @@ sub _releaseDetail {
             }
         }
 
+        # Header above the review block (walk-stable: present iff review rows
+        # are, and the review is cache-fixed for the visit).
+        if (@rows) {
+            my @kids = @rows;
+            splice @rows, 0, 0, _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_REVIEW', $useHdr,
+                MENU_REVIEW, \@kids);
+        }
+
         my $preVersionRows = scalar @rows;
-        if (!$prefs->get('show_all_versions')) {
+        my $keptPlay = 0;
+        my $totalVersions = 0;
+        $totalVersions += scalar @{ $_->{items} } for @$sections;
+        my $showAll = $prefs->get('show_all_versions')
+            || $lastCtx{ _cid($client) }{ver}{ $rg->{mbid} };
+        if (!$showAll) {
             # Default: ONE row — the preferred service's best version (the
             # same node tile-play uses). Cuts the drill-in to a single
             # thumbnail; the all-services view stays behind the pref.
             if (@$sections) {
                 my %row = %{ $sections->[0]{items}[0] };
                 $row{line2} = $sections->[0]{svc};
+                $keptPlay = 1;
                 push @rows, \%row;
+
+                # Inline expand to the full per-service layout (the same
+                # refresh-toggle pattern as reviews/bios) — only offered when
+                # there IS more than the one row.
+                if ($totalVersions > 1) {
+                    push @rows, {
+                        name        => cstring($client, 'PLUGIN_DISCOGRAPHY_OTHER_VERSIONS'),
+                        type        => 'link',
+                        image       => IMG_BASE . 'dsc-ver_MTL_icon_unfold_more.png',
+                        nextWindow  => 'refresh',
+                        passthrough => [{ mbid => $rg->{mbid} }],
+                        url         => sub {
+                            my ($c, $cb, $a, $p) = @_;
+                            $lastCtx{ _cid($c) }{ver}{ $p->{mbid} } = 1;
+                            $cb->({ items => [] });
+                        },
+                    };
+                }
             }
         }
         else {
@@ -764,7 +894,6 @@ sub _releaseDetail {
             # image on detail-page headers (nothing to brand — LBF's
             # detail-page convention; service icons are plain .png anyway,
             # which dividers never render).
-            my $useH = _wantHeaders($pass->{features});
             for my $sec (@$sections) {
                 my @svcRows;
                 for my $it (@{ $sec->{items} }) {
@@ -772,23 +901,45 @@ sub _releaseDetail {
                     # Native node from the service plugin's own renderer (url
                     # coderef + passthrough), so play/add/insert work natively.
                     $row{line2} = $sec->{svc};
+                    # Tile play collects EVERY play-string row in this feed
+                    # (XMLBrowser one-level collection) — only the FIRST
+                    # (preferred) version keeps its play string or tile play
+                    # would enqueue every service's copy. The stripped rows
+                    # still play fine via their url tracklist feeds.
+                    delete $row{play} if $keptPlay;
+                    $keptPlay = 1;
                     push @svcRows, \%row;
                 }
                 my $hdr = {
                     name => $sec->{svc} . ' (' . scalar(@svcRows) . ')',
-                    type => $useH ? _headerType() : 'text',
+                    type => $useHdr ? _headerType() : 'text',
                 };
-                if ($useH) {
+                if ($useHdr) {
                     my @kids = @svcRows;
                     $hdr->{url}         = sub { $_[1]->({ items => \@kids }) };
                     $hdr->{passthrough} = [{}];
                 }
                 push @rows, $hdr, @svcRows;
             }
+
+            if (!$prefs->get('show_all_versions') && $totalVersions > 1) {
+                push @rows, {
+                    name        => cstring($client, 'PLUGIN_DISCOGRAPHY_HIDE_VERSIONS'),
+                    type        => 'link',
+                    image       => IMG_BASE . 'dsc-ver_MTL_icon_unfold_more.png',
+                    nextWindow  => 'refresh',
+                    passthrough => [{ mbid => $rg->{mbid} }],
+                    url         => sub {
+                        my ($c, $cb, $a, $p) = @_;
+                        delete $lastCtx{ _cid($c) }{ver}{ $p->{mbid} };
+                        $cb->({ items => [] });
+                    },
+                };
+            }
         }
 
         unless (@rows > $preVersionRows) {
-            push @rows, { name => cstring($client, 'PLUGIN_DISCOGRAPHY_NO_MATCH'), type => 'text' };
+            push @rows, _proseRow(cstring($client, 'PLUGIN_DISCOGRAPHY_NO_MATCH'));
         }
 
         # Side-effecting row -> nextWindow refresh (never a drill-in): clear
@@ -823,7 +974,8 @@ sub _releaseDetail {
 
     Plugins::Discography::Sources->getCandidates($client, $artist, 0, sub {
         my $bySvc = shift;
-        $sections = Plugins::Discography::Sources->matchesFor($bySvc, $artist, $rg->{title});
+        my $local = Plugins::Discography::Sources->localAlbums($pass->{artist_id}, $artist);
+        $sections = Plugins::Discography::Sources->matchesFor($bySvc, $artist, $rg->{title}, $local);
         $sectionsDone = 1;
         # Review needs $sections (Qobuz-description fallback rides the match).
         _fetchAlbumReview($client, $artist, $rg->{title}, $rg->{mbid}, $sections, sub {

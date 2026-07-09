@@ -24,6 +24,7 @@ use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use Slim::Utils::Cache;
 use Slim::Utils::Timers;
+use Slim::Control::Request;
 
 my $log   = Slim::Utils::Log->logger('plugin.discography');
 my $prefs = preferences('plugin.discography');
@@ -92,6 +93,94 @@ sub orderedAdapters {
         push @out, { %$a, priority => $prio };
     }
     return sort { $a->{priority} <=> $b->{priority} } @out;
+}
+
+# All sources (Local + streaming) in priority order — the ordering matchesFor
+# uses. Local is a pseudo-source: its candidates come from the library DB
+# (localAlbums), not a search adapter; svc_priority_local 0 disables it.
+sub orderedSources {
+    my @out;
+    my $lp = $prefs->get('svc_priority_local');
+    $lp = 1 unless defined $lp;
+    push @out, { name => 'Local', icon => undef, priority => $lp, local => 1 } if $lp > 0;
+    push @out, orderedAdapters();
+    return sort { $a->{priority} <=> $b->{priority} } @out;
+}
+
+# ---------------------------------------------------------------------------
+# Local library albums for an artist — SYNC (LMS DB access is synchronous, the
+# fleet's accepted pattern) and NOT cached (the library is live; a rescan must
+# show immediately). One `albums` CLI query per call; candidates are decorated
+# exactly like streaming ones so the matcher treats them identically.
+# ---------------------------------------------------------------------------
+sub localAlbums {
+    my ($class, $artistId, $artist) = @_;
+    return [] unless ($prefs->get('svc_priority_local') // 1) > 0;
+
+    # No artist_id (non-library entry surface): resolve by name, norm-verified
+    # so a fuzzy `artists search:` can't adopt the wrong artist.
+    if (!$artistId && defined $artist && length $artist) {
+        my $an  = _norm($artist);
+        my $enc = $artist;
+        utf8::encode($enc) if utf8::is_utf8($enc);
+        my $req = eval { Slim::Control::Request::executeRequest(undef, ['artists', 0, 10, "search:$enc"]) };
+        if ($req) {
+            for my $e (@{ $req->getResult('artists_loop') || [] }) {
+                next unless defined $e->{artist};
+                if (_norm($e->{artist}) eq $an) { $artistId = $e->{id}; last }
+            }
+        }
+        return [] unless $artistId;
+    }
+    return [] unless $artistId;
+
+    my $req = eval {
+        Slim::Control::Request::executeRequest(undef, ['albums', 0, 500, "artist_id:$artistId", 'tags:ljya']);
+    };
+    return [] unless $req;
+
+    my @out;
+    for my $e (@{ $req->getResult('albums_loop') || [] }) {
+        my $id    = $e->{id}    or next;
+        my $title = $e->{album} // next;
+        my $img   = $e->{artwork_track_id} ? "/music/$e->{artwork_track_id}/cover" : undef;
+        push @out, {
+            name        => $title,
+            type        => 'playlist',
+            ($img ? (image => $img) : ()),
+            # Playable two ways: `play` is a core db: URL (Commands.pm
+            # _parseDbItem resolves album.id -> the album's tracks — the exact
+            # path album Favorites replay through), and the row's url feed is
+            # the tracklist (drill = track view). The play string is ALSO what
+            # makes local-first TILE play work: XMLBrowser's play collects the
+            # detail feed's play-string rows (verified in 9.0 source).
+            play        => 'db:album.id=' . $id,
+            url         => \&_localAlbumTracks,
+            passthrough => [{ album_id => $id }],
+            _svc        => 'Local',
+            _albumid    => $id,
+            _cover      => $img,
+            _year       => $e->{year},
+            _candTitle  => $title,
+            _candArtist => $e->{artist} // $artist,
+        };
+    }
+    _dbg("local albums for artist_id=$artistId: " . scalar @out);
+    return \@out;
+}
+
+sub _localAlbumTracks {
+    my ($client, $cb, $args, $pass) = @_;
+    my $req = eval {
+        Slim::Control::Request::executeRequest(undef,
+            ['titles', 0, 999, 'album_id:' . $pass->{album_id}, 'sort:tracknum', 'tags:u']);
+    };
+    my @items;
+    for my $e (@{ ($req && $req->getResult('titles_loop')) || [] }) {
+        next unless $e->{url};
+        push @items, { name => $e->{title} // '', type => 'audio', url => $e->{url}, play => $e->{url} };
+    }
+    $cb->({ items => \@items });
 }
 
 # Detection + priority for every known service — for the settings page (step 5).
@@ -215,20 +304,24 @@ sub clearCandidates {
 # Per-release matching (local filter over the candidate lists)
 # ---------------------------------------------------------------------------
 
-# matchesFor($bySvc, $artist, $albumTitle) ->
-#   [ { svc => 'Qobuz', icon => <logo>, items => [native nodes] }, ... ]
-# in priority order, only services with matches; per-service dedupe + cap;
-# each item gets the ListenLater favorites_url handshake attached.
+# matchesFor($bySvc, $artist, $albumTitle, $local) ->
+#   [ { svc => 'Local'|'Qobuz'|..., icon, items => [nodes] }, ... ]
+# in orderedSources priority order, only sources with matches; per-source
+# dedupe + cap; streaming items get the ListenLater favurl handshake (Local
+# ones don't — there's no service scheme to hand over).
 sub matchesFor {
-    my ($class, $bySvc, $artist, $albumTitle) = @_;
+    my ($class, $bySvc, $artist, $albumTitle, $local) = @_;
 
     my $artistNorm = _norm($artist);
     my $albumNorm  = _norm($albumTitle);
 
+    my %all = %{ $bySvc || {} };
+    $all{Local} = $local if $local && @$local;
+
     my @sections;
-    for my $a (orderedAdapters()) {
+    for my $a (orderedSources()) {
         my $svc   = $a->{name};
-        my $cands = $bySvc->{$svc} or next;
+        my $cands = $all{$svc} or next;
 
         my (%seen, @matched);
         for my $it (@$cands) {
@@ -236,7 +329,7 @@ sub matchesFor {
             my $k = join('|', $it->{name} // '', $it->{line2} // '');
             next if $seen{$k}++;
             my %item = %$it;   # per-release copy — never decorate the shared cache entry
-            _attachFavUrl(\%item, $svc, $item{_cover}, $artist);
+            _attachFavUrl(\%item, $svc, $item{_cover}, $artist) unless $a->{local};
             push @matched, \%item;
             last if @matched >= MAX_PER_SVC;
         }
@@ -251,26 +344,53 @@ sub matchesFor {
     _dbg("match '" . ($albumTitle // '') . "' [" . ($artist // '') . "]: "
         . (@sections ? join(', ', map { $_->{svc} . '=' . scalar @{ $_->{items} } } @sections) : 'NO MATCH')
         . ' | pool: '
-        . (join(', ', map { $_ . '=' . scalar @{ $bySvc->{$_} || [] } } sort keys %$bySvc) || 'none'));
+        . (join(', ', map { $_ . '=' . scalar @{ $all{$_} || [] } } sort keys %all) || 'none'));
 
     return \@sections;
 }
 
-# Cache-only variant for sync paths (list-tile badges): never searches, never
-# needs a client. Returns undef when NO service has cached candidates yet
-# (unresolved — distinct from a resolved no-match, which returns []).
-sub peekMatches {
-    my ($class, $artist, $albumTitle) = @_;
-    return undef unless defined $artist && length $artist;
+# Which local album ids are claimed by ANY release group of this artist —
+# pure-CPU matcher pass (no cache reads), used to find the LEFTOVER library
+# albums for the "Also in your library" safety-net section. Claims run across
+# every RG the caller passes (including type-filtered ones) so a hidden
+# section can't resurface its matches as "unmatched".
+sub claimedLocalIds {
+    my ($class, $rgs, $artist, $local) = @_;
+    my %claimed;
+    return \%claimed unless $local && @$local;
+    my $artistNorm = _norm($artist);
+    for my $rg (@{ $rgs || [] }) {
+        my $albumNorm = _norm($rg->{title});
+        for my $it (@$local) {
+            next if $claimed{ $it->{_albumid} };
+            $claimed{ $it->{_albumid} } = 1
+                if _albumMatches($artistNorm, $albumNorm, $it->{_candArtist}, $it->{_candTitle});
+        }
+    }
+    return \%claimed;
+}
 
-    my (%bySvc, $any);
+# Cache-only variant for sync paths (list-tile badges): never searches, never
+# needs a client. Returns { sections => [...], resolved => 0|1 } where
+# `resolved` means STREAMING candidates were cached (a resolved no-match may
+# hide the release). Local matches ride along but deliberately do NOT set
+# `resolved` — owning some of an artist's albums must not hide the unowned
+# ones before streaming has actually been checked.
+sub peekMatches {
+    my ($class, $artist, $albumTitle, $local) = @_;
+    return { sections => [], resolved => 0 }
+        unless defined $artist && length $artist;
+
+    my (%bySvc, $resolved);
     for my $a (orderedAdapters()) {
         my $c = $cache->get(_candKey($a->{name}, $artist)) or next;
-        $any = 1;
+        $resolved = 1;
         $bySvc{ $a->{name} } = _reattach($a->{name}, $c->{items});
     }
-    return undef unless $any;
-    return $class->matchesFor(\%bySvc, $artist, $albumTitle);
+    return {
+        sections => $class->matchesFor(\%bySvc, $artist, $albumTitle, $local),
+        resolved => $resolved ? 1 : 0,
+    };
 }
 
 # ---------------------------------------------------------------------------
@@ -437,6 +557,21 @@ sub _albumMatches {
         $ok = 1 if length($aa) >= 2 && length($ta) >= 2
                 && ($ta eq $aa || index($ta, "$aa ") == 0);
     }
+
+    # Titles carrying the ARTIST NAME as a prefix on ONE side only — e.g. the
+    # release "Belle and Sebastian Write About Love" vs the MB release-group
+    # "Write About Love" (found via Simon's library 2026-07-09; also fixes the
+    # same album's streaming match). Strip a leading "<artist> " from both
+    # sides and re-compare; gated on a >=3 char remainder, and the artist
+    # check below still applies. DELIBERATE DIVERGENCE from the LBF/PFR
+    # matcher — candidate to port back upstream.
+    if (!$ok && length $artistNorm) {
+        my $ab = _stripArtistPrefix($albumNorm, $artistNorm);
+        my $tb = _stripArtistPrefix($t, $artistNorm);
+        if (($ab ne $albumNorm || $tb ne $t) && length($ab) >= 3 && length($tb) >= 3) {
+            $ok = 1 if $tb eq $ab || index($tb, "$ab ") == 0;
+        }
+    }
     return 0 unless $ok;
 
     return ($t eq $albumNorm) ? 1 : 0 if $artistNorm eq '';
@@ -447,6 +582,12 @@ sub _stripFmt {
     my $s = shift // '';
     $s =~ s/\s+(?:ep|lp)$//;
     return $s;
+}
+
+sub _stripArtistPrefix {
+    my ($t, $a) = @_;
+    return substr($t, length($a) + 1) if index($t, "$a ") == 0;
+    return $t;
 }
 
 sub _asciiNorm {

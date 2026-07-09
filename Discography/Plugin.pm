@@ -52,12 +52,12 @@ $prefs->init({
     # date from MusicBrainz). An in-menu toggle overrides per visit.
     sort_order => 'newest',
 
-    # Streaming-service search priority. Services are searched in ascending
-    # order; 0 = never search it. Same convention as the ListenBrainz /
-    # Pitchfork plugins so the fleet stays familiar.
-    svc_priority_qobuz  => 1,
-    svc_priority_tidal  => 2,
-    svc_priority_deezer => 3,
+    # Source priority (ascending; 0 = never use). Local = the library.
+    # Same convention as the ListenBrainz / Pitchfork plugins.
+    svc_priority_local  => 1,
+    svc_priority_qobuz  => 2,
+    svc_priority_tidal  => 3,
+    svc_priority_deezer => 4,
 
     # Which release-type sections to show (CSV of Browse.pm group keys).
     show_types => 'ALBUMS,EPS,SINGLES,COMPILATIONS,LIVE,OTHER',
@@ -70,6 +70,10 @@ $prefs->init({
     # Detail page: 0 = just the preferred service's best version (one row);
     # 1 = every matching service's versions under per-service headers.
     show_all_versions => 0,
+
+    # "Also in your library" safety-net section: library albums under the
+    # artist that no MusicBrainz release group claimed.
+    show_library_extras => 1,
 
     # Artist bio atop the list. NB: ANY text row disables Material's grid for
     # the whole view (hard rule in browse-resp.js, even window.textarea) — so
