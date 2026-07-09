@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+
+<extension>
+
+<id>504c39e9-b335-4059-bfd8-88fcf3f3daf8</id>
+
+<name>Discography</name>
+
+<module>Plugins::Discography::Plugin</module>
+
+<version>0.8.2</version>
+
+<icon>plugins/Discography/html/images/DiscographyIcon_svg.png</icon>
+
+<description>Browse an artist's full discography (via MusicBrainz) and play each release from your local library or streaming service (Qobuz / Tidal / Deezer). Adds a "Full Discography" entry to the artist context menu in Material Skin.</description>
+
+<creator>CrystalGipsy</creator>
+
+<defaultState>enabled</defaultState>
+
+<targetApplication>
+
+<id>SlimServer</id>
+
+<minVersion>9.0.0</minVersion>
+
+<maxVersion>*</maxVersion>
+
+</targetApplication>
+
+</extension>

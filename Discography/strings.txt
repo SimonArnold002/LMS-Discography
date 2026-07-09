@@ -1,0 +1,65 @@
+PLUGIN_DISCOGRAPHY
+	EN	Discography
+
+PLUGIN_DISCOGRAPHY_DESC
+	EN	Browse an artist's full discography and play each release from your local library or streaming service.
+
+PLUGIN_DISCOGRAPHY_APPS_HINT
+	EN	Open an artist and choose "Full Discography"
+
+PLUGIN_DISCOGRAPHY_APPS_HINT2
+	EN	This app browses a single artist, so it is reached from the artist context menu in Material Skin.
+
+PLUGIN_DISCOGRAPHY_SORT_NEWEST
+	EN	Sorted newest first (tap for oldest)
+
+PLUGIN_DISCOGRAPHY_SORT_OLDEST
+	EN	Sorted oldest first (tap for newest)
+
+PLUGIN_DISCOGRAPHY_REFRESH
+	EN	Refresh discography
+
+PLUGIN_DISCOGRAPHY_NOT_FOUND
+	EN	Couldn't identify this artist on MusicBrainz
+
+PLUGIN_DISCOGRAPHY_NO_RESULTS
+	EN	No releases found
+
+PLUGIN_DISCOGRAPHY_ERROR
+	EN	MusicBrainz could not be reached - try again shortly
+
+PLUGIN_DISCOGRAPHY_NO_MATCH
+	EN	No streaming match found
+
+PLUGIN_DISCOGRAPHY_REFRESH_MATCHES
+	EN	Refresh streaming matches
+
+PLUGIN_DISCOGRAPHY_VIEW_ON_MB
+	EN	View on MusicBrainz
+
+PLUGIN_DISCOGRAPHY_FULL_REVIEW
+	EN	Read full review
+
+PLUGIN_DISCOGRAPHY_SHOW_LESS
+	EN	Show less
+
+PLUGIN_DISCOGRAPHY_READ_MORE
+	EN	Read more
+
+PLUGIN_DISCOGRAPHY_ALBUMS
+	EN	Albums
+
+PLUGIN_DISCOGRAPHY_EPS
+	EN	EPs
+
+PLUGIN_DISCOGRAPHY_SINGLES
+	EN	Singles
+
+PLUGIN_DISCOGRAPHY_COMPILATIONS
+	EN	Compilations
+
+PLUGIN_DISCOGRAPHY_LIVE
+	EN	Live albums
+
+PLUGIN_DISCOGRAPHY_OTHER
+	EN	Other releases
