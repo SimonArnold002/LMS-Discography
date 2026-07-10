@@ -14,15 +14,14 @@ Long-term context: this is **Phase 1** of a bigger idea — an integrated Materi
 - **Resolver = trimmed port** of the LBF `_findPlayable` engine (the same port Pitchfork Reviews proved) — NOT a runtime dependency on LBF. New layer on top: `_resolveArtistBatch` — one artist-only search per service, matched against ALL release groups in a single pass (≈1 API call per service per artist, not per album). Known limit: service search caps ~50 albums; the v1.1 fix is the services' artist-discography endpoints.
 - **Tiles**: render instantly from MB data; playable via **resolve-on-play**; Material **emblems** appear opportunistically from cache (`extid` prefixed `qobuz:`/`tidal:`/`deezer:`). Drill-in shows every version: Local (real `album_id`) + per-service matches + "View on MusicBrainz" weblink.
 - **Settings live in the plugin** (not Material settings): default sort (newest/oldest), service priority (`svc_priority_*`, 0 = never, LBF convention), release types shown, hide-unmatched.
-- **Cache keys** (versioned — bump ALL layers when matching logic changes, the LBF lesson):
-  `dsc:mbid:<norm-artist>` 30d · `dsc:rg:<mbid>:vN` 14d · `dsc:svc:<mbid>:<service>:vN` 7d · `dsc:match:<rg-mbid>:vN` 14d. No background warming while a library scan runs.
+- **Cache keys**: `dsc:mbid:<norm-artist>` 30d · `dsc:rg:<mbid>:vN` 14d · `dsc:cand:vN:<svc>:<norm-artist>` 3d found / 1d empty / 1h error · `dsc:urls:` · `dsc:bio:` · `dsc:rev:`. There is **no match-result cache** — candidates are cached RAW and matching runs live per render, so a matcher change takes effect immediately and only needs `dsc:cand` bumped when the cached candidate SHAPE changes. No background warming while a library scan runs.
 
 ## Build Order / Status
 1. ✅ **Skeleton + entry point** (v0.1.1, 2026-07-09) — plugin registers, custom action written, placeholder feed proves the `artist_id` handoff end-to-end. **VERIFIED on the server**: artist context menu → skeleton view with DB-resolved artist name ("13th Floor Elevators").
 2. ✅ **MusicBrainz discography list** (v0.2.0, 2026-07-09) — release-group fetch + CAA art + sorted tile list + newest/oldest toggle + Refresh + plugin icon. Awaiting server test.
 3. ✅ **Streaming sources** (v0.4.0–0.6.0, all VERIFIED on server 2026-07-09) — Sources.pm engine, playable tiles (preferred-service play w/ fallback), background warm, single-version detail (pref for all-services view), type-filter + hide-unmatched prefs, Material type icons on headers, match debug log. Local Material emblem patch prepared (test-artifacts/) — deploy pending Simon being home. Still open: full CAA-miss art fallback (current heuristic = service art on undated releases only).
 4. ✅ **Local library matching** (v0.9.0, 2026-07-09) — Local pseudo-source (svc_priority_local, default 1 = first), one sync `albums` CLI query per build, owned releases show/count as matched, detail Local row plays the library tracklist. Awaiting server test. KNOWN LIMIT: tile-level play still uses the best STREAMING match (a Local match has no play URL string; needs a play/go split — research).
-5. ⬜ Settings page, Listen Later favurl handshake (`_attachFavUrl` port), Refresh / Resolve-all actions, caching polish.
+5. ✅ **Settings page** (v0.10.0, 2026-07-09) — all prefs in the LMS web UI. LL favurl handshake + Refresh actions were delivered earlier (0.4.x). Awaiting server test. (Resolve-all action: dropped — the background warm on view open made it redundant.)
 
 ## Server Details
 - **LMS Server**: test/diagnose via `http://plex:9000` (hostname, not LAN IP — works on and off the network)
@@ -50,15 +49,16 @@ curl -s http://plex:9000/jsonrpc.js -d '{"id":1,"method":"slim.request","params"
 ## File Structure
 ```
 Discography/
-├── Plugin.pm       # OPMLBased entry point (tag 'discography', is_app); prefs; Material custom-action merge-write/clear
-├── Browse.pm       # topLevel feed ($VAR-literal guard, Contributor name lookup); discography list (sort toggle + Refresh action rows, CAA tiles, secondary-type filter); release detail page (MB metadata + weblink)
-├── API.pm          # Async MusicBrainz: artist MBID (library tag first, then MB search, score>=90 gate), paginated release-group browse (100/page, 1.1s gap, 6-page cap), caching; CAA release-group image URLs
-├── install.xml     # <extension> format; version lives here (no repo.xml yet — pre-release)
+├── Plugin.pm       # OPMLBased entry point (tag 'discography', is_app); prefs; canonical `dbg` (API/Browse/Sources delegate); Material custom-action merge-write/clear; Settings under WEBUI
+├── Browse.pm       # topLevel ($VAR guard, %lastCtx stash+expand flags+visibility snapshot); grouped list (bio header, Options/type/library-extras sections, sort+Refresh); release detail (review w/ inline expand, version rows w/ Show-other-versions toggle, MB links); _proseRow avatar-column indent
+├── API.pm          # Async MusicBrainz: artist MBID (library tag first, MB search score>=90), paginated release-group browse, url-rels links; CAA image URLs; caching
+├── Sources.pm      # Source engine: Q/T/D adapters (artist-FIRST candidate fetch, per-adapter query_enc, shared _renderAlbums + _albumArray envelope unwrap), Local pseudo-source (sync albums query, db:album.id play), matcher (fleet-synced), matchesFor/peekPool+peekMatches/claimedLocalIds, LL favurl handshake
+├── Settings.pm     # Web settings: source priorities (detection), view options (type checkboxes->CSV), release page, integration
+├── install.xml     # <extension> + <optionsURL>; version lives here (no repo.xml yet — pre-release)
 ├── strings.txt     # PLUGIN_DISCOGRAPHY_* UI strings
-└── HTML/EN/plugins/Discography/html/images/
-    ├── DiscographyIcon.svg / _svg.png / .png   # vinyl-disc mark, #000 fill (Material recolours #000; must be "#000" not "#000000")
-    ├── dsc-sort_MTL_icon_sort.png              # action rows: _MTL_icon_<name> = Material swaps in its themed <name> icon
-    └── dsc-refresh_MTL_icon_refresh.png        # (copied from LBF's refresh asset)
+└── HTML/EN/plugins/Discography/
+    ├── settings.html                           # TT template (PFR's settings layout)
+    └── html/images/                            # icon (vinyl _svg.png, #000 fill) + dsc-*_MTL_icon_* action/header placeholders + dsc_MTL_svg_* type-header names + dsc-blank.png (unused, kept)
 ```
 Build the zip from the repo root: `zip -r -X Discography.zip Discography -x '*.DS_Store'`. **Bump the version in install.xml on every rebuild** (same version = LMS won't reinstall); when repo.xml exists, bump + recompute `<sha>` there too.
 
@@ -69,7 +69,27 @@ Build the zip from the repo root: `zip -r -X Discography.zip Discography -x '*.D
 - **Shared actions.json discipline.** `<prefsdir>/material-skin/actions.json` is shared with Material, Listen Later and user actions. We do an atomic **read-merge-write** (temp file + rename), stripping only OUR entries (`_isOurAction`: `lmsbrowse.command[0] eq 'discography'`) before appending the current one. Never reset a category we don't own; never leave an empty category behind (empty categories actively suppress in Material). The `material_action` pref (default on) gates the write; off = entry is cleaned out at postinit.
 - **Material caches `customactions.json` at app start** — after (re)install, an open Material tab needs a **hard refresh** before the menu entry appears.
 - **Params → feed**: XMLBrowser's `cliQuery` passes tagged request params to the top-level feed as `$args->{params}` (same path Material's own `browselibrary items … artist_id:` uses; LBF/PFR read it the same way).
+- **Settings template vars → `beforeRender`, NOT `handler`.** `Slim::Web::Settings::handler` (verified against LMS source) does, in order: persist each `prefs()` pref from `$params->{pref_<name>}` → refresh `$params->{prefs}{<name>}` from the store → call `$class->beforeRender($params, $client)` → render. So anything the template derives from a pref must be built in `beforeRender`; built in `handler` before `SUPER::handler` it is read PRE-save and a save re-renders the old values (looks like a lost save) while the base's `prefs.*` rows on the same page show the new ones. Sanitising the incoming `$params->{pref_*}` still belongs in `handler`, before `SUPER::handler`. Fleet-wide rule — DSC/PFR/LBF all had this bug (fixed 2026-07-10).
 - **Local syntax gate**: `perl -c` with stubbed Slim modules (stubs in the session scratchpad; recreate as needed — Log, Prefs, PluginManager, Strings, Plugin::OPMLBased, Schema, JSON::XS).
+
+## Service Plugin APIs — VERIFIED SIGNATURES (2026-07-10, from upstream source)
+Don't guess these; the adapters break silently when they drift. Sources fetched from GitHub
+(the installed server copies are the same code):
+
+| Call | Signature | Callback receives |
+|---|---|---|
+| Qobuz `search` | `($self,$cb,$query,$type,$args)` | whole result hash: `{artists}{items}`, `{albums}{items}` |
+| Qobuz `getArtist` | `($self,$cb,$artistId)` | result hash w/ `{albums}{items}` (`artist/get`, `extra=albums`, capped at `QOBUZ_DEFAULT_LIMIT`=200) |
+| Qobuz `_albumItem` | `($client,$album)` | — (album items normally carry a named `{artist}`; also `{artists}` w/ roles) |
+| TIDAL `search` | `($self,$cb,{type,search,limit})` | plain ARRAY (`$result->{items}`) |
+| TIDAL `artistAlbums` | `($self,$cb,$id,$type)` — `$type` defaults `'ALBUMS'`, also `EPSANDSINGLES`/`COMPILATIONS` | plain ARRAY |
+| Deezer `search` | `($self,$cb,{search,type,strict,limit})` | plain ARRAY (unwraps `{data}`; `artist` type filtered on `nb_album`) |
+| Deezer `artistAlbums` | `($self,$cb,$id)` | plain ARRAY (unwraps `{data}`); items have **NO** `artist` object |
+| Deezer `_renderAlbum` | `($item,$addArtistToTitle,$artist)` | — (`$artist` backfills `favorites_title`; `line2` stays undef on artist-albums items — Browse overwrites `line2` with the service name anyway) |
+
+Repos: `LMS-Community/plugin-Qobuz` (master, `API.pm` + `API/Common.pm` + `Plugin.pm`) ·
+`michaelherger/lms-plugin-tidal` (`API/Async.pm`) · `philippe44/lms-deezer` (`API/Async.pm` + `Plugin.pm`).
+**Only Qobuz returns an envelope**; Deezer and TIDAL unwrap `{data}` themselves.
 
 ## Reference Code (read before porting)
 - **LBF** `ListenBrainzFreshReleases/Browse.pm` — resolver family to port: `_findPlayable` (artist-only search strategy + priority/parallel/timeout resolution), `_norm`, `_albumMatches`, `_searchQobuz`/`_searchTidal`/`_searchDeezer` (adapter registration gated on plugin capabilities), `_rebuildStreamItems`, `_attachFavUrl`. `API.pm` — `getArtistMbidByName` (MB artist search), MB/CAA constants + async HTTP patterns.
@@ -77,7 +97,64 @@ Build the zip from the repo root: `zip -r -X Discography.zip Discography -x '*.D
 - **Listen Later** `ListenLater/Plugin.pm` — the actions.json read-merge-write this plugin's version was ported from.
 - **Material source** (unminified): `LMS-Listen-to-Later/test-artifacts/lms-material/` — `customactions.js` (lmsbrowse), `emblems.js` (`getEmblem(extid)`), `browse-resp.js` (artist-view grouping, for the later integrated phase).
 
+## Shared Matching Engine — FLEET SYNC RULE (2026-07-10)
+
+The artist/album/track matcher (`_norm`, `%FOLD`, `_artistMatch`, `_albumMatches`,
+fallback helpers `_stripFmt`/`_asciiNorm`/`_punctNorm`/`_stripArtistPrefix`; LBF also
+`_trackMatches`) is ONE engine with a copy in each of these four repos:
+
+- `LMS-ListenBrainz-New-Releases/ListenBrainzFreshReleases/Browse.pm` (origin, canonical)
+- `LMS-Pitchfork-Reviews/PitchforkReviews/Browse.pm`
+- `LMS-Discography/Discography/Sources.pm`
+- `LMS-Listen-to-Later/ListenLater/Sources.pm` (hash-pinned LENIENT variant — empty-artist
+  saved-item replay must still match; do NOT blindly align it)
+
+**THE RULE: a matching fix in ANY of these repos must be applied to ALL repos carrying the
+affected sub, in the SAME work session.** Enforcement — this must exit 0 before any matcher
+change is called done:
+
+    python3 LMS-ListenBrainz-New-Releases/tools/matcher_sync_check.py
+
+It diffs the comment-stripped CODE of every copy across all four repos. Deliberate variants
+are sha1-pinned inside the script with a reason, and FAIL the check if they change without a
+conscious re-pin (`--print-hashes` prints current hashes). After aligning: bump every touched
+repo's plugin version AND its match/decision cache versions (LBF: `lbf:stream` + `lbf:track` +
+`lbf:pl:resolved` — ALL layers; PFR: `pfr:stream`; DSC: `dsc:cand` only if the cached candidate
+shape changed — matching runs live there; LL: none — matching is live), rebuild zips + repo.xml
+sha. Never leave a matcher fix in one repo "to port later" — that is exactly how the 2026-07
+drift happened (LBF missed the P!nk/EP/ascii rules for months).
+
 ## Development Log
+### 0.10.4 (2026-07-10) — code review of 0.10.0–0.10.3: correctness + scale fixes
+- **Settings page rendered STALE after a save.** `dsc_types` / `dsc_services` were computed from `$prefs` *before* `SUPER::handler` persists the POST, so a saved form came back showing pre-save values (untick Singles, Save, box still ticked — the save HAD applied; a reload showed it). Worse, the base class refreshes its own `prefs` template var post-save, so the Local priority row (reads `prefs.*`) disagreed with the streaming rows (read `dsc_services`). **Fix = the platform's own hook**: `Slim::Web::Settings::handler` persists the POST, refreshes `$paramRef->{prefs}`, and THEN calls `beforeRender($paramRef, $client)` (a documented no-op in the base) immediately before `filltemplatefile`. Both vars moved there. **RULE (fleet-wide): any Settings template variable derived from a pref MUST be built in `beforeRender`, never in `handler` before `SUPER::handler`.** Same bug found and fixed in PFR (0.7.4) and LBF (0.9.85) the same session — DSC's Settings.pm was ported from PFR's, so the defect came with the port.
+- **Qobuz `_candArtist` could come out undef**, failing `_albumMatches`' mandatory artist gate for every candidate in a healthy pool. `_renderQobuzAlbums` fell back to the resolved name only when `{artist}` wasn't a hash, so a hash *without* a `name` yielded undef; it also never consulted `{artists}[0]`. Hardened via the shared ladder. **Honest reachability**: NOT proven live — Qobuz's own `_albumItem` does `$album->{artist}->{name} || ''`, and `artist/get` items normally carry a named `{artist}`. It IS reachable for Deezer, whose `_renderAlbum` autovivifies an empty `{artist}` as a side effect; `_renderAlbums` therefore computes `_candArtist` BEFORE calling the renderer.
+- **`_albumArray` envelope guard** — I first read the dead `{data}` unwrap in the Deezer search leg as proof the API layer returns envelopes. **It doesn't.** Verified in the plugin sources: Deezer `Async.pm` `artistAlbums`/`search` both do `shift->{data}` then `$cb->($albums || [])`, and TIDAL's `artistAlbums` likewise passes a plain ARRAY — that unwrap could never fire. Only Qobuz hands back the whole result hash (`{albums}{items}`). `_albumArray` now centralises that one real reach and stays tolerant of an envelope if a plugin changes; it is hardening, NOT a bug fix, and the original `ref $albums eq 'ARRAY'` checks were correct.
+- **The three `_render<Svc>Albums` loops collapsed into one `_renderAlbums($albums,$svc,$artistName,$render,$skip)`** (~66 lines -> ~25). The Qobuz bug above WAS that duplication drifting. Per-service quirks are now coderefs: Qobuz's streamable `$skip`, each plugin's own renderer.
+- **Pool reads hoisted out of the per-release loop.** `peekMatches` did a `cache->get` + full `_reattach` shallow-copy of every cached item ONCE PER RELEASE GROUP; artist-first pools run to thousands, so a 50-release list did tens of thousands of hash copies synchronously on the event loop. New `Sources::peekPool($artist)` reads+reattaches once per build; `_buildList` passes it into `peekMatches` as an optional 5th arg. Safe because `matchesFor` copies matched items before decorating them.
+- **`SVC_TIMEOUT` 8s -> 20s** — it was sized for one 50-item search, but the fetch is now artist-search THEN artist-albums (Tidal: 3 paginated bucket pulls). A timeout ALSO threw away a result that landed late; `$settle` now still caches a late non-empty result (only the `$cb` is spoken for), so completed work is never discarded into a 1h error pin.
+- **`_dbg` was a third verbatim copy** (API + Browse + Sources). Canonical `Plugins::Discography::Plugin::dbg` now; the three modules are one-line delegators (PFR/LBF pattern).
+- Docs: removed a false "DELIBERATE DIVERGENCE / port upstream" claim from `_albumMatches` and the 0.10.3 entry (the port had already landed; `matcher_sync_check.py` exits 0 with all three repos in sync), and corrected the Phase-1 cache-key list, which documented a `dsc:match:` / `dsc:svc:` cache that has never existed.
+- **KNOWN, NOT FIXED**: `matchesFor` re-runs `_norm` on every candidate title+artist for every release group (~350k Unicode normalisations for a 50-release list against 7k pooled candidates). Fixing it means memoising or precomputing inside the fleet-pinned matcher subs, which must land in all four repos in one session — worth doing, but not as a drive-by.
+- Gates: `perl -c` clean on all 5 modules; 23/23 behavioural assertions via the real module (`_albumArray` envelopes, Qobuz artist fallback, renderer error-vs-empty semantics, short-title matcher regression guards); `matcher_sync_check.py` exit 0.
+
+### 0.10.3 (2026-07-10) — matcher: all-punctuation / single-char titles ("( )", "X")
+- `_norm` strips parenthetical content, so Sigur Rós's "( )" normalised to '' and died at the <2-char gate (same for any single-char title like "X" — length 1). New branch in `_albumMatches`: when `length $albumNorm < 2`, compare `_punctNorm` (lowercase, whitespace stripped, punctuation KEPT: "( )" == "()") of the RAW titles — exact equality ONLY (a prefix rule would let "x" swallow "xx") and the artist gate is mandatory. `_albumMatches` gained a 5th arg (raw MB title) — both call sites (matchesFor, claimedLocalIds) pass it. No cache bump (candidates cached raw; matching runs live). Verified via the real module: 9/9 incl. must-not-match controls (live edition, "(bonus)", wrong artist, x-vs-xx). Ported to LBF + PFR the same session per the fleet rule — `matcher_sync_check.py` reports `_albumMatches`/`_punctNorm` IN SYNC across DSC/LBF/PFR, so this is NOT a divergence (an earlier draft of this entry wrongly called it one).
+
+### 0.10.2 (2026-07-10) — artist-first candidate fetch (search-cap lottery fix)
+- **Bug (field, on 0.10.1): Qobuz pool healthy (193) but Valtari + Með suð í eyrum... still unmatched.** Root cause: album-search-by-artist-name is a relevance LOTTERY — Qobuz catalog/search caps at QOBUZ_DEFAULT_LIMIT=200 and those albums ranked outside the top 200 for query "sigur rós" (193 = 200 minus streamable/render drops). Our Tidal/Deezer searches were capped at 50 — same exposure, just lucky.
+- **Fix: every adapter now resolves the ARTIST on the service first** (artist-type search → `_pickArtist`: normalised exact name wins, else first `_artistMatch` token-subset hit) **then pulls that artist's own album list** — complete by construction: Qobuz `getArtist` (artist/get extra=albums), Tidal `artistAlbums` × 3 filter buckets ALBUMS/EPSANDSINGLES/COMPILATIONS merged id-deduped (TIDAL splits discographies across filters; MAX_LIMIT 5000), Deezer `artistAlbums` (single list, MAX_LIMIT 2000; payload has NO artist object — resolved name passed as `_renderAlbum`'s 3rd arg like the plugin's own getArtistAlbums does). Old album search kept as fallback when no artist resolves (stylised names, absent artists). Raw-empty artist-albums settles as ERROR (1h retry) not a 1d empty pin. Render loops factored into `_render<Svc>Albums` shared by both paths. CAND_CACHE_V 2->3.
+- `( )` (Sigur Rós 2002) still can't match: all-punctuation title normalises to empty — matcher's <2-char gate. Known, separate.
+
+### 0.10.1 (2026-07-10) — per-service query encoding (Sigur Rós fix) + MB-resolution debug logging
+- **Bug (field, Sigur Rós): accented artists got junk/empty Qobuz+Tidal candidate pools while Deezer worked.** Root cause: getCandidates octet-encoded the search query for ALL adapters, but the service plugins' own URL layers differ — Qobuz escapes query params with `uri_escape_utf8` (plugin-Qobuz API.pm) and Tidal transliterates them with `Text::Unidecode` (lms-plugin-tidal API/Async.pm): both expect CHARACTER strings, so octets double-encoded ("Sigur Rós" searched as "Sigur RÃ³s" -> Qobuz 92 junk candidates, Tidal 0). Deezer's `complex_to_query` percent-encodes bytes, so octets were right there. Fix: adapters carry `query_enc => 'chars'|'bytes'`; getCandidates builds both spellings (`utf8::decode` fails safe on non-UTF-8) and passes each adapter its own. CAND_CACHE_V 1->2 flushes poisoned pools.
+- **LBF and PFR had the SAME bug** (identical `$queryEnc` octets into the same adapters) — **backported the same session** (LBF 0.9.82, PFR 0.7.2); both now carry `query_enc`/`qChars`/`qBytes`. Likely retro-fixed part of LBF's "accents" known-gap class.
+- Diagnosis was pure HTTP: debug_log pref on via jsonrpc, feed run, `server.log` fetched over HTTP — the `pool:` counts split matcher-rejection (healthy pool) from search failure (empty pool) exactly as designed. New: candidate debug line now samples the first 3 "artist - title" entries (wrong-artist pools are otherwise indistinguishable from matcher rejections), and API.pm MB artist/RG resolution failures now log through the same debug_log-elevated `_dbg` (score-gate misses say WHY + that the miss sentinel lasts 1d; HTTP errors say retry works). Field report "failed MB artist match" for Better Oblivion Community Center was unreproducible minutes later (resolves fine, score 100) — with the new logging a recurrence will say which path failed.
+
+### 0.10.0 (2026-07-09) — step 5: settings page (scope complete)
+- **Settings.pm** (PFR's template): sections Playback sources (Local row always present + serviceStatus-driven streaming rows w/ detected/not-installed, priorities 0-9 sanitised, absent-field-keeps-current), Discography view (sort radio, release-type CHECKBOXES -> show_types CSV via a `dsc_types_form` marker field distinguishing none-ticked from partial POST, hide_unmatched, show_bio w/ grid-tradeoff note, show_library_extras), Release page (show_all_versions), Integration (material_action w/ restart+refresh note, debug_log).
+- install.xml gains `<optionsURL>`; Plugin.pm requires Settings under main::WEBUI. @TYPE_KEYS mirrors Browse's @GROUP_ORDER — keep in sync.
+- ORIGINAL 5-STEP SCOPE COMPLETE.
+
 ### 0.9.6 (2026-07-09) — "Show other versions" inline toggle on the detail page
 - Single-version detail gains a "Show other versions" row (only when >1 version exists) — the refresh-toggle pattern (ctx `{ver}{rg-mbid}`, preserved across same-artist fresh entries like bio/rev): expands IN PLACE to the full per-service layout (headers + all rows), "Hide other versions" collapses. `show_all_versions` pref = permanently expanded (no toggle rows).
 - Play-string discipline holds in both states ($keptPlay spans the branches): exactly ONE play-string row per detail feed, so tile play stays single-version.

@@ -81,3 +81,84 @@ PLUGIN_DISCOGRAPHY_OTHER_VERSIONS
 
 PLUGIN_DISCOGRAPHY_HIDE_VERSIONS
 	EN	Hide other versions
+
+PLUGIN_DISCOGRAPHY_SETTINGS_SOURCES
+	EN	Playback sources
+
+PLUGIN_DISCOGRAPHY_SVC_PRIORITY
+	EN	Source priority
+
+PLUGIN_DISCOGRAPHY_SVC_PRIORITY_DESC
+	EN	Order sources are preferred for playback and version listings (1 = first). 0 disables a source entirely. Local library first plays your own files whenever you have the album.
+
+PLUGIN_DISCOGRAPHY_LOCAL_LIBRARY
+	EN	Local library
+
+PLUGIN_DISCOGRAPHY_SVC_DETECTED
+	EN	detected
+
+PLUGIN_DISCOGRAPHY_SVC_NOT_DETECTED
+	EN	not installed
+
+PLUGIN_DISCOGRAPHY_SETTINGS_VIEW
+	EN	Discography view
+
+PLUGIN_DISCOGRAPHY_SORT
+	EN	Default sort
+
+PLUGIN_DISCOGRAPHY_SORT_DESC
+	EN	Original release date order for the discography list. The in-view toggle overrides this per visit.
+
+PLUGIN_DISCOGRAPHY_SORT_NEWEST_OPT
+	EN	Newest first
+
+PLUGIN_DISCOGRAPHY_SORT_OLDEST_OPT
+	EN	Oldest first
+
+PLUGIN_DISCOGRAPHY_SHOW_TYPES
+	EN	Release types
+
+PLUGIN_DISCOGRAPHY_SHOW_TYPES_DESC
+	EN	Which release-type sections to show in the discography.
+
+PLUGIN_DISCOGRAPHY_HIDE_UNMATCHED
+	EN	Hide unmatched releases
+
+PLUGIN_DISCOGRAPHY_HIDE_UNMATCHED_DESC
+	EN	Hide releases that are neither in your library nor matched on a streaming service. Unchecked shows the complete discography, with unplayable releases included.
+
+PLUGIN_DISCOGRAPHY_SHOW_BIO
+	EN	Artist biography
+
+PLUGIN_DISCOGRAPHY_SHOW_BIO_DESC
+	EN	Show a biography at the top of the discography (needs the Music and Artist Information plugin). Note: any text in the view prevents Material Skin's grid layout - turn the biography off if you prefer grid-capable tiles.
+
+PLUGIN_DISCOGRAPHY_SHOW_EXTRAS
+	EN	Also in your library
+
+PLUGIN_DISCOGRAPHY_SHOW_EXTRAS_DESC
+	EN	Show a section of albums in your library under this artist that MusicBrainz did not list - so nothing you own is missed.
+
+PLUGIN_DISCOGRAPHY_SETTINGS_DETAIL
+	EN	Release page
+
+PLUGIN_DISCOGRAPHY_SHOW_ALL_VERSIONS
+	EN	Always show all versions
+
+PLUGIN_DISCOGRAPHY_SHOW_ALL_VERSIONS_DESC
+	EN	Always list every matching source version grouped by service. Unchecked shows the preferred version with a "Show other versions" option.
+
+PLUGIN_DISCOGRAPHY_SETTINGS_INTEGRATION
+	EN	Integration
+
+PLUGIN_DISCOGRAPHY_MATERIAL_ACTION
+	EN	Material Skin artist menu entry
+
+PLUGIN_DISCOGRAPHY_MATERIAL_ACTION_DESC
+	EN	Add "Discography" to the artist context menu in Material Skin. Changing this needs a server restart and a hard refresh of Material.
+
+PLUGIN_DISCOGRAPHY_DEBUG_LOG
+	EN	Debug logging
+
+PLUGIN_DISCOGRAPHY_DEBUG_LOG_DESC
+	EN	Log matching decisions and fetch details to server.log (visible at the default log level). For diagnosing missed matches.

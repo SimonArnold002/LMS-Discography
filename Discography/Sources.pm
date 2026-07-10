@@ -30,22 +30,22 @@ my $log   = Slim::Utils::Log->logger('plugin.discography');
 my $prefs = preferences('plugin.discography');
 my $cache = Slim::Utils::Cache->new();
 
-# Matching diagnostics: debug_log pref ON mirrors to server.log at ERROR level
-# (visible without touching Settings->Logging — remotely settable via
-#   ["pref","plugin.discography:debug_log","1"]
-# ); OFF logs at INFO (hidden at the default WARN).
-sub _dbg {
-    my ($msg) = @_;
-    if ($prefs->get('debug_log')) { $log->error("dsc[dbg]: $msg") }
-    else                          { $log->info("dsc: $msg") }
-}
+sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
 
 use constant CAND_FOUND_TTL => 3 * 86400;   # service discography is stable-ish
 use constant CAND_EMPTY_TTL => 1 * 86400;   # artist not on the service
 use constant CAND_ERR_TTL   => 3600;        # couldn't query -> retry soon
-use constant SVC_TIMEOUT    => 8;           # per-service search watchdog (s)
+use constant SVC_TIMEOUT    => 20;          # per-service fetch watchdog (s).
+                                            # Sized for the artist-first chain:
+                                            # an artist search THEN the artist's
+                                            # album list (Tidal: 3 paginated
+                                            # bucket pulls). The old 8s was
+                                            # sized for a single 50-item search.
 use constant MAX_PER_SVC    => 4;           # editions shown per service
-use constant CAND_CACHE_V   => '1';         # bump on shape/matcher changes
+use constant CAND_CACHE_V   => '3';         # bump on shape/matcher changes
+                                            # v2: flush octet-query poisoned pools
+                                            # v3: artist-first pools (search-cap
+                                            #     lottery dropped e.g. Valtari)
 
 # ---------------------------------------------------------------------------
 # Adapters (ported from PFR; Qobuz/Tidal/Deezer only — no Bandcamp by scope)
@@ -59,23 +59,29 @@ sub _pluginIcon {
 sub adapters {
     my @adapters;
 
+    # query_enc: what the service plugin's OWN URL layer expects for the search
+    # string (verified in each plugin's source, 2026-07-10). Qobuz escapes
+    # query params with uri_escape_utf8 and Tidal transliterates them with
+    # Text::Unidecode — both need CHARACTER strings (feeding UTF-8 octets
+    # double-encodes: "Sigur Rós" searched as "Sigur RÃ³s" -> junk/empty
+    # pools). Deezer's complex_to_query percent-encodes bytes -> OCTETS.
     push @adapters, {
         name => 'Qobuz', icon => _pluginIcon('Plugins::Qobuz::Plugin'),
-        run  => \&_searchQobuz,
+        run  => \&_searchQobuz, query_enc => 'chars',
     } if Plugins::Qobuz::Plugin->can('getAPIHandler')
       && Plugins::Qobuz::Plugin->can('_albumItem')
       && Plugins::Qobuz::Plugin->can('QobuzGetTracks');
 
     push @adapters, {
         name => 'Tidal', icon => _pluginIcon('Plugins::TIDAL::Plugin'),
-        run  => \&_searchTidal,
+        run  => \&_searchTidal, query_enc => 'chars',
     } if Plugins::TIDAL::Plugin->can('getAPIHandler')
       && Plugins::TIDAL::Plugin->can('getAlbum')
       && Plugins::TIDAL::Plugin->can('_renderAlbum');
 
     push @adapters, {
         name => 'Deezer', icon => _pluginIcon('Plugins::Deezer::Plugin'),
-        run  => \&_searchDeezer,
+        run  => \&_searchDeezer, query_enc => 'bytes',
     } if Plugins::Deezer::Plugin->can('getAPIHandler')
       && Plugins::Deezer::Plugin->can('_renderAlbum')
       && Plugins::Deezer::Plugin->can('getAlbum');
@@ -241,9 +247,13 @@ sub getCandidates {
     unless (@adapters && defined $artist && length $artist) { $cb->({}); return }
 
     # Raw artist to the service search (normalisation mangles stylised names —
-    # "P!nk" -> "p nk"); octet-encode for the URI layer.
-    my $queryEnc = $artist;
-    utf8::encode($queryEnc) if utf8::is_utf8($queryEnc);
+    # "P!nk" -> "p nk"), in BOTH spellings: character string for adapters whose
+    # URL layer escapes/transliterates itself (Qobuz, Tidal), octets for
+    # byte-level escapers (Deezer). See the query_enc notes in adapters().
+    my $qChars = $artist;
+    utf8::decode($qChars) unless utf8::is_utf8($qChars);   # no-op if not valid UTF-8
+    my $qBytes = $artist;
+    utf8::encode($qBytes) if utf8::is_utf8($qBytes);
 
     my %out;
     my $pending = scalar @adapters;
@@ -262,7 +272,15 @@ sub getCandidates {
         my $timer;
         my $settle = sub {
             my ($items) = @_;
-            return if $settled;
+            if ($settled) {
+                # The watchdog already gave up on this service, but the fetch
+                # landed anyway. Keep the result: pinning the error TTL over a
+                # pool we actually hold would repeat the same slow fetch on
+                # every open. Only the $cb is spoken for — it already fired.
+                _cacheCands($key, $items, CAND_FOUND_TTL)
+                    if defined $items && @$items;
+                return;
+            }
             $settled = 1;
             Slim::Utils::Timers::killSpecific($timer) if $timer;
             if (!defined $items) {
@@ -275,8 +293,16 @@ sub getCandidates {
                 _cacheCands($key, $items, @$items ? CAND_FOUND_TTL : CAND_EMPTY_TTL);
                 $out{$svc} = $items;
             }
+            # Sample the pool head in the log: a healthy count full of the
+            # WRONG artist (mangled query, wrong-artist adoption) is otherwise
+            # indistinguishable from a good pool the matcher rejected.
+            my $n = defined $items ? scalar(@$items) : undef;
+            my $sample = ($n && $n > 0)
+                ? ' e.g. ' . join('; ', map { ($_->{_candArtist} // '?') . ' - ' . ($_->{_candTitle} // '?') }
+                    @{$items}[0 .. ($n > 3 ? 2 : $n - 1)])
+                : '';
             _dbg("candidates $svc/'$artist': "
-                . (defined $items ? scalar(@{$items}) : 'error (handler/timeout/renderer)'));
+                . (defined $n ? $n . $sample : 'error (handler/timeout/renderer)'));
             $cb->(\%out) unless --$pending;
         };
 
@@ -286,7 +312,8 @@ sub getCandidates {
             $settle->(undef);
         });
 
-        eval { $a->{run}->($client, $queryEnc, $svc, $settle); 1 } or do {
+        my $query = ($a->{query_enc} || 'bytes') eq 'chars' ? $qChars : $qBytes;
+        eval { $a->{run}->($client, $query, $svc, $settle); 1 } or do {
             $log->warn("candidates $svc failed: $@");
             $settle->(undef);
         };
@@ -325,7 +352,7 @@ sub matchesFor {
 
         my (%seen, @matched);
         for my $it (@$cands) {
-            next unless _albumMatches($artistNorm, $albumNorm, $it->{_candArtist}, $it->{_candTitle});
+            next unless _albumMatches($artistNorm, $albumNorm, $it->{_candArtist}, $it->{_candTitle}, $albumTitle);
             my $k = join('|', $it->{name} // '', $it->{line2} // '');
             next if $seen{$k}++;
             my %item = %$it;   # per-release copy — never decorate the shared cache entry
@@ -364,21 +391,21 @@ sub claimedLocalIds {
         for my $it (@$local) {
             next if $claimed{ $it->{_albumid} };
             $claimed{ $it->{_albumid} } = 1
-                if _albumMatches($artistNorm, $albumNorm, $it->{_candArtist}, $it->{_candTitle});
+                if _albumMatches($artistNorm, $albumNorm, $it->{_candArtist}, $it->{_candTitle}, $rg->{title});
         }
     }
     return \%claimed;
 }
 
-# Cache-only variant for sync paths (list-tile badges): never searches, never
-# needs a client. Returns { sections => [...], resolved => 0|1 } where
-# `resolved` means STREAMING candidates were cached (a resolved no-match may
-# hide the release). Local matches ride along but deliberately do NOT set
-# `resolved` — owning some of an artist's albums must not hide the unowned
-# ones before streaming has actually been checked.
-sub peekMatches {
-    my ($class, $artist, $albumTitle, $local) = @_;
-    return { sections => [], resolved => 0 }
+# Read + reattach every service's cached candidate pool ONCE per build. The
+# artist-first fetch made these pools big (thousands of items), and _reattach
+# shallow-copies every item — doing it per release group meant tens of
+# thousands of hash copies on the single-threaded event loop for one list
+# render. Callers building a whole list hoist this out of their loop and hand
+# the result to peekMatches.
+sub peekPool {
+    my ($class, $artist) = @_;
+    return { bySvc => {}, resolved => 0 }
         unless defined $artist && length $artist;
 
     my (%bySvc, $resolved);
@@ -387,9 +414,28 @@ sub peekMatches {
         $resolved = 1;
         $bySvc{ $a->{name} } = _reattach($a->{name}, $c->{items});
     }
+    return { bySvc => \%bySvc, resolved => $resolved ? 1 : 0 };
+}
+
+# Cache-only variant for sync paths (list-tile badges): never searches, never
+# needs a client. Returns { sections => [...], resolved => 0|1 } where
+# `resolved` means STREAMING candidates were cached (a resolved no-match may
+# hide the release). Local matches ride along but deliberately do NOT set
+# `resolved` — owning some of an artist's albums must not hide the unowned
+# ones before streaming has actually been checked.
+#
+# $pool is an optional peekPool() result: pass it when peeking many releases
+# for one artist. matchesFor copies matched items before decorating them, so
+# sharing the pool arrays across releases is safe.
+sub peekMatches {
+    my ($class, $artist, $albumTitle, $local, $pool) = @_;
+    return { sections => [], resolved => 0 }
+        unless defined $artist && length $artist;
+
+    $pool ||= $class->peekPool($artist);
     return {
-        sections => $class->matchesFor(\%bySvc, $artist, $albumTitle, $local),
-        resolved => $resolved ? 1 : 0,
+        sections => $class->matchesFor($pool->{bySvc}, $artist, $albumTitle, $local),
+        resolved => $pool->{resolved},
     };
 }
 
@@ -420,11 +466,36 @@ sub _attachFavUrl {
 }
 
 # ---------------------------------------------------------------------------
-# Per-service artist searches. Unlike PFR these do NOT filter by album — the
+# Per-service candidate fetch. Unlike PFR these do NOT filter by album — the
 # full candidate list is cached and filtered per release group later. Each
 # candidate carries: the native rendered node (playable), _svc, _albumid,
 # _cover (native art), _candTitle/_candArtist (raw, for the matcher).
+#
+# ARTIST-FIRST (2026-07-10): album-search-by-artist-name is a relevance
+# lottery — Qobuz caps catalog/search at 200 and 'sigur rós' left Valtari
+# outside the top 200 while 193 fuzzy strangers made it in (Tidal/Deezer
+# searches were capped at 50, same exposure). Each adapter now resolves the
+# ARTIST on the service and pulls that artist's own album list — complete by
+# construction. The old album search remains as the fallback when no artist
+# resolves (stylised names, artists absent from the service).
 # ---------------------------------------------------------------------------
+
+# Best service artist for the query: normalised exact name wins, else the
+# first (services rank by relevance) token-subset _artistMatch hit.
+sub _pickArtist {
+    my ($query, $artists) = @_;
+    my $qn = _norm($query);
+    return undef if $qn eq '';
+    my $fuzzy;
+    for my $a (@{ $artists || [] }) {
+        next unless ref $a eq 'HASH' && defined $a->{id};
+        my $n = _norm($a->{name} // '');
+        next if $n eq '';
+        return $a if $n eq $qn;
+        $fuzzy ||= $a if _artistMatch($qn, $n);
+    }
+    return $fuzzy;
+}
 
 sub _decorate {
     my ($item, $svc, $album, $candArtist) = @_;
@@ -439,6 +510,67 @@ sub _decorate {
         if defined $album->{description} && !ref $album->{description} && length $album->{description};
 }
 
+# Normalise a fetch result to an arrayref of albums, or undef.
+#
+# VERIFIED against the plugin sources (2026-07-10): all three unwrap their own
+# JSON envelope and hand us a plain ARRAY — Deezer Async.pm `artistAlbums`/
+# `search` both do `shift->{data}` then `$cb->($albums || [])`; TIDAL Async.pm
+# `artistAlbums` does `$cb->($albums || [])`. The exception is Qobuz, whose
+# callback carries the whole result hash, so we reach into `{albums}{items}`
+# ourselves. This helper keeps that reach in ONE place and tolerates an
+# envelope if a plugin ever stops unwrapping (the old Deezer search leg carried
+# a `{data}` unwrap that could no longer fire).
+#
+# undef means "not a list at all" — the callers treat that as a failed fetch
+# (short retry TTL), never as a genuinely empty discography.
+sub _albumArray {
+    my ($x) = @_;
+    return $x if ref $x eq 'ARRAY';
+    if (ref $x eq 'HASH') {
+        for my $k (qw(data items albums)) {
+            return $x->{$k} if ref $x->{$k} eq 'ARRAY';
+        }
+    }
+    return undef;
+}
+
+# ONE render loop for every adapter. $render is the service plugin's own node
+# renderer (guarded — a die here is inside an async callback); $skip optionally
+# drops entries before rendering.
+#
+# _candArtist feeds the matcher's MANDATORY artist gate, so it must never come
+# out undef: an artist-album payload may carry {artist} with a name, only an
+# {artists} list, or no artist at all (Deezer's /artist/N/albums), and Deezer's
+# own renderer autovivifies an empty {artist} as a side effect. Hence the
+# ladder ending in $artistName (the name the artist-first fetch resolved) and
+# then ''. Computed BEFORE $render runs, so a renderer's autovivification can't
+# poison it.
+#
+# Returns undef — meaning ERROR, cache briefly and retry — only when the
+# renderer failed for EVERY album. An empty arrayref means the list really was
+# empty, which the callers distinguish.
+sub _renderAlbums {
+    my ($albums, $svc, $artistName, $render, $skip) = @_;
+    my @out;
+    my $rendererFailed = 0;
+    for my $album (@{ $albums || [] }) {
+        next unless ref $album eq 'HASH' && defined $album->{id};
+        next if $skip && $skip->($album);
+        my $ref = $album->{artist} || ($album->{artists} && $album->{artists}[0]) || {};
+        my $candArtist = (ref $ref eq 'HASH' && $ref->{name}) || $artistName || '';
+        my $item = eval { $render->($album) };
+        if ($@ || ref $item ne 'HASH') {
+            $log->warn("$svc renderer failed: $@") if $@;
+            $rendererFailed = 1;
+            next;
+        }
+        _decorate($item, $svc, $album, $candArtist);
+        push @out, $item;
+    }
+    return undef if !@out && $rendererFailed;
+    return \@out;
+}
+
 sub _searchQobuz {
     my ($client, $query, $svc, $collect) = @_;
 
@@ -446,27 +578,40 @@ sub _searchQobuz {
     unless ($api) { $collect->(undef); return }
 
     $api->search(sub {
+        my $res    = shift;
+        my $artist = _pickArtist($query, $res && $res->{artists} && $res->{artists}{items});
+        unless ($artist) {
+            _dbg("Qobuz: no artist hit for '$query' - album-search fallback");
+            _qobuzAlbumSearch($api, $client, $query, $svc, $collect);
+            return;
+        }
+        $api->getArtist(sub {
+            my $r = shift;
+            my $albums = _albumArray(ref $r eq 'HASH' ? $r->{albums} : undef);
+            # A resolved artist with a raw-empty album list is a failed fetch
+            # far more often than a zero-album artist — settle as error (short
+            # retry), never a 1-day empty pin.
+            return $collect->(undef) unless $albums && @$albums;
+            $collect->(_renderQobuzAlbums($client, $albums, $svc, $artist->{name}));
+        }, $artist->{id});
+    }, lc($query), 'artists');
+}
+
+sub _qobuzAlbumSearch {
+    my ($api, $client, $query, $svc, $collect) = @_;
+    $api->search(sub {
         my $res = shift;
         return $collect->(undef) unless defined $res;
-        my @out;
-        my $rendererFailed = 0;
-        for my $album (@{ ($res && $res->{albums} && $res->{albums}{items}) || [] }) {
-            next unless ref $album eq 'HASH' && defined $album->{id};
-            next if defined $album->{streamable} && !$album->{streamable};
-            my $candArtist = ref $album->{artist} eq 'HASH' ? $album->{artist}{name} : '';
-            # Guard the foreign renderer — a die here is inside an async callback.
-            my $item = eval { Plugins::Qobuz::Plugin::_albumItem($client, $album) };
-            if ($@ || ref $item ne 'HASH') {
-                $log->warn("Qobuz _albumItem failed: $@") if $@;
-                $rendererFailed = 1;
-                next;
-            }
-            _decorate($item, $svc, $album, $candArtist);
-            push @out, $item;
-        }
-        return $collect->(undef) if !@out && $rendererFailed;
-        $collect->(\@out);
+        $collect->(_renderQobuzAlbums(
+            $client, _albumArray(ref $res eq 'HASH' ? $res->{albums} : undef) || [], $svc, undef));
     }, lc($query), 'albums');
+}
+
+sub _renderQobuzAlbums {
+    my ($client, $albums, $svc, $artistName) = @_;
+    return _renderAlbums($albums, $svc, $artistName,
+        sub { Plugins::Qobuz::Plugin::_albumItem($client, $_[0]) },
+        sub { defined $_[0]->{streamable} && !$_[0]->{streamable} });
 }
 
 sub _searchTidal {
@@ -476,26 +621,44 @@ sub _searchTidal {
     unless ($api) { $collect->(undef); return }
 
     $api->search(sub {
+        my $artists = shift;
+        my $artist  = _pickArtist($query, ref $artists eq 'ARRAY' ? $artists : []);
+        unless ($artist) {
+            _dbg("Tidal: no artist hit for '$query' - album-search fallback");
+            _tidalAlbumSearch($api, $query, $svc, $collect);
+            return;
+        }
+        # TIDAL splits a discography across filter buckets — fetch all three
+        # in parallel and merge (id-deduped; the buckets shouldn't overlap).
+        my @filters = qw(ALBUMS EPSANDSINGLES COMPILATIONS);
+        my (@albums, %seen);
+        my $left = scalar @filters;
+        for my $f (@filters) {
+            $api->artistAlbums(sub {
+                my $a = _albumArray(shift);
+                push @albums, grep { ref $_ eq 'HASH' && defined $_->{id} && !$seen{$_->{id}}++ }
+                    @{ $a || [] };
+                return if --$left;
+                return $collect->(undef) unless @albums;   # all-empty = failed fetch, retry soon
+                $collect->(_renderTidalAlbums(\@albums, $svc, $artist->{name}));
+            }, $artist->{id}, $f);
+        }
+    }, { type => 'artists', search => $query, limit => 25 });
+}
+
+sub _tidalAlbumSearch {
+    my ($api, $query, $svc, $collect) = @_;
+    $api->search(sub {
         my $albums = shift;
         return $collect->(undef) unless defined $albums;
-        my @out;
-        my $rendererFailed = 0;
-        for my $album (@{ $albums || [] }) {
-            next unless ref $album eq 'HASH' && defined $album->{id};
-            my $artistRef  = $album->{artist} || ($album->{artists} && $album->{artists}[0]) || {};
-            my $candArtist = ref $artistRef eq 'HASH' ? $artistRef->{name} : '';
-            my $item = eval { Plugins::TIDAL::Plugin::_renderAlbum($album) };
-            if ($@ || ref $item ne 'HASH') {
-                $log->warn("Tidal _renderAlbum failed: $@") if $@;
-                $rendererFailed = 1;
-                next;
-            }
-            _decorate($item, $svc, $album, $candArtist);
-            push @out, $item;
-        }
-        return $collect->(undef) if !@out && $rendererFailed;
-        $collect->(\@out);
+        $collect->(_renderTidalAlbums(_albumArray($albums) || [], $svc, undef));
     }, { type => 'albums', search => $query, limit => 50 });
+}
+
+sub _renderTidalAlbums {
+    my ($albums, $svc, $artistName) = @_;
+    return _renderAlbums($albums, $svc, $artistName,
+        sub { Plugins::TIDAL::Plugin::_renderAlbum($_[0]) });
 }
 
 sub _searchDeezer {
@@ -505,28 +668,40 @@ sub _searchDeezer {
     unless ($api) { $collect->(undef); return }
 
     $api->search(sub {
+        my $artists = shift;
+        my $artist  = _pickArtist($query, ref $artists eq 'ARRAY' ? $artists : []);
+        unless ($artist) {
+            _dbg("Deezer: no artist hit for '$query' - album-search fallback");
+            _deezerAlbumSearch($api, $query, $svc, $collect);
+            return;
+        }
+        $api->artistAlbums(sub {
+            my $albums = _albumArray(shift);
+            return $collect->(undef) unless $albums && @$albums;
+            # /artist/N/albums items carry NO artist object — Deezer's own
+            # _renderAlbum reads $item->{artist}{name} and would leave it undef,
+            # which is exactly why it takes the artist name as a 3rd arg. Pass
+            # the resolved name (verified: sub _renderAlbum($item,$addArtistToTitle,$artist)).
+            $collect->(_renderDeezerAlbums($albums, $svc, $artist->{name}));
+        }, $artist->{id});
+    }, { search => $query, type => 'artist', strict => 'off', limit => 25 });
+}
+
+sub _deezerAlbumSearch {
+    my ($api, $query, $svc, $collect) = @_;
+    $api->search(sub {
         my $albums = shift;
         return $collect->(undef) unless defined $albums;
-        $albums = $albums->{data} || $albums->{albums} || [] if ref $albums eq 'HASH';
-        return $collect->([]) unless ref $albums eq 'ARRAY';
-        my @out;
-        my $rendererFailed = 0;
-        for my $album (@$albums) {
-            next unless ref $album eq 'HASH' && defined $album->{id};
-            my $artistRef  = $album->{artist} || ($album->{artists} && $album->{artists}[0]) || {};
-            my $candArtist = ref $artistRef eq 'HASH' ? $artistRef->{name} : '';
-            my $item = eval { Plugins::Deezer::Plugin::_renderAlbum($album) };
-            if ($@ || ref $item ne 'HASH') {
-                $log->warn("Deezer _renderAlbum failed: $@") if $@;
-                $rendererFailed = 1;
-                next;
-            }
-            _decorate($item, $svc, $album, $candArtist);
-            push @out, $item;
-        }
-        return $collect->(undef) if !@out && $rendererFailed;
-        $collect->(\@out);
+        $collect->(_renderDeezerAlbums(_albumArray($albums) || [], $svc, undef));
     }, { search => $query, type => 'album', strict => 'off', limit => 50 });
+}
+
+sub _renderDeezerAlbums {
+    my ($albums, $svc, $artistName) = @_;
+    # 3rd arg backfills favorites_title when the payload has no artist object
+    # (the artist-albums endpoint) — mirrors the plugin's own use.
+    return _renderAlbums($albums, $svc, $artistName,
+        sub { Plugins::Deezer::Plugin::_renderAlbum($_[0], 0, $artistName) });
 }
 
 # ===========================================================================
@@ -534,9 +709,21 @@ sub _searchDeezer {
 # ===========================================================================
 
 sub _albumMatches {
-    my ($artistNorm, $albumNorm, $candArtist, $candTitle) = @_;
+    my ($artistNorm, $albumNorm, $candArtist, $candTitle, $albumRaw) = @_;
 
-    return 0 if length $albumNorm < 2;
+    # All-punctuation / single-char titles ("( )", "X") normalise to (near)
+    # nothing, so the standard path can't see them. Compare a punctuation-
+    # PRESERVING form instead — lowercase, whitespace stripped: "( )" == "()"
+    # but != "( ) (live)". Exact equality only (a prefix rule here would let
+    # "x" swallow "xx") and the artist gate is mandatory — a match this thin
+    # can't stand on the title alone. (Sigur Rós "( )", 2026-07-10.)
+    if (length $albumNorm < 2) {
+        my $ap = _punctNorm($albumRaw);
+        return 0 unless length $ap;
+        return 0 unless _punctNorm($candTitle) eq $ap;
+        return 0 if $artistNorm eq '';
+        return _artistMatch($artistNorm, _norm($candArtist));
+    }
     my $t = _norm($candTitle);
     return 0 if $t eq '';
 
@@ -581,6 +768,19 @@ sub _albumMatches {
 sub _stripFmt {
     my $s = shift // '';
     $s =~ s/\s+(?:ep|lp)$//;
+    return $s;
+}
+
+# Lowercased, whitespace-stripped, punctuation KEPT — only for titles _norm
+# erases (see the short-title branch in _albumMatches).
+sub _punctNorm {
+    my $s = shift // '';
+    if (!utf8::is_utf8($s) && $s =~ /[^\x00-\x7f]/) {
+        my $d = $s;
+        $s = $d if utf8::decode($d);
+    }
+    $s = lc($s);
+    $s =~ s/\s+//g;
     return $s;
 }
 

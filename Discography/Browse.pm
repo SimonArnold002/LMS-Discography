@@ -113,11 +113,7 @@ sub _headerType {
     return $_headerTypeCache = $useBasic ? 'header-basic' : 'header';
 }
 
-sub _dbg {
-    my ($msg) = @_;
-    if ($prefs->get('debug_log')) { $log->error("dsc[dbg]: $msg") }
-    else                          { $log->info("dsc: $msg") }
-}
+sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
 
 # Prose rows: Material's text-row CSS is padding:0 (flush to the viewport
 # edge), while icon/thumbnail rows start at the avatar column — ragged. Text
@@ -396,12 +392,18 @@ sub _buildList {
     # shown) but do NOT mark a release streaming-resolved.
     my $local = Plugins::Discography::Sources->localAlbums($opts->{artist_id}, $opts->{artist});
 
+    # Streaming candidate pools: read + reattached ONCE for the whole build,
+    # then filtered per release. Peeking each release separately re-copied
+    # every cached item (pools run to thousands since the artist-first fetch).
+    my $pool = Plugins::Discography::Sources->peekPool($opts->{artist});
+
     my @shown;
     for my $rg (@$rgs) {
         next if grep { $HIDE_SECONDARY{$_} } @{ $rg->{secondary} };
         next unless $show->{ _groupOf($rg) };
 
-        my $peek = Plugins::Discography::Sources->peekMatches($opts->{artist}, $rg->{title}, $local);
+        my $peek = Plugins::Discography::Sources->peekMatches(
+            $opts->{artist}, $rg->{title}, $local, $pool);
         my $visible = exists $snap->{ $rg->{mbid} }
             ? $snap->{ $rg->{mbid} }
             # Any match (local or streaming) shows; a miss only hides once

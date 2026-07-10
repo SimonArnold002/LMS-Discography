@@ -1,0 +1,78 @@
+[% PROCESS settings/header.html %]
+
+<div class="prefHead collapsableSection" id="dsc_sources_Header">[% "PLUGIN_DISCOGRAPHY_SETTINGS_SOURCES" | string %]</div>
+<div id="dsc_sources">
+
+	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_SVC_PRIORITY" desc="PLUGIN_DISCOGRAPHY_SVC_PRIORITY_DESC" %]
+	<div>
+		<div style="margin:4px 0;">
+			<input type="number" name="pref_svc_priority_local" value="[% prefs.svc_priority_local %]" min="0" max="9" style="width:3em;" />
+			<strong>[% 'PLUGIN_DISCOGRAPHY_LOCAL_LIBRARY' | string %]</strong>
+		</div>
+	[% FOREACH s IN dsc_services %]
+		<div style="margin:4px 0;">
+			<input type="number" name="pref_svc_priority_[% s.key %]" value="[% s.priority %]" min="0" max="9" style="width:3em;" />
+			<strong>[% s.name %]</strong>
+			&mdash;
+			[% IF s.installed %]<span style="color:#4caf50">[% 'PLUGIN_DISCOGRAPHY_SVC_DETECTED' | string %]</span>[% ELSE %]<span style="opacity:0.6">[% 'PLUGIN_DISCOGRAPHY_SVC_NOT_DETECTED' | string %]</span>[% END %]
+		</div>
+	[% END %]
+	</div>
+	[% END %]
+
+</div>
+
+<div class="prefHead collapsableSection" id="dsc_view_Header">[% "PLUGIN_DISCOGRAPHY_SETTINGS_VIEW" | string %]</div>
+<div id="dsc_view">
+
+	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_SORT" desc="PLUGIN_DISCOGRAPHY_SORT_DESC" %]
+		<div style="margin:4px 0;"><label><input type="radio" name="pref_sort_order" value="newest" [% IF prefs.sort_order == 'newest' %]checked="checked"[% END %] /> [% 'PLUGIN_DISCOGRAPHY_SORT_NEWEST_OPT' | string %]</label></div>
+		<div style="margin:4px 0;"><label><input type="radio" name="pref_sort_order" value="oldest" [% IF prefs.sort_order == 'oldest' %]checked="checked"[% END %] /> [% 'PLUGIN_DISCOGRAPHY_SORT_OLDEST_OPT' | string %]</label></div>
+	[% END %]
+
+	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_SHOW_TYPES" desc="PLUGIN_DISCOGRAPHY_SHOW_TYPES_DESC" %]
+	<div>
+		<input type="hidden" name="dsc_types_form" value="1" />
+	[% FOREACH t IN dsc_types %]
+		<div style="margin:4px 0;"><label><input type="checkbox" name="dsc_type_[% t.key %]" value="1" [% IF t.on %]checked="checked"[% END %] /> [% "PLUGIN_DISCOGRAPHY_${t.key}" | string %]</label></div>
+	[% END %]
+	</div>
+	[% END %]
+
+	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_HIDE_UNMATCHED" desc="PLUGIN_DISCOGRAPHY_HIDE_UNMATCHED_DESC" %]
+		<input type="checkbox" name="pref_hide_unmatched" value="1" [% IF prefs.hide_unmatched %]checked="checked"[% END %] />
+	[% END %]
+
+	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_SHOW_BIO" desc="PLUGIN_DISCOGRAPHY_SHOW_BIO_DESC" %]
+		<input type="checkbox" name="pref_show_bio" value="1" [% IF prefs.show_bio %]checked="checked"[% END %] />
+	[% END %]
+
+	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_SHOW_EXTRAS" desc="PLUGIN_DISCOGRAPHY_SHOW_EXTRAS_DESC" %]
+		<input type="checkbox" name="pref_show_library_extras" value="1" [% IF prefs.show_library_extras %]checked="checked"[% END %] />
+	[% END %]
+
+</div>
+
+<div class="prefHead collapsableSection" id="dsc_detail_Header">[% "PLUGIN_DISCOGRAPHY_SETTINGS_DETAIL" | string %]</div>
+<div id="dsc_detail">
+
+	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_SHOW_ALL_VERSIONS" desc="PLUGIN_DISCOGRAPHY_SHOW_ALL_VERSIONS_DESC" %]
+		<input type="checkbox" name="pref_show_all_versions" value="1" [% IF prefs.show_all_versions %]checked="checked"[% END %] />
+	[% END %]
+
+</div>
+
+<div class="prefHead collapsableSection" id="dsc_integration_Header">[% "PLUGIN_DISCOGRAPHY_SETTINGS_INTEGRATION" | string %]</div>
+<div id="dsc_integration">
+
+	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_MATERIAL_ACTION" desc="PLUGIN_DISCOGRAPHY_MATERIAL_ACTION_DESC" %]
+		<input type="checkbox" name="pref_material_action" value="1" [% IF prefs.material_action %]checked="checked"[% END %] />
+	[% END %]
+
+	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_DEBUG_LOG" desc="PLUGIN_DISCOGRAPHY_DEBUG_LOG_DESC" %]
+		<input type="checkbox" name="pref_debug_log" value="1" [% IF prefs.debug_log %]checked="checked"[% END %] />
+	[% END %]
+
+</div>
+
+[% PROCESS settings/footer.html %]

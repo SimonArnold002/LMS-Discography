@@ -41,6 +41,18 @@ my $log = Slim::Utils::Log->addLogCategory({
 
 my $prefs = preferences('plugin.discography');
 
+# Canonical debug sink for the whole plugin — API/Browse/Sources all delegate
+# here (fleet pattern; PFR and LBF do the same). The debug_log pref mirrors to
+# server.log at ERROR level, visible without touching Settings -> Logging:
+#   ["pref","plugin.discography:debug_log","1"]
+# OFF logs at INFO, hidden at the default WARN. Resolution failures MUST go
+# through this — "artist not found" at info level is undiagnosable in the field.
+sub dbg {
+    my ($msg) = @_;
+    if ($prefs->get('debug_log')) { $log->error("dsc[dbg]: $msg") }
+    else                          { $log->info("dsc: $msg") }
+}
+
 # Canonical JSON writer for the shared actions.json (stable output for diffs).
 my $JSON = JSON::XS->new->utf8->canonical->pretty;
 
@@ -86,6 +98,11 @@ $prefs->init({
 
 sub initPlugin {
     my $class = shift;
+
+    if (main::WEBUI) {
+        require Plugins::Discography::Settings;
+        Plugins::Discography::Settings->new();
+    }
 
     require Plugins::Discography::API;
     require Plugins::Discography::Sources;

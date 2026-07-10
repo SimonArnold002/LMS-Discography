@@ -28,6 +28,10 @@ my $log   = logger('plugin.discography');
 my $prefs = preferences('plugin.discography');
 my $cache = Slim::Utils::Cache->new();
 
+# MB resolution failures MUST go through this — "artist not found" with only
+# info-level logging is undiagnosable in the field (Better Oblivion, 2026-07-09).
+sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
+
 use constant MB_BASE_URL     => 'https://musicbrainz.org/ws/2/';
 use constant CAA_RG_BASE_URL => 'https://coverartarchive.org/release-group/';
 
@@ -85,7 +89,7 @@ sub getArtistMbid {
             $c ? $c->musicbrainz_id : undef;
         };
         if ($mbid && $mbid =~ $UUID_RE) {
-            $log->info("artist mbid from library tag: $mbid");
+            _dbg("artist mbid from library tag: $mbid");
             $onDone->(lc $mbid);
             return;
         }
@@ -107,6 +111,7 @@ sub _artistMbidByName {
     my $cacheKey = 'dsc:mbid:' . lc $name;
     utf8::encode($cacheKey) if utf8::is_utf8($cacheKey);
     if (defined(my $c = $cache->get($cacheKey))) {
+        _dbg("artist mbid cache hit '$name': " . ($c || 'NOT-FOUND sentinel (retried daily)'));
         $onDone->($c || undef);
         return;
     }
@@ -123,17 +128,26 @@ sub _artistMbidByName {
             my $resp = shift;
             my $data = eval { from_json($resp->content) };
             my $mbid = '';
+            my $why  = 'no results';
             if (!$@ && ref $data eq 'HASH' && ref $data->{artists} eq 'ARRAY' && @{ $data->{artists} }) {
                 my $a = $data->{artists}[0];
-                $mbid = lc $a->{id} if $a->{id} && ($a->{score} // 0) >= 90;
+                if ($a->{id} && ($a->{score} // 0) >= 90) {
+                    $mbid = lc $a->{id};
+                }
+                else {
+                    $why = "top hit '" . ($a->{name} // '?') . "' score " . ($a->{score} // '?') . ' < 90';
+                }
             }
+            elsif ($@) { $why = 'unparseable MB response' }
             eval { $cache->set($cacheKey, $mbid, $mbid ? MBID_FOUND_TTL : MBID_EMPTY_TTL); 1 }
                 or $log->warn("artist-mbid cache set failed: $@");
-            $log->info("artist '$name' => " . ($mbid || 'no match'));
+            _dbg("MB artist search '$name' => " . ($mbid || "NO MATCH ($why; cached 1d)"));
             $onDone->($mbid || undef);
         },
         sub {
-            $log->error("MB artist search failed: " . (shift->error // '?'));
+            my $err = shift->error // '?';
+            $log->error("MB artist search failed: $err");
+            _dbg("MB artist search '$name' => HTTP error ($err; not cached, retry works)");
             $onDone->(undef);
         },
         { timeout => 12 }
@@ -176,6 +190,7 @@ sub getReleaseGroups {
                 my $resp = shift;
                 my $data = eval { from_json($resp->content) };
                 if ($@ || ref $data ne 'HASH' || ref $data->{'release-groups'} ne 'ARRAY') {
+                    _dbg("MB release-group page unparseable for $mbid (offset $offset)");
                     $onError->('bad MB response'); return;
                 }
 
