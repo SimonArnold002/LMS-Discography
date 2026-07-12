@@ -22,7 +22,7 @@ sub prefs {
     return ($prefs, qw(
         svc_priority_local svc_priority_qobuz svc_priority_tidal svc_priority_deezer
         sort_order show_types hide_unmatched show_bio show_library_extras
-        show_all_versions material_action debug_log
+        show_all_versions material_action mb_base_url debug_log
     ));
 }
 
@@ -48,6 +48,21 @@ sub handler {
         my $so = $params->{pref_sort_order};
         unless (defined $so && ($so eq 'newest' || $so eq 'oldest')) {
             $params->{pref_sort_order} = $prefs->get('sort_order') // 'newest';
+        }
+
+        # MusicBrainz base URL: trim; a blank field STAYS blank so _mbBase can
+        # auto-detect a same-host mirror (and fall back to the public API when
+        # none is found). Storing the public URL on blank would defeat that — the
+        # settings.html placeholder communicates the default in the empty box.
+        # _mbBase normalises the trailing slash at read time.
+        # Guard: a scheme-less entry (e.g. a bare mirror host "your-server:5000/ws/2")
+        # is unfetchable and would fail EVERY MB lookup silently. Prepend http://
+        # (the usual local-mirror scheme; type https:// yourself for a TLS mirror)
+        # so a bare host still works.
+        if (exists $params->{pref_mb_base_url}) {
+            (my $u = $params->{pref_mb_base_url}) =~ s/^\s+|\s+$//g;
+            $u = "http://$u" if length $u && $u !~ m{^https?://}i;
+            $params->{pref_mb_base_url} = $u;
         }
 
         # Release-type checkboxes -> the show_types CSV. Unchecked boxes don't

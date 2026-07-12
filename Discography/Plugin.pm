@@ -26,6 +26,7 @@ use JSON::XS;
 use File::Path ();
 use File::Spec;
 
+use Slim::Control::Request;
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use Slim::Utils::PluginManager;
@@ -92,6 +93,22 @@ $prefs->init({
     # bio and grid-capable tiles are mutually exclusive; this picks which.
     show_bio => 1,
 
+    # Seconds the FIRST render waits for MusicBrainz to classify this artist's
+    # release-groups (the bootleg filter) before rendering unfiltered. One MB
+    # request per 100 releases: a normal artist resolves in one, The Beatles
+    # need 33. The pass keeps running in the background and lands in the cache
+    # either way. 0 = never wait.
+    official_wait => 15,
+
+    # MusicBrainz web-service base. Default BLANK (not the public URL): a blank
+    # base is what lets API::autodetectMirror find a same-host musicbrainz-docker
+    # mirror at startup and, failing that, fall back to the public API — a base
+    # pinned to the public URL here would be non-blank and the auto-detect (which
+    # only runs on a blank base) would never fire. Point it at a mirror manually
+    # (e.g. http://your-server:5000/ws/2/) to override; API.pm drops the 1 req/s
+    # courtesy gap automatically for any non-musicbrainz.org host.
+    mb_base_url => '',
+
     # Opt-in extra logging.
     debug_log => 0,
 });
@@ -116,7 +133,46 @@ sub initPlugin {
         weight => 10,
     );
 
+    # HTTP-triggerable cache clear — bust an artist's cached MusicBrainz data
+    # (resolution mbid + '' miss sentinel, release groups, bootleg map, band
+    # members, bio, streaming candidates) WITHOUT the Material UI. This is the
+    # field escape hatch: a miss pinned while the MB mirror's search index was
+    # unbuilt used to trap an artist with no way out. Call it over jsonrpc:
+    #   ["discography","clearcache","artist:Alison Krauss"]
+    #   ["discography","clearcache","artist_id:38975"]   (resolves the name)
+    #   ["discography","clearcache","mbid:<artist-mbid>"] (also clears mbid-keyed)
+    Slim::Control::Request::addDispatch(
+        ['discography', 'clearcache'], [0, 1, 1, \&_cliClearCache]);
+
     return;
+}
+
+# CLI: ["discography","clearcache", ...tags]. Clears the named artist's cached
+# MB data + streaming candidates and reports what it touched.
+sub _cliClearCache {
+    my $request = shift;
+
+    my $artist   = $request->getParam('artist');
+    my $mbid     = $request->getParam('mbid');
+    my $artistId = $request->getParam('artist_id');
+
+    if ((!defined $artist || !length $artist) && $artistId) {
+        require Slim::Schema;
+        my $c = eval { Slim::Schema->find('Contributor', $artistId) };
+        $artist = $c->name if $c && $c->name;
+    }
+
+    my $cleared = Plugins::Discography::API->clearArtistCache(
+        name => $artist, mbid => $mbid);
+    if (defined $artist && length $artist) {
+        Plugins::Discography::Sources->clearCandidates($artist);
+        push @$cleared, 'candidates';
+    }
+
+    $request->addResult('artist',  $artist  // '');
+    $request->addResult('mbid',    $mbid    // '');
+    $request->addResult('cleared', join(',', @$cleared) || 'nothing');
+    $request->setStatusDone();
 }
 
 # Runs after all plugins have initialised, so Material Skin is available to
@@ -136,6 +192,12 @@ sub postinitPlugin {
                 or $log->error("dsc: failed to clear Material custom action: $@");
         }
     }
+
+    # If no MusicBrainz base is configured, probe for a same-host mirror once so a
+    # musicbrainz-docker instance on this machine is used with zero config. Async,
+    # no-op when a base is set or a recent probe result is cached (see API).
+    eval { Plugins::Discography::API->autodetectMirror(); 1 }
+        or $log->error("dsc: MusicBrainz mirror auto-detect failed: $@");
 
     return;
 }

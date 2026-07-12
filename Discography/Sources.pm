@@ -42,10 +42,12 @@ use constant SVC_TIMEOUT    => 20;          # per-service fetch watchdog (s).
                                             # bucket pulls). The old 8s was
                                             # sized for a single 50-item search.
 use constant MAX_PER_SVC    => 4;           # editions shown per service
-use constant CAND_CACHE_V   => '3';         # bump on shape/matcher changes
+use constant CAND_CACHE_V   => '4';         # bump on shape/matcher changes
                                             # v2: flush octet-query poisoned pools
                                             # v3: artist-first pools (search-cap
                                             #     lottery dropped e.g. Valtari)
+                                            # v4: candidates carry _year (needed
+                                            #     by the same-title rival rule)
 
 # ---------------------------------------------------------------------------
 # Adapters (ported from PFR; Qobuz/Tidal/Deezer only — no Bandcamp by scope)
@@ -140,16 +142,47 @@ sub localAlbums {
     }
     return [] unless $artistId;
 
+    # PERFORMANCE roles only — the artist must PLAY on the album, not merely
+    # have written a song that appears on it. The default `albums artist_id:`
+    # query spans ALL contributor roles (LMS Queries.pm: contributorRoles()),
+    # so a covers/compilation album drags in every writer: under Bob Dylan it
+    # surfaced Richard Hawley, George Harrison, Ladysmith Black Mambazo — albums
+    # Dylan only WROTE a track on (Simon, 2026-07-10). role_id restricts the
+    # contributor_album join to these roles (LMS adds ARTIST automatically for
+    # ALBUMARTIST when the artists list isn't unified).
+    #   ARTIST / ALBUMARTIST -> solo + primary credits
+    #   BAND / TRACKARTIST   -> band membership + guest performances (kept:
+    #                           "appears on" is fine per the user)
+    # KNOWN LIMIT: a band album whose member is tagged ONLY as COMPOSER (no
+    # performer credit) drops too — e.g. Marc Almond is COMPOSER-only on Soft
+    # Cell's "Non-Stop Erotic Cabaret" in Simon's library, indistinguishable
+    # from a write-only cover credit. Separating those needs a MusicBrainz
+    # "member of band" lookup (future); no library signal exists (track-fraction
+    # fails: that album tags Almond on just 2/18 tracks).
     my $req = eval {
-        Slim::Control::Request::executeRequest(undef, ['albums', 0, 500, "artist_id:$artistId", 'tags:ljya']);
+        Slim::Control::Request::executeRequest(undef,
+            ['albums', 0, 500, "artist_id:$artistId",
+             'role_id:ARTIST,ALBUMARTIST,BAND,TRACKARTIST', 'tags:ljya']);
     };
     return [] unless $req;
+
+    # MUSICBRAINZ_ALBUMID off the tags, read straight from the schema: the
+    # `albums` CLI query exposes no MusicBrainz tag (verified against LMS 9.0
+    # Queries.pm), but Slim::Schema::Album carries musicbrainz_id. It holds a
+    # RELEASE mbid, which API::peekReleaseMap turns into a release-GROUP mbid —
+    # an exact identity match, no title matching. Guarded: an untagged library
+    # or a schema change just falls through to the matcher.
+    my $mbidOf = sub {
+        my $albumId = shift;
+        return eval { require Slim::Schema; Slim::Schema->find('Album', $albumId)->musicbrainz_id } || undef;
+    };
 
     my @out;
     for my $e (@{ $req->getResult('albums_loop') || [] }) {
         my $id    = $e->{id}    or next;
         my $title = $e->{album} // next;
         my $img   = $e->{artwork_track_id} ? "/music/$e->{artwork_track_id}/cover" : undef;
+        my $mbid  = $mbidOf->($id);
         push @out, {
             name        => $title,
             type        => 'playlist',
@@ -167,11 +200,65 @@ sub localAlbums {
             _albumid    => $id,
             _cover      => $img,
             _year       => $e->{year},
+            _mbid       => ($mbid ? lc $mbid : undef),
             _candTitle  => $title,
             _candArtist => $e->{artist} // $artist,
         };
     }
-    _dbg("local albums for artist_id=$artistId: " . scalar @out);
+    _dbg("local albums for artist_id=$artistId: " . scalar @out
+        . (@out ? ' | ' . join('; ', map {
+              ($_->{_candTitle} // '?') . ' mbid=' . ($_->{_mbid} // 'NONE')
+          } @out) : ''));
+    return \@out;
+}
+
+# Resolve a MusicBrainz band to a library Contributor id: MB id (exact) first,
+# then a normalised name match (same discipline as localAlbums' name path — a
+# fuzzy `artists search:` must not adopt the wrong contributor).
+sub _bandContributorId {
+    my ($mbid, $name) = @_;
+    if ($mbid) {
+        my $c = eval {
+            require Slim::Schema;
+            Slim::Schema->rs('Contributor')->search({ musicbrainz_id => $mbid })->first;
+        };
+        return $c->id if $c;
+    }
+    return undef unless defined $name && length $name;
+    my $an  = _norm($name);
+    my $enc = $name;
+    utf8::encode($enc) if utf8::is_utf8($enc);
+    my $req = eval { Slim::Control::Request::executeRequest(undef, ['artists', 0, 20, "search:$enc"]) };
+    if ($req) {
+        for my $e (@{ $req->getResult('artists_loop') || [] }) {
+            next unless defined $e->{artist};
+            return $e->{id} if _norm($e->{artist}) eq $an;
+        }
+    }
+    return undef;
+}
+
+# Library albums by the BANDS an artist is a member of (API::peekBands feeds the
+# list). Each band's OWN album-artist records via localAlbums — so a member
+# tagged COMPOSER-only on their band's album (the case the role filter drops)
+# comes back through the band, WITHOUT the write-only chaff (the band IS the
+# album artist). $exclude {album_id=>1} skips albums already shown for the
+# browsed artist; it is updated as we go so two bands can't double-list a split.
+sub bandAlbums {
+    my ($class, $bands, $exclude) = @_;
+    return [] unless $bands && @$bands;
+    $exclude ||= {};
+    my @out;
+    for my $b (@$bands) {
+        my $id = _bandContributorId($b->{mbid}, $b->{name});
+        next unless $id;
+        for my $a (@{ $class->localAlbums($id, $b->{name}) }) {
+            next if $exclude->{ $a->{_albumid} }++;
+            $a->{_band} = $b->{name};
+            push @out, $a;
+        }
+    }
+    _dbg("band albums: " . scalar(@out) . " from " . scalar(@$bands) . " band(s)");
     return \@out;
 }
 
@@ -337,22 +424,67 @@ sub clearCandidates {
 # dedupe + cap; streaming items get the ListenLater favurl handshake (Local
 # ones don't — there's no service scheme to hand over).
 sub matchesFor {
-    my ($class, $bySvc, $artist, $albumTitle, $local) = @_;
+    my ($class, $bySvc, $artist, $albumTitle, $local, $rgMbid, $relMap, $rivals, $opt) = @_;
+    $opt ||= {};
 
-    my $artistNorm = _norm($artist);
-    my $albumNorm  = _norm($albumTitle);
+    # Whole-list builds thread precomputed invariants in via $opt: the artist
+    # norm and the source order are IDENTICAL for every release group, yet
+    # orderedSources() reads prefs + builds + sorts an array on EACH call and
+    # _norm folds Unicode — recomputing both per-RG was pure waste (a big artist
+    # calls matchesFor once per release group). The album norm is just the RG
+    # title's, which the caller already normed for the rivals lookup. Each falls
+    # back to computing here for standalone callers (detail page, unit tests).
+    my $artistNorm = defined $opt->{artistNorm} ? $opt->{artistNorm} : _norm($artist);
+    my $albumNorm  = defined $opt->{albumNorm}  ? $opt->{albumNorm}  : _norm($albumTitle);
+    my $sources    = $opt->{sources} || [ orderedSources() ];
+
+    # Candidate index (peekPool builds it): STREAMING pools only test the subset
+    # sharing a first token with this release group, not the whole pool. Local
+    # pools are small AND match by release MBID (not just title), so they always
+    # full-scan. A short (<2 char) album norm matches via the raw-punctuation
+    # branch (no first token) -> full-scan too. Empty @lkeys => full scan.
+    my $index = $opt->{index};
+    my @lkeys = ($index && length $albumNorm >= 2) ? _titleKeys($albumNorm, $artistNorm) : ();
 
     my %all = %{ $bySvc || {} };
     $all{Local} = $local if $local && @$local;
 
     my @sections;
-    for my $a (orderedSources()) {
+    for my $a (@$sources) {
         my $svc   = $a->{name};
         my $cands = $all{$svc} or next;
 
+        # Narrow to the index subset for a streaming service when we can.
+        my $iter = $cands;
+        if (!$a->{local} && @lkeys && (my $idx = $index->{$svc})) {
+            my (%seenIt, @sub);
+            for my $key (@lkeys) {
+                push @sub, grep { !$seenIt{$_}++ } @{ $idx->{$key} || [] };
+            }
+            $iter = \@sub;
+        }
+
         my (%seen, @matched);
-        for my $it (@$cands) {
-            next unless _albumMatches($artistNorm, $albumNorm, $it->{_candArtist}, $it->{_candTitle}, $albumTitle);
+        for my $it (@$iter) {
+            # Identity (tier 0) is never second-guessed by the rival rule: an
+            # MBID says which group this IS.
+            unless (_mbidMatch($it, $rgMbid, $relMap)) {
+                # A LOCAL candidate was fetched by artist_id + performance role,
+                # so the DB join ALREADY proves the browsed artist performs on
+                # this album. The `albums` query then collapses a multi-artist
+                # ALBUMARTIST to ONE display string (Robert Plant + Alison Krauss
+                # -> "Robert Plant"), which would wrongly fail _albumMatches' MANDATORY
+                # artist gate for a co-credited / band-fronted owned album. Trust
+                # the join: gate Local on the BROWSED artist (title must still
+                # match). _candArtist is left untouched so Browse's "Appearances"
+                # split still sees the true album-artist. (Simon: Raising Sand,
+                # 2026-07-11.)
+                my $gateArtist = $a->{local} ? $artist : $it->{_candArtist};
+                next unless _albumMatches($artistNorm, $albumNorm, $gateArtist, $it->{_candTitle}, $albumTitle);
+                # Several same-title groups matched it; only its owner keeps it.
+                next if $rivals && @$rivals > 1 && $rgMbid
+                     && _rivalOwner($it->{_year}, $rivals) ne $rgMbid;
+            }
             my $k = join('|', $it->{name} // '', $it->{line2} // '');
             next if $seen{$k}++;
             my %item = %$it;   # per-release copy — never decorate the shared cache entry
@@ -382,7 +514,7 @@ sub matchesFor {
 # every RG the caller passes (including type-filtered ones) so a hidden
 # section can't resurface its matches as "unmatched".
 sub claimedLocalIds {
-    my ($class, $rgs, $artist, $local) = @_;
+    my ($class, $rgs, $artist, $local, $relMap) = @_;
     my %claimed;
     return \%claimed unless $local && @$local;
     my $artistNorm = _norm($artist);
@@ -390,8 +522,13 @@ sub claimedLocalIds {
         my $albumNorm = _norm($rg->{title});
         for my $it (@$local) {
             next if $claimed{ $it->{_albumid} };
+            # $local candidates are ALL Local (join-proven for the browsed
+            # artist), so gate on $artist not the collapsed _candArtist — same
+            # co-credit reasoning as matchesFor. Keeps a co-credited owned album
+            # from leaking into "Also in your library" when its tile matched.
             $claimed{ $it->{_albumid} } = 1
-                if _albumMatches($artistNorm, $albumNorm, $it->{_candArtist}, $it->{_candTitle}, $rg->{title});
+                if _mbidMatch($it, $rg->{mbid}, $relMap)
+                || _albumMatches($artistNorm, $albumNorm, $artist, $it->{_candTitle}, $rg->{title});
         }
     }
     return \%claimed;
@@ -405,16 +542,28 @@ sub claimedLocalIds {
 # the result to peekMatches.
 sub peekPool {
     my ($class, $artist) = @_;
-    return { bySvc => {}, resolved => 0 }
+    return { bySvc => {}, resolved => 0, index => {} }
         unless defined $artist && length $artist;
 
-    my (%bySvc, $resolved);
+    my $artistNorm = _norm($artist);
+    my (%bySvc, %index, $resolved);
     for my $a (orderedAdapters()) {
         my $c = $cache->get(_candKey($a->{name}, $artist)) or next;
         $resolved = 1;
-        $bySvc{ $a->{name} } = _reattach($a->{name}, $c->{items});
+        my $items = _reattach($a->{name}, $c->{items});
+        $bySvc{ $a->{name} } = $items;
+
+        # First-token title index for this service's pool, built ONCE per render
+        # (matchesFor runs per release group; without this it re-scanned the whole
+        # pool each time). A candidate lands under every key its title yields.
+        my %idx;
+        for my $it (@$items) {
+            push @{ $idx{$_} }, $it
+                for _titleKeys(_norm($it->{_candTitle}), $artistNorm);
+        }
+        $index{ $a->{name} } = \%idx;
     }
-    return { bySvc => \%bySvc, resolved => $resolved ? 1 : 0 };
+    return { bySvc => \%bySvc, resolved => $resolved ? 1 : 0, index => \%index };
 }
 
 # Cache-only variant for sync paths (list-tile badges): never searches, never
@@ -428,13 +577,13 @@ sub peekPool {
 # for one artist. matchesFor copies matched items before decorating them, so
 # sharing the pool arrays across releases is safe.
 sub peekMatches {
-    my ($class, $artist, $albumTitle, $local, $pool) = @_;
+    my ($class, $artist, $albumTitle, $local, $pool, $rgMbid, $relMap, $rivals, $opt) = @_;
     return { sections => [], resolved => 0 }
         unless defined $artist && length $artist;
 
     $pool ||= $class->peekPool($artist);
     return {
-        sections => $class->matchesFor($pool->{bySvc}, $artist, $albumTitle, $local),
+        sections => $class->matchesFor($pool->{bySvc}, $artist, $albumTitle, $local, $rgMbid, $relMap, $rivals, $opt),
         resolved => $pool->{resolved},
     };
 }
@@ -497,6 +646,23 @@ sub _pickArtist {
     return $fuzzy;
 }
 
+# Candidate release year, off the RAW service album (the plugins' rendered items
+# drop it). Field names verified in each plugin's source, ORIGINAL release date
+# first — a remaster's stream date would point at the wrong release-group:
+#   Qobuz  release_date_original -> release_date_stream -> year
+#   TIDAL  releaseDate
+#   Deezer release_date
+# Any 4-digit leading year wins; nothing sane -> undef (caller must cope).
+sub _candYear {
+    my ($album) = @_;
+    for my $f (qw(release_date_original releaseDate release_date release_date_stream year date)) {
+        my $v = $album->{$f};
+        next unless defined $v && !ref $v;
+        return $1 if $v =~ /^(\d{4})/;
+    }
+    return undef;
+}
+
 sub _decorate {
     my ($item, $svc, $album, $candArtist) = @_;
     $item->{_svc}        = $svc;
@@ -504,6 +670,7 @@ sub _decorate {
     $item->{_cover}      = $item->{image} if defined $item->{image} && !ref $item->{image};
     $item->{_candTitle}  = $album->{title};
     $item->{_candArtist} = $candArtist;
+    $item->{_year}       = _candYear($album);
     # Qobuz search albums sometimes carry an editorial description — kept as a
     # review fallback for the detail page (MAI wins when it has one).
     $item->{_desc}       = $album->{description}
@@ -704,6 +871,56 @@ sub _renderDeezerAlbums {
         sub { Plugins::Deezer::Plugin::_renderAlbum($_[0], 0, $artistName) });
 }
 
+# Same-title release-groups ("rivals") compete for one candidate.
+#
+# The Beatles have FOUR official release-groups whose titles normalise to the
+# artist name — the 1968 album plus compilations from 1967/1983/1988 — so the
+# streaming album titled "The Beatles" title-matches all four and the White
+# Album's artwork appeared four times (Simon, 2026-07-10). A candidate belongs
+# to exactly ONE release group; this decides which.
+#
+# DELIBERATELY NOT nearest-year. Streaming catalogues date a remaster by its
+# REISSUE year, so a 2009 White Album remaster is nearer 1988 than 1968 and
+# nearest-year would hand it to the compilation — worse than the bug. The rule
+# is therefore conservative:
+#   * candidate year EXACTLY equals a rival's first-release year -> that rival
+#     (a service listing the 1988 compilation as 1988 gets it right);
+#   * otherwise the EARLIEST rival wins. A self-titled album is the original;
+#     the later same-named records are compilations of it.
+# An undated or reissue-dated candidate therefore lands on the real album, and
+# the compilations show nothing rather than a wrong thing.
+#
+# $rivals must be pre-sorted deterministically (see Browse::_rivalsByTitle):
+# dated ascending, undated last, mbid as the final tiebreak — the whole feed's
+# item_id walk depends on this being stable across rebuilds.
+sub _rivalOwner {
+    my ($candYear, $rivals) = @_;
+    if ($candYear) {
+        for my $r (@$rivals) {
+            return $r->{mbid} if $r->{year} && $r->{year} == $candYear;
+        }
+    }
+    return $rivals->[0]{mbid};
+}
+
+# Tier 0 — EXACT IDENTITY, ahead of every title rule and immune to all of them.
+# A library album tagged MUSICBRAINZ_ALBUMID carries a RELEASE mbid; MB models
+# reissues, box sets and bonus-disc editions as releases under ONE release
+# group, so the release->group map (API::peekReleaseMap, free from the bootleg
+# browse) answers "is this album this tile?" with no string comparison at all.
+# This is what makes "The Beatles and Esher Demos" resolve to the White Album:
+# the titles share nothing the matcher can use, but they are the same group.
+# Some taggers write the GROUP mbid instead, so accept a direct hit too.
+# Streaming candidates carry no MBID -> they always fall through to the matcher.
+sub _mbidMatch {
+    my ($it, $rgMbid, $relMap) = @_;
+    my $mb = $it->{_mbid} or return 0;
+    return 0 unless $rgMbid;
+    return 1 if $mb eq $rgMbid;
+    return 1 if $relMap && defined $relMap->{$mb} && $relMap->{$mb} eq $rgMbid;
+    return 0;
+}
+
 # ===========================================================================
 # Matching (verbatim from the Pitchfork/ListenBrainz plugins — keep in sync)
 # ===========================================================================
@@ -726,6 +943,24 @@ sub _albumMatches {
     }
     my $t = _norm($candTitle);
     return 0 if $t eq '';
+
+    # SELF-TITLED releases ("The Beatles", "Weezer") match on the EXACT title
+    # only. Every rule below reads "<album> <extra>" as the same album carrying
+    # an edition suffix — true for "(Deluxe)", catastrophic when the album
+    # title IS the artist name, where it swallows the whole discography: the
+    # "The Beatles" release-group matched "The Beatles 1962-1966" (the Red
+    # album), "The Beatles 1967-1970" (Blue) and "The Beatles Anthology 1".
+    # Via claimedLocalIds it also swallowed the user's own copies of those
+    # albums, hiding them from the library-extras section. Bracketed decoration
+    # is already stripped by _norm, so the White Album still matches its
+    # "The Beatles (White Album)" / "(Remastered)" listings.
+    # Residual, NOT fixable on title alone: MusicBrainz has four release-groups
+    # titled "The Beatles", so one candidate legitimately matches them all.
+    # (Simon's library, 2026-07-10.)
+    if (length($artistNorm) && $albumNorm eq $artistNorm) {
+        return 0 unless $t eq $albumNorm;
+        return _artistMatch($artistNorm, _norm($candArtist));
+    }
 
     my $ok = ($t eq $albumNorm || index($t, "$albumNorm ") == 0);
 
@@ -797,6 +1032,35 @@ sub _asciiNorm {
     $s =~ s/^\s+//; $s =~ s/\s+$//;
     $s =~ s/\s+/ /g;
     return $s;
+}
+
+# First-token index keys for an already-NORMALISED title — a SUPERSET pre-filter
+# so a release group only tests candidates that COULD match it. Testing every
+# streaming candidate (pools run to hundreds) against every release group was the
+# render's R x C matcher cost. NOT part of the shared matcher — it only decides
+# which candidates reach the unchanged _albumMatches, so it can never change a
+# result as long as it's a proper superset. Every _albumMatches positive path
+# leaves the two normalised titles sharing a first token in AT LEAST ONE form:
+#   - the norm itself       (exact / trailing-extra prefix / _stripFmt: _stripFmt
+#                            only trims a trailing "ep"/"lp", so the front is kept)
+#   - _asciiNorm(norm)      (an accented FIRST token spelled differently per side)
+#   - artist-prefix stripped ("<artist> <album>" present on one side only)
+# so indexing candidates under all three and looking a release group up under all
+# three cannot miss a real match. Short (<2 char) normalised titles match via the
+# raw-punctuation branch instead and are full-scanned at the call site.
+sub _titleKeys {
+    my ($norm, $artistNorm) = @_;
+    return () unless defined $norm && length $norm;
+    my %k;
+    $k{$1} = 1 if $norm =~ /^(\S+)/;
+    my $a = _asciiNorm($norm);
+    $k{$1} = 1 if length $a && $a =~ /^(\S+)/;
+    if (defined $artistNorm && length $artistNorm) {
+        my $p = _stripArtistPrefix($norm, $artistNorm);
+        $k{$1} = 1 if $p ne $norm && length $p && $p =~ /^(\S+)/;
+    }
+    delete $k{''};
+    return keys %k;
 }
 
 sub _artistMatch {

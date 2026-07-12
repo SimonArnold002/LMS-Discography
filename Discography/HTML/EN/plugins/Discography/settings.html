@@ -69,6 +69,10 @@
 		<input type="checkbox" name="pref_material_action" value="1" [% IF prefs.material_action %]checked="checked"[% END %] />
 	[% END %]
 
+	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_MB_BASE_URL" desc="PLUGIN_DISCOGRAPHY_MB_BASE_URL_DESC" %]
+		<input type="text" name="pref_mb_base_url" value="[% prefs.mb_base_url %]" size="48" placeholder="https://musicbrainz.org/ws/2/" />
+	[% END %]
+
 	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_DEBUG_LOG" desc="PLUGIN_DISCOGRAPHY_DEBUG_LOG_DESC" %]
 		<input type="checkbox" name="pref_debug_log" value="1" [% IF prefs.debug_log %]checked="checked"[% END %] />
 	[% END %]
