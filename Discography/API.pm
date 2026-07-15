@@ -228,10 +228,19 @@ sub _artistMbidByName {
         return;
     }
 
-    my $q = 'artist:"' . $name . '"';
-    utf8::encode($q) if utf8::is_utf8($q);
-    (my $safe = $q) =~ s/([^A-Za-z0-9])/sprintf("%%%02X",ord($1))/ge;
-    my $query = 'artist?query=' . $safe . '&fmt=json&limit=1';
+    # Fielded exact-phrase query. The 'artist' field searches the NAME only —
+    # an artist reachable solely through an MB ALIAS ("The Oh Sees" -> Osees)
+    # returns 0 results there, so a second stage retries the 'alias' field
+    # (verified live: artist:"The Oh Sees" = 0, alias:"The Oh Sees" = score
+    # 100). Alias runs ONLY when the name field found nothing acceptable, so
+    # it can never change a resolution that works today.
+    my $mkQuery = sub {
+        my ($field) = @_;
+        my $q = $field . ':"' . $name . '"';
+        utf8::encode($q) if utf8::is_utf8($q);
+        (my $safe = $q) =~ s/([^A-Za-z0-9])/sprintf("%%%02X",ord($1))/ge;
+        return 'artist?query=' . $safe . '&fmt=json&limit=1';
+    };
 
     # The configured base is a mirror when it is NOT the public host; only then is
     # the public retry available (and only once, guarded by $isFallback).
@@ -250,9 +259,10 @@ sub _artistMbidByName {
     # memory. $self keeps the CV alive across the async gap (the in-flight callbacks
     # hold it) and frees when they finish. (Ported from LBF 0.9.95.)
     my $run = sub {
-        my ($self, $base, $isFallback) = @_;
-        my $url = $base . $query;
-        $log->info("resolving artist name to MBID: $name" . ($isFallback ? ' (public fallback)' : ''));
+        my ($self, $base, $isFallback, $field) = @_;
+        my $url = $base . $mkQuery->($field);
+        $log->info("resolving artist name to MBID: $name ($field field"
+            . ($isFallback ? ', public fallback' : '') . ')');
 
         Slim::Networking::SimpleAsyncHTTP->new(
             sub {
@@ -264,8 +274,8 @@ sub _artistMbidByName {
                 # Zero results on a mirror = probable unbuilt search index -> retry
                 # the public API once before caching a miss.
                 if ($arts && !@$arts && $mirror && !$isFallback) {
-                    _dbg("MB artist search '$name' => 0 results on mirror; retrying public API");
-                    $self->($self, MB_DEFAULT_BASE_URL, 1);
+                    _dbg("MB artist search '$name' ($field) => 0 results on mirror; retrying public API");
+                    $self->($self, MB_DEFAULT_BASE_URL, 1, $field);
                     return;
                 }
 
@@ -281,7 +291,16 @@ sub _artistMbidByName {
                     }
                 }
                 elsif ($@) { $why = 'unparseable MB response' }
-                _dbg("MB artist search '$name' => " . ($mbid || "NO MATCH ($why; cached 1d)")
+
+                # Name field found nothing acceptable -> ONE alias-field pass
+                # (same base/fallback state; the mirror-0-results branch above
+                # still gives the alias pass its own public retry).
+                if (!$mbid && $field eq 'artist') {
+                    _dbg("MB artist search '$name' => $why on name field; retrying alias field");
+                    $self->($self, $base, $isFallback, 'alias');
+                    return;
+                }
+                _dbg("MB artist search '$name' ($field) => " . ($mbid || "NO MATCH ($why; cached 1d)")
                     . ($isFallback ? ' [via public fallback]' : ''));
                 $store->($mbid);
             },
@@ -289,19 +308,19 @@ sub _artistMbidByName {
                 my $err = shift->error // '?';
                 # A mirror unreachable for search: fall back to public once.
                 if ($mirror && !$isFallback) {
-                    _dbg("MB artist search '$name' => mirror error ($err); retrying public API");
-                    $self->($self, MB_DEFAULT_BASE_URL, 1);
+                    _dbg("MB artist search '$name' ($field) => mirror error ($err); retrying public API");
+                    $self->($self, MB_DEFAULT_BASE_URL, 1, $field);
                     return;
                 }
                 $log->error("MB artist search failed: $err");
-                _dbg("MB artist search '$name' => HTTP error ($err; not cached, retry works)");
+                _dbg("MB artist search '$name' ($field) => HTTP error ($err; not cached, retry works)");
                 $onDone->(undef);
             },
             { timeout => 12 }
         )->get($url, 'Accept' => 'application/json', 'User-Agent' => USER_AGENT);
     };
 
-    $run->($run, _mbBase(), 0);
+    $run->($run, _mbBase(), 0, 'artist');
 }
 
 # getArtistCandidates($name, sub(\@cands)) — the SAME-NAME candidate set for

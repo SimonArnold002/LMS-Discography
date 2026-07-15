@@ -37,6 +37,11 @@ use constant REVIEW_SUMMARY_CHARS => 380;   # summary cut point (word boundary)
 use constant BIO_FOUND_TTL => 30 * 86400;
 use constant BIO_EMPTY_TTL =>  1 * 86400;
 
+# Similar artists (MAI/Last.fm related artists).
+use constant SIMILAR_FOUND_TTL => 30 * 86400;
+use constant SIMILAR_EMPTY_TTL =>  1 * 86400;
+use constant SIMILAR_MAX       => 25;          # cap the "Similar artists" list
+
 # Plugin-shipped images. The *_MTL_icon_<name>.png convention makes Material
 # swap in its themed '<name>' icon (icon-mapping.js); the PNG itself is the
 # fallback for other skins.
@@ -437,8 +442,10 @@ sub _discographyView {
                     unless ($wait > 0) {           # 0 = never wait (opt-out)
                         $offDone = 1; $render->();
                         Plugins::Discography::API->warmLocalReleases(\@needMbids, sub {
-                            Plugins::Discography::API->warmBandMembers($mbid,
-                                sub { $startBootleg->(undef) });
+                            Plugins::Discography::API->warmBandMembers($mbid, sub {
+                                _warmArtistExtras($client, $mbid, $artist,
+                                    sub { $startBootleg->(undef) });
+                            });
                         });
                         return;
                     }
@@ -459,7 +466,8 @@ sub _discographyView {
                         # bootleg leg sets $offDone, so both are ready for the
                         # first render (deadline permitting).
                         Plugins::Discography::API->warmBandMembers($mbid, sub {
-                            $startBootleg->($deadline);
+                            _warmArtistExtras($client, $mbid, $artist,
+                                sub { $startBootleg->($deadline) });
                         });
                     });
                 },
@@ -657,6 +665,102 @@ sub _fetchArtistBio {
         eval { $cache->set($key, '', BIO_EMPTY_TTL); 1 };
         $cb->(undef);
     }
+}
+
+# ---------------------------------------------------------------------------
+# Similar artists via MAI (the same guarded direct-function pattern as the
+# bio). The NAME LIST is cached (keyed by artist mbid) and warmed in the MB
+# chain, so the section is usually part of the first render. Thumbnails are
+# NOT pre-fetched: each row's image points at MAI's own image proxy
+# (imageproxy/mai/artist/<name>/image.png — accepts a NAME, resolves local
+# artwork -> Discogs/Last.fm -> MAI's default silhouette), so the browser
+# loads every photo asynchronously IN-VIEW, like Material's native artist
+# lists. No exit-and-re-enter needed (the 0.31.x photo-warm design's flaw).
+# ---------------------------------------------------------------------------
+sub _similarKey { 'dsc:similar:v1:' . ($_[0] // '') }
+
+# Cache-only, sync: arrayref of similar-artist names, or undef until warmed.
+sub _peekSimilar { $cache->get(_similarKey($_[0])) }
+
+# Row thumbnail: MAI's artist image proxy URL (name-keyed), or the person
+# icon when MAI isn't available (same look as pre-0.31.0).
+sub _artistImg {
+    my ($name) = @_;
+    my $mai;
+    eval {
+        $mai = Slim::Utils::PluginManager->isEnabled('Plugins::MusicArtistInfo::Plugin');
+        1;
+    };
+    return IMG_BASE . 'dsc-bio_MTL_icon_person.png'
+        unless $mai && defined $name && length $name;
+    require URI::Escape;
+    return 'imageproxy/mai/artist/' . URI::Escape::uri_escape_utf8($name) . '/image.png';
+}
+
+sub _maiFn {
+    my ($name) = @_;
+    my $fn;
+    eval {
+        $fn = Plugins::MusicArtistInfo::ArtistInfo->can($name)
+            if Slim::Utils::PluginManager->isEnabled('Plugins::MusicArtistInfo::Plugin');
+        1;
+    };
+    return $fn;
+}
+
+# Resolve + cache the related-artist NAME list once. $cb fires (arrayref) on
+# cache hit / done / MAI-unavailable / failure.
+sub _warmSimilarArtists {
+    my ($client, $mbid, $artist, $cb) = @_;
+    $cb ||= sub {};
+    return $cb->([]) unless $mbid && defined $artist && length $artist;
+
+    my $key = _similarKey($mbid);
+    if (defined(my $c = $cache->get($key))) { return $cb->($c) }
+
+    my $fn = _maiFn('getRelatedArtists');
+    unless ($fn) {
+        _dbg("similar '$artist': MAI unavailable");
+        eval { $cache->set($key, [], SIMILAR_EMPTY_TTL); 1 };
+        return $cb->([]);
+    }
+
+    my $ok = eval {
+        $fn->($client, sub {
+            my $items = shift || [];
+            my (@names, %seen);
+            for my $it (@$items) {
+                next unless ref $it eq 'HASH';
+                next if ($it->{type} // '') eq 'text';   # MAI error row
+                my $n = $it->{name};
+                next unless defined $n && length $n;
+                next if $seen{lc $n}++;
+                push @names, $n;
+                last if @names >= SIMILAR_MAX;
+            }
+            eval { $cache->set($key, \@names,
+                @names ? SIMILAR_FOUND_TTL : SIMILAR_EMPTY_TTL); 1 };
+            _dbg("similar '$artist': " . scalar(@names) . ' artist(s)');
+            $cb->(\@names);
+        }, {}, { artist => $artist, ($mbid ? (mbid => $mbid) : ()) });
+        1;
+    };
+    unless ($ok) {
+        $log->warn("MAI getRelatedArtists threw: $@");
+        eval { $cache->set($key, [], SIMILAR_EMPTY_TTL); 1 };
+        $cb->([]);
+    }
+}
+
+# Warm the "Similar artists" name list (awaited — cached before the bootleg
+# leg sets $offDone, so the section is normally part of the FIRST render).
+# Thumbnails need no warming — the rows point at MAI's image proxy and load
+# in-view (see _artistImg).
+sub _warmArtistExtras {
+    my ($client, $mbid, $artist, $cb) = @_;
+    $cb ||= sub {};
+    return $cb->() unless $client;
+    _warmSimilarArtists($client, $mbid, $artist, sub { $cb->() });
 }
 
 sub _buildList {
@@ -928,6 +1032,20 @@ sub _buildList {
             sort { lc($a->{name}) cmp lc($b->{name}) } @$bands;
     }
 
+    # "Similar artists" — MAI/Last.fm related artists, each a DRILL into that
+    # artist's discography (identical behaviour to an "Also a member of" link,
+    # only resolved by NAME rather than a known mbid). Same second-load contract
+    # as the bands section (peek is cache-only; warmed after the first render ->
+    # appears on re-entry) and it sits AFTER bands as the LAST section, so a
+    # cold->warm flip only adds trailing rows. Kept in MAI's relevance order.
+    my $similar = _peekSimilar($mbid);
+    if ($similar && @$similar) {
+        push @items, _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_SIMILAR_ARTISTS',
+            $useH, IMG_BASE . 'dsc-bio_MTL_icon_person.png',
+            [ map { _similarLinkRow($client, $opts, $_) } @$similar ]);
+        push @items, map { _similarLinkRow($client, $opts, $_) } @$similar;
+    }
+
     return \@items;
 }
 
@@ -951,7 +1069,8 @@ sub _bandLinkRow {
     return {
         name        => $band->{name},
         type        => 'link',
-        image       => IMG_BASE . 'dsc-bio_MTL_icon_person.png',
+        # MAI image-proxy URL: the photo loads asynchronously in-view.
+        image       => _artistImg($band->{name}),
         passthrough => [{ band_mbid => $band->{mbid}, band_name => $band->{name},
                           features => $opts->{features} }],
         url         => sub {
@@ -967,6 +1086,32 @@ sub _bandLinkRow {
                 features  => $p->{features},
                 sort      => $prefs->get('sort_order') || 'newest',
                 force     => 0,
+            });
+        },
+    };
+}
+
+# One "Similar artists" row: the SAME drill-in as a band link, but entered by
+# NAME (these come from Last.fm with no mbid). The paramless person path
+# (_resolveArtistMbid -> getArtistMbid) resolves the name exactly like a
+# top-level entry, so browse / sort / Refresh / drill-into-a-release all work;
+# an owned similar artist matches locally via localAlbums' name fallback.
+# Image = MAI image-proxy URL, loads asynchronously in-view.
+sub _similarLinkRow {
+    my ($client, $opts, $name) = @_;
+    return {
+        name        => $name,
+        type        => 'link',
+        image       => _artistImg($name),
+        passthrough => [{ sim_name => $name, features => $opts->{features} }],
+        url         => sub {
+            my ($c, $cb, $a, $p) = @_;
+            _dbg("similar drill -> '$p->{sim_name}'");
+            _discographyView($c, $cb, {
+                artist   => $p->{sim_name},
+                features => $p->{features},
+                sort     => $prefs->get('sort_order') || 'newest',
+                force    => 0,
             });
         },
     };
