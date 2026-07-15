@@ -199,7 +199,7 @@ sub _proseRow {
 # the type differs per client). Older Material forces a drill action on
 # 'header' items, so it points at its own child rows.
 sub _sectionHeader {
-    my ($client, $token, $useH, $image, $kids) = @_;
+    my ($client, $token, $useH, $image, $kids, $act) = @_;
     my $hdr = {
         name  => cstring($client, $token),
         type  => $useH ? _headerType() : 'text',
@@ -209,6 +209,13 @@ sub _sectionHeader {
         my @k = @{ $kids || [] };
         $hdr->{url}         = sub { $_[1]->({ items => \@k }) };
         $hdr->{passthrough} = [{}];
+        # Self-identifying drill (stale-view fix): older Material forces a go
+        # action onto headers; give it explicit params so it lands on this
+        # section's rows regardless of server state.
+        if ($act && $act->{id}) {
+            $hdr->{id}          = $act->{id};
+            $hdr->{itemActions} = $act->{itemActions};
+        }
     }
     return $hdr;
 }
@@ -246,6 +253,17 @@ sub topLevel {
     # (via its %lastCtx re-stash) to enter that band's discography directly,
     # skipping name/tag resolution. Absent on the normal artist entry.
     my $mbid     = _cleanParam($params->{mbid});
+    # Param-addressed navigation (the stale-view fix): rg = a release-group
+    # mbid -> render that release's DETAIL directly; item = a row id — WITH rg
+    # a row of that detail view, WITHOUT rg a row of the artist LIST view
+    # (toggles/paging/headers/extras). sort = an explicit list order (the sort
+    # toggle's fresh-entry param; also re-issued by refresh toggles inside a
+    # sorted view, so the order sticks). All arrive from itemActions'
+    # fixedParams (always alongside the artist identity), never positional.
+    my $rgParam   = _cleanParam($params->{rg});
+    my $itemParam = _cleanParam($params->{item});
+    my $sortParam = _cleanParam($params->{sort});
+    $sortParam = undef unless ($sortParam // '') =~ /^(?:newest|oldest)$/;
 
     # artist_id is the reliable key (Material fills $ARTISTID from the item
     # id); the DB name beats the $TITLE fallback whenever we have it.
@@ -298,14 +316,196 @@ sub topLevel {
         return;
     }
 
-    _discographyView($client, $callback, {
+    my $opts = {
         artist_id => $artistId,
         artist    => $artist,
         mbid      => $mbid,
         features  => $features,
-        sort      => $prefs->get('sort_order') || 'newest',
+        sort      => $sortParam || $prefs->get('sort_order') || 'newest',
         force     => 0,
-    });
+    };
+
+    # Param-addressed release detail (rg carries its own artist identity, just
+    # stashed above — so this view is durable across any navigation order,
+    # restarts, other artists: nothing here depends on a positional walk).
+    if ($rgParam && $rgParam =~ /^[0-9a-f-]{36}$/i) {
+        _rgView($client, $callback, $opts, lc $rgParam, $itemParam);
+        return;
+    }
+
+    # Param-addressed LIST-view row (no rg): rebuild the list privately and
+    # invoke the named row's own coderef — toggles/paging/headers/extras reuse
+    # their existing logic (the same collector pattern as _rgView).
+    if (defined $itemParam && length $itemParam) {
+        _listItemDispatch($client, $callback, $opts, $itemParam);
+        return;
+    }
+
+    _discographyView($client, $callback, $opts);
+}
+
+# Locate a feed row by its self-identifying id (topLevel's item: dispatch).
+sub _findRow {
+    my ($feed, $id) = @_;
+    return undef unless ref $feed eq 'HASH';
+    my ($row) = grep { defined $_->{id} && $_->{id} eq $id }
+                @{ $feed->{items} || [] };
+    return $row;
+}
+
+# Run a located row's OWN url coderef (toggles / version drills / header drills
+# reuse their existing logic — zero duplication). A missing or urlless row ->
+# empty response; the tapped action's nextWindow=>'refresh' then re-renders the
+# view cleanly (unknown id = stale view from an older build / vanished section).
+sub _runRow {
+    my ($client, $callback, $row, $what) = @_;
+    if ($row && ref $row->{url} eq 'CODE') {
+        my $p = ref $row->{passthrough} eq 'ARRAY' ? $row->{passthrough}[0] : {};
+        $row->{url}->($client, $callback, {}, $p);
+    }
+    else {
+        _dbg("dispatch: $what not found");
+        $callback->({ items => [], cachetime => 0 });
+    }
+}
+
+# Find a list-view row by id and run it (see topLevel).
+sub _listItemDispatch {
+    my ($client, $callback, $opts, $item) = @_;
+    _discographyView($client, sub {
+        _runRow($client, $callback, _findRow(shift, $item), "list item '$item'");
+    }, $opts);
+}
+
+# ---------------------------------------------------------------------------
+# Param-addressed release detail (the stale-view fix). Entered by an rg: param
+# carrying full artist identity — resolves the release group from the CACHED
+# RG list (14d; the tile that emitted the param came from the same list) and
+# renders _releaseDetail directly. With an item: param, the detail is rendered
+# PRIVATELY and the matching row's own url coderef is invoked instead — so
+# toggles/version rows reuse their existing logic with zero duplication.
+# ---------------------------------------------------------------------------
+sub _rgView {
+    my ($client, $callback, $opts, $rgMbid, $item) = @_;
+
+    my $err = sub {
+        $callback->({ items => [{
+            name => cstring($client, 'PLUGIN_DISCOGRAPHY_ERROR'), type => 'text',
+        }], cachetime => 0 });
+    };
+
+    # The artist mbid is part of every rg action's fixedParams; without it we
+    # can't fetch the RG list this release belongs to.
+    my $ambid = $opts->{mbid};
+    return $err->() unless $ambid && $ambid =~ /^[0-9a-f-]{36}$/i;
+
+    Plugins::Discography::API->getReleaseGroups(
+        mbid   => lc $ambid,
+        onDone => sub {
+            my $rgs = shift || [];
+            my ($rel) = grep { ($_->{mbid} // '') eq $rgMbid } @$rgs;
+            unless ($rel) {
+                _dbg("rgView: rg $rgMbid not in the artist's RG list");
+                return $err->();
+            }
+            my $pass = { %$opts, rg => $rel };
+            if (defined $item && length $item) {
+                _releaseDetail($client, sub {
+                    _runRow($client, $callback, _findRow(shift, $item),
+                            "detail item '$item'");
+                }, $pass);
+            }
+            else {
+                _releaseDetail($client, $callback, $pass);
+            }
+        },
+        onError => $err,
+    );
+}
+
+# ---------------------------------------------------------------------------
+# CLI ["discography","playcmd"]: param-addressed play/add/insert for a release
+# (tiles + detail rows point their play actions here — XMLBrowser's default
+# play action is positional and breaks on a stale view). Resolves the target
+# via the SAME cache-backed _releaseDetail build the page uses: with item: the
+# named row's play url, else the detail's kept (preferred-source) play string.
+# Async CLI command (candidates may need fetching on a cold cache).
+# ---------------------------------------------------------------------------
+sub playCommand {
+    my $request = shift;
+    my $client  = $request->client;
+
+    my $rgMbid = lc($request->getParam('rg') // '');
+    my $cmd    = $request->getParam('cmd') // 'play';
+    my $item   = $request->getParam('item');
+    $cmd = 'play' unless $cmd =~ /^(?:play|add|insert)$/;
+
+    my %opts = map { $_ => scalar $request->getParam($_) }
+               grep { defined $request->getParam($_) }
+               qw(artist_id artist mbid features);
+    my $ambid = lc($opts{mbid} // '');
+
+    # Direct-url mode (library-extras tiles): the play target is already a
+    # core-resolved db: url — no resolution step, whitelisted shape only. A
+    # lib: tile carries a url but NO rg, so once a url is present this is the
+    # only path it can take: play it if whitelisted, else refuse it explicitly
+    # (never hand an arbitrary string to the player, and don't fall through to
+    # the misleading "missing rg" branch — surface the real reason instead).
+    my $direct = $request->getParam('url');
+    if ($client && defined $direct && length $direct) {
+        if ($direct =~ /^db:album\.id=\d+$/) {
+            _dbg("playcmd: $cmd -> $direct (direct)");
+            $client->execute(['playlist', $cmd, $direct]);
+        }
+        else {
+            $log->warn("discography playcmd: rejected non-whitelisted url '$direct'");
+        }
+        $request->setStatusDone();
+        return;
+    }
+
+    unless ($client && $rgMbid =~ /^[0-9a-f-]{36}$/ && $ambid =~ /^[0-9a-f-]{36}$/) {
+        _dbg('playcmd: missing client/rg/artist-mbid');
+        $request->setStatusDone();
+        return;
+    }
+
+    $request->setStatusProcessing();
+    my $done = sub {
+        my ($url) = @_;
+        if (defined $url && length $url) {
+            _dbg("playcmd: $cmd -> $url");
+            $client->execute(['playlist', $cmd, $url]);
+        }
+        else {
+            _dbg("playcmd: no playable url resolved for rg $rgMbid");
+        }
+        $request->setStatusDone();
+    };
+
+    Plugins::Discography::API->getReleaseGroups(
+        mbid   => $ambid,
+        onDone => sub {
+            my $rgs = shift || [];
+            my ($rel) = grep { ($_->{mbid} // '') eq $rgMbid } @$rgs;
+            return $done->(undef) unless $rel;
+            _releaseDetail($client, sub {
+                my $feed = shift || {};
+                my $row;
+                if (defined $item && length $item) {
+                    $row = _findRow($feed, $item);
+                }
+                else {
+                    # The kept preferred-source row is the one carrying a play
+                    # string (same node tile-play collects).
+                    ($row) = grep { defined $_->{play} } @{ $feed->{items} || [] };
+                }
+                $done->($row ? ($row->{play} // _playUrl($row)) : undef);
+            }, { %opts, sort => $prefs->get('sort_order') || 'newest',
+                 force => 0, rg => $rel });
+        },
+        onError => sub { $done->(undef) },
+    );
 }
 
 # ---------------------------------------------------------------------------
@@ -766,10 +966,19 @@ sub _warmArtistExtras {
 sub _buildList {
     my ($client, $opts, $mbid, $rgs, $bio, $local) = @_;
 
-    # Carry the artist MBID on every tile's passthrough so the detail page can
-    # rebuild the same relMap + rivals the list used (without it, drill-in loses
-    # tier-0 identity — Local wouldn't show — and the rival rule).
-    $opts = { %$opts, mbid => $mbid };
+    # Carry the RESOLVED artist MBID on every tile's passthrough so the detail
+    # page can rebuild the same relMap + rivals the list used (without it,
+    # drill-in loses tier-0 identity — Local wouldn't show — and the rival rule).
+    #
+    # But keep the ENTRY mbid separate: the LIST-view identity actions must NOT
+    # carry the resolved mbid. The Material entry/refresh command (the custom
+    # action) carries no mbid on a person/name entry, so emitting the resolved
+    # one there desyncs topLevel's $same identity check and wipes the
+    # refresh-toggle ctx flags (the 0.8.1 bug — bio "Read more" / section paging
+    # dead; verified live 2026-07-15). _identParams emits the ENTRY mbid (present
+    # only for a band-link entry, which DOES carry it end-to-end); _rgIdent adds
+    # the resolved mbid explicitly where detail dispatch genuinely needs it.
+    $opts = { %$opts, entry_mbid => $opts->{mbid}, mbid => $mbid };
 
     my $sort = $opts->{sort} || 'newest';
     my $useH = _wantHeaders($opts->{features});
@@ -875,6 +1084,8 @@ sub _buildList {
                 type        => 'link',
                 image       => MENU_REVIEW,
                 nextWindow  => 'refresh',
+                id          => 'bio:less',
+                itemActions => _listItemActions($opts, 'bio:less'),
                 passthrough => [{ akey => $akey }],
                 url         => sub {
                     my ($c, $cb, $a, $p) = @_;
@@ -891,6 +1102,8 @@ sub _buildList {
                     type        => 'link',
                     image       => MENU_REVIEW,
                     nextWindow  => 'refresh',
+                    id          => 'bio:more',
+                    itemActions => _listItemActions($opts, 'bio:more'),
                     passthrough => [{ akey => $akey }],
                     url         => sub {
                         my ($c, $cb, $a, $p) = @_;
@@ -903,12 +1116,14 @@ sub _buildList {
     }
 
     unshift @bioRows, _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_BIOGRAPHY', $useH,
-        IMG_BASE . 'dsc-bio_MTL_icon_person.png', \@bioRows) if @bioRows;
+        IMG_BASE . 'dsc-bio_MTL_icon_person.png', \@bioRows,
+        { id => 'sect:BIO', itemActions => _listItemActions($opts, 'sect:BIO') }) if @bioRows;
 
     my @optRows = (_sortToggleItem($client, $opts), _refreshItem($client, $opts, $mbid));
     my @items = (@bioRows,
         _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_OPTIONS', $useH,
-            IMG_BASE . 'dsc-opt_MTL_icon_tune.png', \@optRows),
+            IMG_BASE . 'dsc-opt_MTL_icon_tune.png', \@optRows,
+            { id => 'sect:OPT', itemActions => _listItemActions($opts, 'sect:OPT') }),
         @optRows);
 
     for my $g (@GROUP_ORDER) {
@@ -925,7 +1140,7 @@ sub _buildList {
 
         # Long sections are capped; the header keeps naming the TRUE total, so
         # "Singles (87)" over 30 rows reads as paging, not as a lost release.
-        my ($vis, $pgRows) = _pageSection($client, $key, \@tiles);
+        my ($vis, $pgRows) = _pageSection($client, $opts, $key, \@tiles);
 
         # The divider row is emitted for EVERY client — only its type differs
         # (real header vs text) — so the tree shape (and item_id indexing) is
@@ -942,6 +1157,8 @@ sub _buildList {
             # it at this section's own tiles rather than a dead page.
             # 'header-basic' ignores the url harmlessly.
             my @kids = (@$vis, @$pgRows);
+            $hdr->{id}          = 'sect:' . $key;
+            $hdr->{itemActions} = _listItemActions($opts, $hdr->{id});
             $hdr->{url}         = sub { $_[1]->({ items => \@kids }) };
             $hdr->{passthrough} = [{}];
         }
@@ -1027,7 +1244,8 @@ sub _buildList {
         push @items, _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_ALSO_MEMBER_OF',
             $useH, IMG_BASE . 'dsc-bio_MTL_icon_person.png',
             [ map { _bandLinkRow($client, $opts, $_) }
-                sort { lc($a->{name}) cmp lc($b->{name}) } @$bands ]);
+                sort { lc($a->{name}) cmp lc($b->{name}) } @$bands ],
+            { id => 'sect:BANDS', itemActions => _listItemActions($opts, 'sect:BANDS') });
         push @items, map { _bandLinkRow($client, $opts, $_) }
             sort { lc($a->{name}) cmp lc($b->{name}) } @$bands;
     }
@@ -1042,7 +1260,8 @@ sub _buildList {
     if ($similar && @$similar) {
         push @items, _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_SIMILAR_ARTISTS',
             $useH, IMG_BASE . 'dsc-bio_MTL_icon_person.png',
-            [ map { _similarLinkRow($client, $opts, $_) } @$similar ]);
+            [ map { _similarLinkRow($client, $opts, $_) } @$similar ],
+            { id => 'sect:SIMILAR', itemActions => _listItemActions($opts, 'sect:SIMILAR') });
         push @items, map { _similarLinkRow($client, $opts, $_) } @$similar;
     }
 
@@ -1071,6 +1290,12 @@ sub _bandLinkRow {
         type        => 'link',
         # MAI image-proxy URL: the photo loads asynchronously in-view.
         image       => _artistImg($band->{name}),
+        # Self-identifying go (stale-view fix): enters the band as a fresh
+        # top-level view via the direct-mbid path — durable and, as a bonus,
+        # retires the 0.26.1 known limit (top toggles landing on the person).
+        itemActions => { items => { command => ['discography', 'items'],
+            fixedParams => { mbid => $band->{mbid}, artist => $band->{name},
+                (length($opts->{features} // '') ? (features => $opts->{features}) : ()) } } },
         passthrough => [{ band_mbid => $band->{mbid}, band_name => $band->{name},
                           features => $opts->{features} }],
         url         => sub {
@@ -1103,6 +1328,10 @@ sub _similarLinkRow {
         name        => $name,
         type        => 'link',
         image       => _artistImg($name),
+        # Self-identifying go (stale-view fix): fresh top-level entry by name.
+        itemActions => { items => { command => ['discography', 'items'],
+            fixedParams => { artist => $name,
+                (length($opts->{features} // '') ? (features => $opts->{features}) : ()) } } },
         passthrough => [{ sim_name => $name, features => $opts->{features} }],
         url         => sub {
             my ($c, $cb, $a, $p) = @_;
@@ -1131,10 +1360,17 @@ sub _extraSection {
     my @tiles = map {
         my %t = %$_;
         $t{line2} = join(" \x{00B7} ", grep { length } ($t{_year} // ''), ($t{_band} // 'Local'));
+        # Self-identifying go + play (stale-view fix): the tile IS the playable
+        # node (its feed = the album tracklist, play = a core-resolved db: url),
+        # so go dispatches by id and play/add/insert carry the db: url directly.
+        if ($t{_albumid}) {
+            $t{id} = 'lib:' . $t{_albumid};
+            $t{itemActions} = _listItemActions($opts, $t{id}, $t{play});
+        }
         \%t;
     } @dated, @undated;
 
-    my ($vis, $pgRows) = _pageSection($client, $pageKey, \@tiles);
+    my ($vis, $pgRows) = _pageSection($client, $opts, $pageKey, \@tiles);
 
     my $hdr = {
         name  => cstring($client, $token) . ' (' . scalar(@tiles) . ')',
@@ -1143,6 +1379,8 @@ sub _extraSection {
     };
     if ($useH) {
         my @kids = (@$vis, @$pgRows);
+        $hdr->{id}          = 'sect:' . $pageKey;
+        $hdr->{itemActions} = _listItemActions($opts, $hdr->{id});
         $hdr->{url}         = sub { $_[1]->({ items => \@kids }) };
         $hdr->{passthrough} = [{}];
     }
@@ -1167,7 +1405,7 @@ sub _extraSection {
 #
 # Returns (visible tiles, paging rows) — both go in the tree in that order.
 sub _pageSection {
-    my ($client, $key, $tiles) = @_;
+    my ($client, $opts, $key, $tiles) = @_;
 
     my $total = scalar @$tiles;
     return ($tiles, []) if $total <= PAGE_SIZE;
@@ -1180,12 +1418,12 @@ sub _pageSection {
     if ($shown < $total) {
         my $next = $shown + PAGE_SIZE;
         $next = $total if $next > $total;
-        push @rows, _pageRow($client, $key, $next,
+        push @rows, _pageRow($client, $opts, $key, $next,
             cstring($client, 'PLUGIN_DISCOGRAPHY_SHOW_MORE') . ' (' . ($total - $shown) . ')',
             PAGE_MORE);
     }
     if ($shown > PAGE_SIZE) {
-        push @rows, _pageRow($client, $key, PAGE_SIZE,
+        push @rows, _pageRow($client, $opts, $key, PAGE_SIZE,
             cstring($client, 'PLUGIN_DISCOGRAPHY_SHOW_LESS'), PAGE_LESS);
     }
 
@@ -1193,12 +1431,15 @@ sub _pageSection {
 }
 
 sub _pageRow {
-    my ($client, $key, $target, $name, $image) = @_;
+    my ($client, $opts, $key, $target, $name, $image) = @_;
+    my $id = "page:$key:$target";
     return {
         name        => $name,
         type        => 'link',
         image       => $image,
         nextWindow  => 'refresh',
+        id          => $id,
+        itemActions => _listItemActions($opts, $id),
         passthrough => [{ key => $key, target => $target }],
         url         => sub {
             my ($c, $cb, $a, $p) = @_;
@@ -1217,12 +1458,19 @@ sub _pageRow {
 sub _sortToggleItem {
     my ($client, $opts) = @_;
     my $newest = ($opts->{sort} || 'newest') eq 'newest';
+    my $flip   = $newest ? 'oldest' : 'newest';
     return {
         name        => cstring($client, $newest ? 'PLUGIN_DISCOGRAPHY_SORT_NEWEST'
                                                 : 'PLUGIN_DISCOGRAPHY_SORT_OLDEST'),
         type        => 'link',
         image       => MENU_SORT,
-        passthrough => [{ %$opts, sort => $newest ? 'oldest' : 'newest' }],
+        # Self-identifying go (stale-view fix): a FRESH entry with an explicit
+        # sort param — same drill-in UX (new level, back returns), and the
+        # opened view's own rows/toggles re-issue the sorted command, so the
+        # order sticks throughout that view.
+        itemActions => { items => { command => ['discography', 'items'],
+            fixedParams => { _identParams({ %$opts, sort => $flip }) } } },
+        passthrough => [{ %$opts, sort => $flip }],
         url         => sub {
             my ($c, $cb, $a, $pass) = @_;
             _discographyView($c, $cb, $pass);
@@ -1242,6 +1490,8 @@ sub _refreshItem {
         type        => 'link',
         image       => MENU_REFRESH,
         nextWindow  => 'refresh',
+        id          => 'act:refresh',
+        itemActions => _listItemActions($opts, 'act:refresh'),
         passthrough => [{ mbid => $mbid, artist => $opts->{artist} }],
         url         => sub {
             my ($c, $cb, $a, $pass) = @_;
@@ -1341,6 +1591,14 @@ sub _releaseItem {
     # 'playlist' row forwarded), so this is also what makes the badge and the
     # ListenLater Add possible on tiles. Item COUNT is unchanged either way
     # (walk-stable tree; only the type differs as the cache warms).
+    #
+    # itemActions = SELF-IDENTIFYING clicks (the stale-view fix): the go action
+    # carries rg + full artist identity as explicit params instead of a
+    # positional item_id, so a tap works no matter what was browsed in between
+    # (topLevel's rg: dispatch renders the detail directly and re-stashes ctx).
+    # play/add/insert route to the explicit ['discography','playcmd'] dispatch
+    # for the same reason — XMLBrowser's default play action is positional too.
+    # The url coderef stays for the legacy walk path and non-menu skins.
     return {
         name        => $rg->{title},
         line2       => $line2,
@@ -1348,12 +1606,90 @@ sub _releaseItem {
         image       => $image,
         (defined $playUrl ? (play => $playUrl)           : ()),
         (defined $favurl  ? (favorites_url => $favurl)   : ()),
+        itemActions => _rgItemActions($opts, $rg->{mbid}, undef, defined $playUrl),
         passthrough => [{ %$opts, rg => $rg }],
         url         => sub {
             my ($c, $cb, $a, $pass) = @_;
             _releaseDetail($c, $cb, $pass);
         },
     };
+}
+
+# The artist-identity params every self-addressed action carries — enough to
+# rebuild the view from scratch (no %lastCtx needed).
+sub _identParams {
+    my ($opts) = @_;
+    return (
+        ($opts->{artist_id}              ? (artist_id => $opts->{artist_id}) : ()),
+        (defined $opts->{artist} && length $opts->{artist}
+                                         ? (artist    => $opts->{artist})    : ()),
+        # ENTRY mbid ONLY (a band link enters by mbid; a person/name entry has
+        # none) — deliberately NOT the resolved mbid, which would desync the
+        # mbid-less refresh command and wipe the toggle ctx (0.8.1). Detail
+        # actions add the resolved mbid explicitly via _rgIdent.
+        ($opts->{entry_mbid}             ? (mbid      => $opts->{entry_mbid}) : ()),
+        (length($opts->{features} // '') ? (features  => $opts->{features})  : ()),
+        # The list view's sort rides the params end-to-end (a toggle-opened
+        # view re-issues its own command on refresh, keeping its order).
+        (($opts->{sort} // '') =~ /^(?:newest|oldest)$/
+                                         ? (sort      => $opts->{sort})      : ()),
+    );
+}
+
+# Identity + the release group (detail-view actions). Detail dispatch (_rgView)
+# needs the RESOLVED artist mbid to fetch the RG list, so add it explicitly here
+# — _identParams intentionally carries only the ENTRY mbid (see _buildList). For
+# a band view the entry and resolved mbid are equal, so the duplicate key is
+# harmless; for a person view _identParams omits mbid and this supplies it.
+sub _rgIdent {
+    my ($opts, $rgMbid) = @_;
+    return { rg => $rgMbid,
+             ($opts->{mbid} ? (mbid => $opts->{mbid}) : ()),
+             _identParams($opts) };
+}
+
+# A LIST-view row's self-identifying actions: go re-enters topLevel with the
+# artist identity + item:<id>, dispatched through _listItemDispatch (which
+# rebuilds the list privately and invokes the row's own coderef). $playUrl
+# (optional, whitelisted in playcmd) adds direct play/add/insert for the
+# library-extras tiles (their play string is a core-resolved db: url — no
+# resolution step needed).
+sub _listItemActions {
+    my ($opts, $id, $playUrl) = @_;
+    my %ident = (_identParams($opts), item => $id);
+    my %a = (
+        items => { command => ['discography', 'items'], fixedParams => { %ident } },
+    );
+    if (defined $playUrl && length $playUrl) {
+        for my $cmd (qw(play add insert)) {
+            $a{$cmd} = {
+                command     => ['discography', 'playcmd'],
+                fixedParams => { %ident, cmd => $cmd, url => $playUrl },
+            };
+        }
+    }
+    return \%a;
+}
+
+# itemActions for a release tile or a detail-page row. $item = the row id
+# within the detail view (undef for the tile itself -> go opens the detail).
+# $playable adds explicit play/add/insert actions via the playcmd dispatch.
+sub _rgItemActions {
+    my ($opts, $rgMbid, $item, $playable) = @_;
+    my $ident = _rgIdent($opts, $rgMbid);
+    $ident->{item} = $item if defined $item;
+    my %a = (
+        items => { command => ['discography', 'items'], fixedParams => $ident },
+    );
+    if ($playable) {
+        for my $cmd (qw(play add insert)) {
+            $a{$cmd} = {
+                command     => ['discography', 'playcmd'],
+                fixedParams => { %$ident, cmd => $cmd },
+            };
+        }
+    }
+    return \%a;
 }
 
 # Primary type, with a meaningful secondary appended LBF-style
@@ -1518,6 +1854,8 @@ sub _releaseDetail {
                     type        => 'link',
                     image       => MENU_REVIEW,
                     nextWindow  => 'refresh',
+                    id          => 'rev:less',
+                    itemActions => _rgItemActions($pass, $rg->{mbid}, 'rev:less'),
                     passthrough => [{ mbid => $rg->{mbid} }],
                     url         => sub {
                         my ($c, $cb, $a, $p) = @_;
@@ -1534,6 +1872,8 @@ sub _releaseDetail {
                         type        => 'link',
                         image       => MENU_REVIEW,
                         nextWindow  => 'refresh',
+                        id          => 'rev:more',
+                        itemActions => _rgItemActions($pass, $rg->{mbid}, 'rev:more'),
                         passthrough => [{ mbid => $rg->{mbid} }],
                         url         => sub {
                             my ($c, $cb, $a, $p) = @_;
@@ -1550,7 +1890,9 @@ sub _releaseDetail {
         if (@rows) {
             my @kids = @rows;
             splice @rows, 0, 0, _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_REVIEW', $useHdr,
-                MENU_REVIEW, \@kids);
+                MENU_REVIEW, \@kids,
+                { id => 'hdr:review',
+                  itemActions => _rgItemActions($pass, $rg->{mbid}, 'hdr:review') });
         }
 
         my $preVersionRows = scalar @rows;
@@ -1572,6 +1914,8 @@ sub _releaseDetail {
                 my $p = _playUrl(\%row);
                 $row{play} = $p if defined $p;
                 $keptPlay = 1;
+                $row{id} = 'v:' . $sections->[0]{svc} . ':0';
+                $row{itemActions} = _rgItemActions($pass, $rg->{mbid}, $row{id}, 1);
                 push @rows, \%row;
 
                 # Inline expand to the full per-service layout (the same
@@ -1583,6 +1927,8 @@ sub _releaseDetail {
                         type        => 'link',
                         image       => IMG_BASE . 'dsc-ver_MTL_icon_unfold_more.png',
                         nextWindow  => 'refresh',
+                        id          => 'ver:show',
+                        itemActions => _rgItemActions($pass, $rg->{mbid}, 'ver:show'),
                         passthrough => [{ mbid => $rg->{mbid} }],
                         url         => sub {
                             my ($c, $cb, $a, $p) = @_;
@@ -1602,6 +1948,7 @@ sub _releaseDetail {
             # which dividers never render).
             for my $sec (@$sections) {
                 my @svcRows;
+                my $vidx = 0;
                 for my $it (@{ $sec->{items} }) {
                     my %row = %$it;
                     # Native node from the service plugin's own renderer (url
@@ -1620,6 +1967,8 @@ sub _releaseDetail {
                         $row{play} = $p if defined $p;
                         $keptPlay = 1;
                     }
+                    $row{id} = 'v:' . $sec->{svc} . ':' . $vidx++;
+                    $row{itemActions} = _rgItemActions($pass, $rg->{mbid}, $row{id}, 1);
                     push @svcRows, \%row;
                 }
                 my $hdr = {
@@ -1628,6 +1977,8 @@ sub _releaseDetail {
                 };
                 if ($useHdr) {
                     my @kids = @svcRows;
+                    $hdr->{id}          = 'hdr:' . $sec->{svc};
+                    $hdr->{itemActions} = _rgItemActions($pass, $rg->{mbid}, $hdr->{id});
                     $hdr->{url}         = sub { $_[1]->({ items => \@kids }) };
                     $hdr->{passthrough} = [{}];
                 }
@@ -1640,6 +1991,8 @@ sub _releaseDetail {
                     type        => 'link',
                     image       => IMG_BASE . 'dsc-ver_MTL_icon_unfold_more.png',
                     nextWindow  => 'refresh',
+                    id          => 'ver:hide',
+                    itemActions => _rgItemActions($pass, $rg->{mbid}, 'ver:hide'),
                     passthrough => [{ mbid => $rg->{mbid} }],
                     url         => sub {
                         my ($c, $cb, $a, $p) = @_;
@@ -1662,6 +2015,8 @@ sub _releaseDetail {
             type        => 'link',
             image       => MENU_REFRESH,
             nextWindow  => 'refresh',
+            id          => 'act:refresh',
+            itemActions => _rgItemActions($pass, $rg->{mbid}, 'act:refresh'),
             passthrough => [{ artist => $artist }],
             url         => sub {
                 my ($c, $cb, $a, $p) = @_;

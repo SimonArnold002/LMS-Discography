@@ -144,7 +144,23 @@ sub initPlugin {
     Slim::Control::Request::addDispatch(
         ['discography', 'clearcache'], [0, 1, 1, \&_cliClearCache]);
 
+    # Param-addressed play/add/insert for a release (the stale-view fix):
+    # tiles' and detail rows' play actions send explicit rg + artist params
+    # here instead of XMLBrowser's positional item_id play path. Needs a
+    # player (1st flag).
+    Slim::Control::Request::addDispatch(
+        ['discography', 'playcmd'], [1, 0, 1, \&_cliPlayCmd]);
+
     return;
+}
+
+# CLI: ["discography","playcmd","rg:<rg-mbid>","cmd:play|add|insert",
+#       "artist:...","mbid:<artist-mbid>",("item:<detail-row-id>")]. Resolves
+# the release's best playable source (or the named detail row) via the same
+# cache-backed detail build the page uses, then executes the playlist command.
+sub _cliPlayCmd {
+    my $request = shift;
+    Plugins::Discography::Browse::playCommand($request);
 }
 
 # CLI: ["discography","clearcache", ...tags]. Clears the named artist's cached

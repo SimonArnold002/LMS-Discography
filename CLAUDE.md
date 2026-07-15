@@ -95,18 +95,36 @@ OWN go/play command with `fixedParams` (+ `variables`/`commonVariables` mapping 
 `[ item => 'id' ]`) — the click then sends explicit params (`rg:<rg-mbid>` + artist identity)
 instead of a positional item_id, and the server renders that node DIRECTLY — no ctx, no walk.
 Param-addressed navigation is how LMS's native menus work; LL already uses the `info` flavour.
-- **Stage 1** (fixes the field case): release TILES get `itemActions.items` (go → `rg:` + artist
-  params; topLevel dispatches `rg:` to the release detail, re-stashing ctx); the DETAIL view gets
-  feed-level `actions` + per-row `id`s so version rows / toggles are param-addressed too; tile +
-  version-row PLAY moves to an explicit `['discography','play',…]` CLI dispatch (itemActions.play/
-  add/insert) since XMLBrowser's default play action is also positional (`item_id`); band/similar
-  rows get `itemActions.items` with their existing mbid/name entry params (the direct-mbid path
-  already handles them).
-- **Stage 2** (lower value): the LIST view's sort/Refresh/paging/read-more toggles — only tappable
-  while the view is current, and any tile tap re-stashes ctx, so deferred.
+- **Stage 1 — SHIPPED in 0.34.0** (fixes the field case): release TILES get `itemActions.items`
+  (go → `rg:` + artist params; topLevel dispatches `rg:` to the release detail, re-stashing ctx);
+  DETAIL rows carry per-row `id`s + their own `itemActions` (per-item, NOT feed-level — item-level
+  actions ride `$item->{nextWindow}` for the refresh toggles) so version rows / toggles / headers /
+  Refresh are param-addressed too; tile + version-row PLAY moves to an explicit
+  `['discography','playcmd',…]` CLI dispatch (itemActions.play/add/insert) since XMLBrowser's
+  default play action is also positional (`item_id`); band/similar rows get `itemActions.items`
+  with their existing mbid/name entry params (the direct-mbid path already handles them).
+- **Stage 2 — SHIPPED in 0.35.0**: the LIST view's controls. `item:` WITHOUT `rg:` dispatches via
+  `_listItemDispatch` (private `_discographyView` render → invoke the row's coderef — same collector
+  as `_rgView`). Row ids: `bio:more/less`, `act:refresh`, `page:<KEY>:<target>`, `sect:<KEY>`
+  headers, `lib:<album_id>` extras tiles (their play/add/insert carry the whitelisted
+  `db:album.id=N` url straight to playcmd's direct mode). The SORT toggle instead rides an explicit
+  `sort:newest|oldest` param (fresh entry, drill-in UX kept); `_identParams` folds a valid sort into
+  every action's params so a sorted view's toggles re-issue the sorted command and the order sticks.
 - `%lastCtx` stays (walk-stability for legacy paths + non-Material skins); the itemActions override
   only changes what MATERIAL sends on tap. nextWindow (refresh toggles) rides `_makeAction`'s
   nextWindow passthrough (from `$item->{nextWindow}`).
+- **KNOWN LIMIT — header taps (assessed 2026-07-15, Simon: "leave as is").** On Material >= 6.4.3 our
+  `header-basic` dividers are NON-clickable BY DESIGN (browse-resp.js:271 wipes `actions` at parse) —
+  "tap a header -> that section only" is not a supported plugin-feed interaction. Worse, the wipe
+  leaves `addAction` ('go', forced by XMLBrowser on EVERY non-playable non-text item — line 1230
+  branch + 1251; NOT suppressible server-side), so Material's dead-click guard
+  (browse-functions.js:1059 `!actions && !addAction`) never fires and a header tap falls through to a
+  paramless fallback -> lands on the plugin default page (a Material BUG — upstream one-liner: wipe
+  `addAction` with `actions`). The headers DO carry param-addressed `sect:` go actions server-side
+  (verified live), so if this is ever revisited: emit type `header` instead (actions survive, More
+  chevron renders, tap = our section view) — the historic blockers were the positional dead drill
+  (fixed by 0.35.0 param-addressing) and LL 0.1.29's "actionable header renders as a grid card on
+  >= 6.4.3" (UNVERIFIED on 6.4.4 — check by eye before shipping). Declined for now.
 
 ## Service Plugin APIs — VERIFIED SIGNATURES (2026-07-10, from upstream source)
 Don't guess these; the adapters break silently when they drift. Sources fetched from GitHub
@@ -171,6 +189,30 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   likewise deliberately LBF-only and outside the shared engine.
 
 ## Development Log
+### 0.36.0 (2026-07-15) — fix: Stage-2 list toggles broke bio/paging on the primary (mbid-less) entry; code-review cleanups
+- **Bug (code review, CONFIRMED live on the box before fixing): on the normal artist entry (custom action sends `artist_id`/`$TITLE`, NO mbid), the bio "Read more" / section "Show more" toggles did nothing.** 0.35.0's `_identParams` folded the RESOLVED artist mbid into every list-view `itemActions`, but the Material entry/refresh command carries no mbid — so topLevel's `$same` identity check (`artist_id`+`artist`+`mbid`) mismatched on the toggle dispatch AND on the subsequent refresh, wiping the very expand/`page` ctx flag the toggle had just set (the 0.8.1 bug, re-introduced by Stage 2). Detail toggles were unaffected (their `rg` actions carry the resolved mbid on BOTH entry and refresh, so `$same` holds); paging INSIDE a sort-toggled view also happened to work (the sort toggle injects the mbid into that view's own entry command) — which is why the breakage was inconsistent.
+  - **Live proof (Marc Almond, artist_id 46825):** fire `item:bio:more`+`mbid:<resolved>` (sets the flag → returns "Empty"), then re-issue the mbid-less entry command (the parent refresh) → bio came back COLLAPSED. Control: re-issue WITH the mbid → EXPANDED. B vs control differ only by the mbid, isolating the cause.
+  - **Fix:** `_buildList` now keeps the resolved mbid on `$opts->{mbid}` (detail actions need it) AND stashes the ENTRY mbid separately as `$opts->{entry_mbid}`. `_identParams` (LIST-view identity) emits the ENTRY mbid — present only for a band-link entry, which carries it end-to-end; a person/name entry emits none, matching the mbid-less refresh command so `$same` holds. `_rgIdent` (DETAIL actions) adds the resolved mbid explicitly, so `_rgView` can still fetch the RG list. Band-by-mbid views unchanged (entry==resolved). No `%lastCtx`/`$same` logic changed — only what the actions emit.
+- **Code-review cleanups (same pass):** the triplicated "render feed privately → find row by `id` → run its coderef (else empty)" collector is now one pair of helpers — **`_findRow`** + **`_runRow`** — used by `_listItemDispatch`, `_rgView`'s item branch, and (`_findRow` only) `playCommand`. `playCommand`'s direct-url branch now REJECTS a present-but-non-whitelisted `url` explicitly (a `$log->warn` + `setStatusDone`) instead of falling through to the misleading "missing rg" path — a lib: tile carries a url and no rg, so once a url is present that is the only path it can take.
+- **Deliberately NOT changed (efficiency finding, reviewed with Simon):** every list-control tap does a full private `_discographyView` rebuild to locate its row. That rebuild IS the durability mechanism (the pre-Stage-2 cheap ctx-walk is exactly what caused the empty-page-on-back-nav bug), so it stays — the rebuild cost is the accepted price of correct back-navigation.
+- Gates: `perl -c` clean (Browse + Plugin w/ WEBUI stub); Stage-1 suite still 19/19; **14 new assertions** (person list actions omit mbid; band list actions carry it; detail actions keep the resolved mbid; sort-toggle flip; lib play url; invalid-sort omission). No matcher change (sync N/A); no cache bump. Live re-verify of the Read-more round-trip pending install.
+
+### 0.35.0 (2026-07-15) — param-addressed navigation, Stage 2 (list-view controls)
+- **Completes the stale-view fix for the LIST view's own controls** (Stage 1 = tiles/detail/play in 0.34.0). Every actionable list row is now self-identifying via `itemActions` + a row `id`, dispatched by the new `item:`-without-`rg:` branch in topLevel → **`_listItemDispatch`** (private `_discographyView` render → find row by id → invoke its coderef; same collector pattern as `_rgView`, zero logic duplication; unknown id → empty + the row's nextWindow refresh re-renders clean).
+- **Row ids:** bio `bio:more`/`bio:less`; Refresh `act:refresh`; paging `page:<KEY>:<target>` (`_pageSection`/`_pageRow` gained an `$opts` arg; absolute targets kept); section headers `sect:<KEY>` (type groups by group key + `sect:BIO`/`OPT`/`EXTRAS`/`APPEAR`/`BANDS`/`SIMILAR`; `_sectionHeader` gained an optional `$act` arg, applied only when headers are real). Detail's review header got its Stage-1 id (`hdr:review`).
+- **Sort toggle = a fresh entry with an explicit `sort:newest|oldest` param** (not an item dispatch): keeps the drill-in UX, and `_identParams` (refactored out of `_rgIdent`) folds a VALID sort into every action's params — so inside a sorted view, toggles/paging re-issue the sorted command on refresh and the order sticks end-to-end. topLevel validates + threads `sort` into `$opts` (falls back to the pref).
+- **Library-extras tiles** (`lib:<album_id>`): go dispatches to their tracklist coderef; play/add/insert carry the tile's core-resolved `db:album.id=N` play string to **playcmd's new direct-url mode** (whitelisted `^db:album\.id=\d+$` — no resolution step, no rg needed).
+- Gates: `perl -c` clean; 18/18 new Stage-2 assertions (ident sort validation, list-action shapes, lib play url, page-row ids, header act gating, sort-toggle flip) + Stage-1 suite still 19/19. Live verify pending install. No matcher change; no cache bump.
+
+### 0.34.0 (2026-07-15) — param-addressed navigation, Stage 1 (the stale-view fix)
+- **Field bug (Marc Almond): browse another artist, go BACK to the previous artist's view, tap an album → empty page / play dead until a Refresh.** Full diagnosis in "Stale-view bug + param-addressed navigation plan" above (one-artist `%lastCtx` + positional item_ids; XMLBrowser's session cache is disabled for coderef feeds). Stage 1 makes every tap that mattered SELF-IDENTIFYING via XMLBrowser `itemActions` (explicit `fixedParams`, no positional walk):
+- **Tiles** (`_releaseItem`): `itemActions.items` carries `rg:<rg-mbid>` + full artist identity (built by `_rgIdent`/`_rgItemActions`); matched tiles also get `play`/`add`/`insert` → the new `['discography','playcmd']` dispatch. **topLevel** gained `rg:`/`item:` params: `rg:` routes to **`_rgView`**, which re-stashes ctx (params carry the identity), resolves the RG from the cached list and renders `_releaseDetail` directly — durable across any navigation order, restarts, other artists.
+- **Detail rows** (`_releaseDetail`): every actionable row gets an `id` (`v:<Svc>:<n>` version rows, `ver:show/hide` + `rev:more/less` toggles, `hdr:<Svc>` service headers, `act:refresh`) + per-item `itemActions` addressing `rg + item`. An `item:` request renders the detail PRIVATELY in `_rgView` and invokes the matched row's own url coderef — toggles/version drills reuse their existing logic, zero duplication. Item-level (not feed-level) actions deliberately: `_makeAction` takes `nextWindow` from the ITEM, so the refresh toggles keep working; a toggle's refresh re-issues the view's command (with `rg` + identity) → `$same` artist → ctx flags preserved → the flip renders.
+- **`playcmd`** (`Browse::playCommand`, registered in Plugin.pm `[1,0,1]`): resolves via the SAME cache-backed `_releaseDetail` build (collector callback), picks the `item:`-named row or the kept preferred-source play row, executes `['playlist', play|add|insert, $url]` (all three verified as core commands on the live server). Async CLI (setStatusProcessing/Done).
+- **Band + similar rows**: `itemActions.items` = fresh top-level entry by band mbid / artist name — durable, and retires the 0.26.1 known limit (top toggles landing on the person) for taps that come through the action.
+- The url coderefs + `%lastCtx` stay untouched (legacy walk path, non-Material skins, walk-stability). Stage 2 (list-view sort/Refresh/paging toggles) deferred — only tappable while the view is current.
+- Gates: `perl -c` clean (Browse), Plugin.pm loads clean (WEBUI stubbed), 19/19 assertions on `_rgItemActions` (command/param shapes, playable vs go-only, item ids on go+play, sparse-opts omission). Live end-to-end (Material tap → rg dispatch; back-nav after another artist; tile play) pending install. No matcher change; no cache bump.
+
 ### 0.33.0 (2026-07-15) — artist thumbnails load IN-VIEW (MAI image proxy replaces the photo pre-fetch)
 - **Field (Simon): "not all artist artwork loads nicely — a user should not have to exit view and back to see them."** The 0.31.x design pre-fetched each photo server-side (fire-and-forget after render, cached) so cold rows rendered the person icon until re-entry — the second-load contract is wrong for images.
 - **Fix: rows now point at MAI's own artist image proxy** — `imageproxy/mai/artist/<uri-escaped NAME>/image.png`. Verified in MAI source (ArtistInfo.pm): the handler accepts a NAME or contributor id (`_getArtistFromArtistId` falls through non-numeric as the name; MAI's own related-artists menus build name-based URLs, line 960), resolves local artwork → Discogs/Last.fm → MAI's **default artist silhouette** (never a broken image), and the browser's `<img>` fetches each thumbnail asynchronously through the LMS proxy — photos pop in IN-VIEW, exactly like Material's native artist lists. New `Browse::_artistImg($name)` (person icon fallback when MAI is disabled) feeds `_bandLinkRow` + `_similarLinkRow`.
