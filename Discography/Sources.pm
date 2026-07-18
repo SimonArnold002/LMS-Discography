@@ -48,6 +48,11 @@ use constant CAND_CACHE_V   => '4';         # bump on shape/matcher changes
                                             #     lottery dropped e.g. Valtari)
                                             # v4: candidates carry _year (needed
                                             #     by the same-title rival rule)
+use constant SEARCH_TIMEOUT => 10;          # artist-search watchdog (s) — one
+                                            # request per service, not the full
+                                            # artist-first candidate chain
+use constant SEARCH_MAX     => 15;          # artist hits kept per source
+use constant SEARCH_MERGED_MAX => 30;       # merged result rows shown
 
 # ---------------------------------------------------------------------------
 # Adapters (ported from PFR; Qobuz/Tidal/Deezer only — no Bandcamp by scope)
@@ -69,21 +74,21 @@ sub adapters {
     # pools). Deezer's complex_to_query percent-encodes bytes -> OCTETS.
     push @adapters, {
         name => 'Qobuz', icon => _pluginIcon('Plugins::Qobuz::Plugin'),
-        run  => \&_searchQobuz, query_enc => 'chars',
+        run  => \&_searchQobuz, artists => \&_artistsQobuz, query_enc => 'chars',
     } if Plugins::Qobuz::Plugin->can('getAPIHandler')
       && Plugins::Qobuz::Plugin->can('_albumItem')
       && Plugins::Qobuz::Plugin->can('QobuzGetTracks');
 
     push @adapters, {
         name => 'Tidal', icon => _pluginIcon('Plugins::TIDAL::Plugin'),
-        run  => \&_searchTidal, query_enc => 'chars',
+        run  => \&_searchTidal, artists => \&_artistsTidal, query_enc => 'chars',
     } if Plugins::TIDAL::Plugin->can('getAPIHandler')
       && Plugins::TIDAL::Plugin->can('getAlbum')
       && Plugins::TIDAL::Plugin->can('_renderAlbum');
 
     push @adapters, {
         name => 'Deezer', icon => _pluginIcon('Plugins::Deezer::Plugin'),
-        run  => \&_searchDeezer, query_enc => 'bytes',
+        run  => \&_searchDeezer, artists => \&_artistsDeezer, query_enc => 'bytes',
     } if Plugins::Deezer::Plugin->can('getAPIHandler')
       && Plugins::Deezer::Plugin->can('_renderAlbum')
       && Plugins::Deezer::Plugin->can('getAlbum');
@@ -276,10 +281,16 @@ sub _localAlbumTracks {
     $cb->({ items => \@items });
 }
 
-# Detection + priority for every known service — for the settings page (step 5).
+# Detection + priority for every known service — for the settings page (step 5)
+# and the app-root "Works best with" list. $adapters is an OPTIONAL pre-built
+# adapters() list: a caller that already needs the adapters (the root view
+# reads their icons) passes its own copy so the capability probe runs once per
+# render instead of once per consumer. Omitted = probe here, as before.
 sub serviceStatus {
+    my ($adapters) = @_;
     my @known = ( [ 'qobuz', 'Qobuz' ], [ 'tidal', 'Tidal' ], [ 'deezer', 'Deezer' ] );
-    my %installed = map { lc($_->{name}) => 1 } adapters();
+    my %installed = map { lc($_->{name}) => 1 }
+        (ref $adapters eq 'ARRAY' ? @$adapters : adapters());
     return [ map {
         {   key       => $_->[0],
             name      => $_->[1],
@@ -412,6 +423,245 @@ sub clearCandidates {
     my ($class, $artist) = @_;
     return unless defined $artist && length $artist;
     $cache->remove(_candKey($_->{name}, $artist)) for adapters();
+}
+
+# ---------------------------------------------------------------------------
+# Global artist search (the plugin-view "Search for an artist" feature) —
+# one artist-TYPE search per enabled service plus the library, results merged
+# and deduped by mergeArtistHits. Deliberately NOT cached here (user-initiated,
+# one request per service); Browse caches the MERGED list briefly for item_id
+# walk determinism.
+# ---------------------------------------------------------------------------
+
+# searchArtists($client, $query, $cb) -> cb(\%bySvc, \%failed) where %bySvc is
+#   { Local => [{name, artist_id}], Qobuz => [{name}], ... } — every source key
+# present once settled — and %failed is { <svc> => 1 } for each service that
+# ERRORED or TIMED OUT.
+#
+# The second arg matters (0.42.2): a failed service settles as an EMPTY list,
+# which is indistinguishable from "this service genuinely has no such artist"
+# unless the failure is reported separately. Browse caches the merged list for
+# SEARCH_TTL, so without this signal one slow/erroring service pinned a
+# silently-degraded result set for the full TTL — every retry inside the window
+# served the same short list from cache instead of re-searching. Callers must
+# treat a non-empty %failed as "these results are incomplete, do not persist".
+#
+# Same parallel settle-once/watchdog pattern as getCandidates, sized for the
+# single request each artist search costs.
+sub searchArtists {
+    my ($class, $client, $query, $cb) = @_;
+
+    my (%out, %failed);
+    return $cb->(\%out, \%failed) unless defined $query && length $query;
+
+    # Local leg — sync CLI query (LMS DB access is synchronous, the fleet's
+    # accepted pattern), the same `artists search:` call localAlbums' name
+    # fallback uses. Hits keep their contributor id so a drill-in resolves
+    # via the reliable library-tag path.
+    if (($prefs->get('svc_priority_local') // 1) > 0) {
+        my $enc = $query;
+        utf8::encode($enc) if utf8::is_utf8($enc);
+        my @hits;
+        my $req = eval { Slim::Control::Request::executeRequest(undef,
+            ['artists', 0, SEARCH_MAX, "search:$enc"]) };
+        if ($req) {
+            for my $e (@{ $req->getResult('artists_loop') || [] }) {
+                next unless defined $e->{artist} && length $e->{artist};
+                push @hits, { name => $e->{artist}, artist_id => $e->{id} };
+            }
+        }
+        $out{Local} = \@hits;
+    }
+
+    my @adapters = orderedAdapters();
+    return $cb->(\%out, \%failed) unless @adapters;
+
+    # Both query spellings, per the query_enc discipline (see adapters()).
+    my $qChars = $query;
+    utf8::decode($qChars) unless utf8::is_utf8($qChars);
+    my $qBytes = $query;
+    utf8::encode($qBytes) if utf8::is_utf8($qBytes);
+
+    my $pending = scalar @adapters;
+    for my $a (@adapters) {
+        my $svc = $a->{name};
+        my $settled = 0;
+        my $timer;
+        my $settle = sub {
+            my ($hits) = @_;
+            return if $settled;
+            $settled = 1;
+            Slim::Utils::Timers::killSpecific($timer) if $timer;
+            my $ok = ref $hits eq 'ARRAY';
+            $out{$svc}    = $ok ? $hits : [];
+            $failed{$svc} = 1 unless $ok;
+            _dbg("artist-search $svc/'$query': " . scalar(@{ $out{$svc} })
+                . ($ok ? '' : ' (error/timeout)'));
+            $cb->(\%out, \%failed) unless --$pending;
+        };
+        $timer = Slim::Utils::Timers::setTimer(undef, time() + SEARCH_TIMEOUT, sub {
+            return if $settled;
+            $log->warn("artist-search $svc timed out");
+            $settle->(undef);
+        });
+        my $q = ($a->{query_enc} || 'bytes') eq 'chars' ? $qChars : $qBytes;
+        eval { $a->{artists}->($client, $q, $svc, $settle); 1 } or do {
+            $log->warn("artist-search $svc failed: $@");
+            $settle->(undef);
+        };
+    }
+}
+
+# N random library album-cover URLs for the app-root banner — one `albums`
+# CLI query using the server's own sort:random (verified live 2026-07-17;
+# fresh order every call, no Perl-side shuffling needed). Only albums that
+# actually HAVE artwork are kept (tags:j artwork_track_id), so the banner can
+# never show a blank tile; the pool is 3x the ask to survive artless albums.
+# Empty library / failed query -> [] (the caller skips the banner).
+sub randomAlbumCovers {
+    my ($class, $n) = @_;
+    $n ||= 4;
+    my $req = eval { Slim::Control::Request::executeRequest(undef,
+        ['albums', 0, $n * 3, 'sort:random', 'tags:j']) };
+    return [] unless $req;
+    my @ids = grep { defined $_ && length $_ }
+        map { $_->{artwork_track_id} } @{ $req->getResult('albums_loop') || [] };
+    splice @ids, $n if @ids > $n;
+    return [ map { "/music/$_/cover_300x300_f.jpg" } @ids ];
+}
+
+# Normalise a service's artist list to [{name}], capped. All three services
+# carry the display name in {name} (the same field _pickArtist reads).
+sub _artistHits {
+    my ($list) = @_;
+    return undef unless ref $list eq 'ARRAY';
+    my @out;
+    for my $a (@$list) {
+        next unless ref $a eq 'HASH'
+            && defined $a->{name} && !ref $a->{name} && length $a->{name};
+        push @out, { name => $a->{name} };
+        last if @out >= SEARCH_MAX;
+    }
+    return \@out;
+}
+
+# The artist-search leg of each adapter, standalone — the same call the
+# artist-first candidate fetch opens with (signatures verified against the
+# plugin sources, see the Service Plugin APIs table in CLAUDE.md).
+sub _artistsQobuz {
+    my ($client, $query, $svc, $collect) = @_;
+    my $api = Plugins::Qobuz::Plugin::getAPIHandler($client);
+    unless ($api) { $collect->(undef); return }
+    $api->search(sub {
+        my $res = shift;
+        $collect->(_artistHits(
+            ref $res eq 'HASH' && ref $res->{artists} eq 'HASH'
+                ? $res->{artists}{items} : undef));
+    }, lc($query), 'artists');
+}
+
+sub _artistsTidal {
+    my ($client, $query, $svc, $collect) = @_;
+    my $api = Plugins::TIDAL::Plugin::getAPIHandler($client);
+    unless ($api) { $collect->(undef); return }
+    $api->search(sub {
+        $collect->(_artistHits(shift));
+    }, { type => 'artists', search => $query, limit => SEARCH_MAX });
+}
+
+sub _artistsDeezer {
+    my ($client, $query, $svc, $collect) = @_;
+    my $api = Plugins::Deezer::Plugin::getAPIHandler($client);
+    unless ($api) { $collect->(undef); return }
+    $api->search(sub {
+        $collect->(_artistHits(shift));
+    }, { search => $query, type => 'artist', strict => 'off', limit => SEARCH_MAX });
+}
+
+# Merge per-source artist hits into ONE deduped, deterministically ordered
+# list: [ { name, sources => ['Local','Qobuz',...], artist_id? } ].
+#
+# RELEVANCE GATE (0.37.1 — the Beatles-junk fix, verified live): the services'
+# artist searches return their whole RELEVANCE tail, and Tidal's even returns
+# RELATED artists — "The Beatles" came back with Led Zeppelin, Pink Floyd,
+# The Monkees, Paul McCartney. A hit survives only if it is TEXTUALLY related
+# to what was typed:
+#   * exact key match (also the only way in for punct-only names), or
+#   * the normalised query is a SUBSTRING of the normalised name (covers
+#     partial typing: "beatl" -> The Beatles), or
+#   * _artistMatch token-subset either way ("Beatles" <-> "The Beatles";
+#     "the beatles" <-> "Yesterday - A Tribute To The Beatles").
+# So acts CONTAINING the typed text stay (that IS what was asked for — exact
+# ranks first anyway), and the services' free-association neighbours drop.
+#
+# Dedupe key = the matcher's _norm of the name (falling back to _punctNorm for
+# names _norm empties, e.g. "( )") — so the same act spelled slightly
+# differently across services collapses to one row, while genuinely distinct
+# names ("Laetitia Sadier" vs "Laetitia Sadier Source Ensemble") stay apart.
+# The display name comes from the FIRST source to introduce the bucket
+# (sources iterate in priority order, Local first — the library's spelling
+# wins). Ordering: exact-normalised match on the query first, then breadth
+# (found on more sources = more likely the act the user meant), then the
+# first-seen relevance sequence; capped at SEARCH_MERGED_MAX. Pure function —
+# no prefs, no network — the caller passes the source order (defaulting to
+# Local + adapter priority).
+#
+# DELIBERATELY NO ENTITY FOLDING (decided 2026-07-17): services carry
+# duplicate artist entities (Qobuz has BOTH "Beatles" and "The Beatles";
+# "Chocolate Watchband" / "The Chocolate Watch Band" / a TYPO'd "The
+# Chocoloate Watch Band") and an article/spacing/edit-distance fold was
+# built, then REVERTED on Simon's call: we should not paper over streaming-
+# service catalogue errors, and string similarity alone cannot prove two
+# entities are one act ("Beatles"/"Beatless" and "Iron Maiden"/"The Iron
+# Maidens" are one edit apart and genuinely distinct). If folding ever
+# returns, it must be DISCOGRAPHY-VERIFIED — corroborate that the entities'
+# release lists actually overlap (the 0.28.x library-disambiguation
+# philosophy) — never inferred from the name.
+sub mergeArtistHits {
+    my ($class, $query, $bySvc, $order) = @_;
+    my @order = $order ? @$order
+              : ('Local', map { $_->{name} } orderedAdapters());
+    my $key = sub {
+        my $k = _norm($_[0] // '');
+        $k = _punctNorm($_[0] // '') if $k eq '';
+        return $k;
+    };
+    my $qk = $key->($query);
+    my $qn = _norm($query // '');
+    my (%bucket, @seq);
+    for my $svc (@order) {
+        for my $h (@{ $bySvc->{$svc} || [] }) {
+            next unless ref $h eq 'HASH';
+            my $k = $key->($h->{name});
+            next if $k eq '';
+            # The relevance gate. $qn eq '' (punct-only query) leaves exact
+            # key equality as the only way in.
+            unless ($k eq $qk) {
+                my $hn = _norm($h->{name} // '');
+                next unless $qn ne '' && $hn ne ''
+                    && (index($hn, $qn) >= 0 || _artistMatch($qn, $hn));
+            }
+            my $b = $bucket{$k};
+            unless ($b) {
+                $b = $bucket{$k} = {
+                    name => $h->{name}, sources => [],
+                    _seq => scalar @seq, _exact => ($qk ne '' && $k eq $qk) ? 1 : 0,
+                };
+                push @seq, $b;
+            }
+            push @{ $b->{sources} }, $svc
+                unless grep { $_ eq $svc } @{ $b->{sources} };
+            $b->{artist_id} //= $h->{artist_id} if $h->{artist_id};
+        }
+    }
+    my @merged = sort {
+        $b->{_exact} <=> $a->{_exact}
+            || @{ $b->{sources} } <=> @{ $a->{sources} }
+            || $a->{_seq} <=> $b->{_seq}
+    } @seq;
+    splice @merged, SEARCH_MERGED_MAX if @merged > SEARCH_MERGED_MAX;
+    delete @$_{qw(_seq _exact)} for @merged;
+    return \@merged;
 }
 
 # ---------------------------------------------------------------------------

@@ -4,11 +4,35 @@ PLUGIN_DISCOGRAPHY
 PLUGIN_DISCOGRAPHY_DESC
 	EN	Browse an artist's full discography and play each release from your local library or streaming service.
 
-PLUGIN_DISCOGRAPHY_APPS_HINT
-	EN	Open an artist and choose "Full Discography"
+PLUGIN_DISCOGRAPHY_SEARCH
+	EN	Search for an artist
 
-PLUGIN_DISCOGRAPHY_APPS_HINT2
-	EN	This app browses a single artist, so it is reached from the artist context menu in Material Skin.
+PLUGIN_DISCOGRAPHY_SEARCH_NONE
+	EN	No artists found
+
+PLUGIN_DISCOGRAPHY_SEARCH_HDR
+	EN	Find an artist
+
+PLUGIN_DISCOGRAPHY_ABOUT_HDR
+	EN	About Discography
+
+PLUGIN_DISCOGRAPHY_ABOUT_1
+	EN	Browse an artist's complete discography - every album, EP, single and compilation that's listed in MusicBrainz. Each release plays from your local library or your chosen streaming services if available. Each release displays with artwork, original release dates, reviews and biographies. Releases are grouped together so you can play which version you prefer, e.g. Deluxe, Remastered etc. (Currently supports Qobuz, Tidal & Deezer.)
+
+PLUGIN_DISCOGRAPHY_ABOUT_2
+	EN	Search for any artist above, or browse to an artist in your library and choose "Discography" from the context menu in Material Skin.
+
+PLUGIN_DISCOGRAPHY_PLUGINS_HDR
+	EN	Works best with
+
+PLUGIN_DISCOGRAPHY_ROLE_STREAM
+	EN	Streaming source - play releases you don't own
+
+PLUGIN_DISCOGRAPHY_ROLE_MAI
+	EN	Biographies, artist photos and similar artists
+
+PLUGIN_DISCOGRAPHY_ROLE_MATERIAL
+	EN	Adds the Discography entry to artist context menus
 
 PLUGIN_DISCOGRAPHY_SORT_NEWEST
 	EN	Sorted newest first (tap for oldest)

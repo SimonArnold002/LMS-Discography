@@ -49,6 +49,15 @@ use constant IMG_BASE     => 'plugins/Discography/html/images/';
 use constant ICON         => IMG_BASE . 'DiscographyIcon_svg.png';
 use constant MENU_SORT    => IMG_BASE . 'dsc-sort_MTL_icon_sort.png';
 use constant MENU_REFRESH => IMG_BASE . 'dsc-refresh_MTL_icon_refresh.png';
+use constant MENU_SEARCH  => IMG_BASE . 'dsc-find_MTL_icon_search.png';
+
+use constant SEARCH_TTL   => 600;  # merged artist-search results (item_id walk
+                                   # determinism across legacy re-walks, not a
+                                   # data cache — searches are user-initiated)
+use constant BANNER_MAX     => 20;  # cover tiles sent (CSS clips to one row —
+                                    # what fits the viewport is what shows;
+                                    # 20 x 132px fills up to ~2600px ultrawide)
+use constant BANNER_TILE_PX => 120; # fixed tile size the responsive row clips to
 # Detail-page rows: prose (type 'text') must stay IMAGE-LESS — Material
 # mutates text+image items to type "other" (browse-resp.js:800), which loses
 # the full-wrap prose rendering (0.7.2 regression: clamped review summary,
@@ -188,9 +197,10 @@ sub _escHtml {
 }
 
 sub _proseRow {
-    my ($text) = @_;
+    my ($text, $extraStyle) = @_;
     return {
-        name => "<div style='margin-left:" . PROSE_INDENT . "'>" . _escHtml($text) . '</div>',
+        name => "<div style='margin-left:" . PROSE_INDENT . ($extraStyle // '') . "'>"
+              . _escHtml($text) . '</div>',
         type => 'text',
     };
 }
@@ -235,11 +245,13 @@ sub _cleanParam {
 # and with cachetime=>0 there is no server-side session tree either (verified
 # live: the drill request carried just item_id + menu, and the paramless
 # re-run served the Apps-hint page, so every click landed on a dead text row).
-# Fix: stash the entry context per player; a paramless call rebuilds the same
-# view (deterministic order, data served from the API cache) so the item_id
-# walk resolves. Known limit: one artist per player at a time — jumping back
-# to an older artist's still-open view after opening another artist's walks
-# the newer tree.
+# Fix: stash the entry context per player; a paramless WALK call (item_id
+# present) rebuilds the same view (deterministic order, data served from the
+# API cache) so the item_id walk resolves. A paramless call WITHOUT item_id is
+# the app root and renders the root (search/hint) view instead — restoring the
+# stash there trapped the app on the last artist (0.37.2). Known limit: one
+# artist per player at a time — jumping back to an older artist's still-open
+# view after opening another artist's walks the newer tree.
 my %lastCtx;
 sub _cid { my ($client) = @_; return $client ? $client->id : '_none' }
 
@@ -264,6 +276,34 @@ sub topLevel {
     my $itemParam = _cleanParam($params->{item});
     my $sortParam = _cleanParam($params->{sort});
     $sortParam = undef unless ($sortParam // '') =~ /^(?:newest|oldest)$/;
+
+    # Param-addressed search submission (the search row's overridden go
+    # action: search:<text> + features, NO item_id — see _searchRow). Rendered
+    # directly, BEFORE any ctx stash/restore: the results view must be immune
+    # to whatever artist is stashed, and the request carries no artist
+    # identity to stash anyway. Raw param (not _cleanParam — typed text may
+    # legitimately start with '$'); _artistSearchView trims/guards it.
+    #
+    # GATED ON item_id BEING ABSENT (0.42.2). A POSITIONAL walk into the search
+    # row sends item_id:<path> + search:<text> in the SAME request (the legacy
+    # path _searchRow's url coderef exists for — Control/XMLBrowser.pm:493
+    # hands the text to the row's coderef as $args->{search}). Without this
+    # guard that request was intercepted here and the RESULTS were returned as
+    # the TOP feed, whereupon XMLBrowser descended the item_id path into them
+    # (_cliQuery_done splits item_id and indexes $feed->{items} positionally) —
+    # so the walk landed on an arbitrary result row. Reproduced live: root-view
+    # item_id:5 + search:"The Beatles" rendered "The Beatles Tribute Band"
+    # (result index 5) instead of the result list. Material is unaffected
+    # either way — its submitted go action carries only search + features +
+    # menu, never item_id (verified live on the served item JSON).
+    my $searchParam = $params->{search};
+    my $walking     = defined $params->{item_id} && length $params->{item_id};
+    if (defined $searchParam && !ref $searchParam && length $searchParam
+        && !$walking) {
+        my $features = $params->{features} // '';
+        _artistSearchView($client, $callback, $features, $searchParam);
+        return;
+    }
 
     # artist_id is the reliable key (Material fills $ARTISTID from the item
     # id); the DB name beats the $TITLE fallback whenever we have it.
@@ -298,21 +338,30 @@ sub topLevel {
                       ver  => $prev->{ver}, page => $prev->{page} ) : (),
         };
     }
-    elsif (my $ctx = $lastCtx{ _cid($client) }) {
+    elsif ($walking && (my $ctx = $lastCtx{ _cid($client) })) {
+        # Restore the stash ONLY for positional WALK requests (they always
+        # carry item_id — cliQuery passes the full request params copy, so a
+        # walk's item_id is visible here): a deeper click re-runs this feed
+        # paramless and must rebuild the identical stashed view for its
+        # item_id path to resolve. A paramless request WITHOUT item_id is a
+        # genuine app-root entry (Apps menu / Material re-fetching the root)
+        # and falls through to the root view below — before 0.37.2 it ALSO
+        # restored the stash, so once any artist was browsed the app re-opened
+        # stuck on that artist and the search/root view was unreachable
+        # (Simon, field). Ctx itself is untouched — walks keep working.
         ($artistId, $artist, $mbid) = @$ctx{qw(artist_id artist mbid)};
         $features ||= $ctx->{features} // '';
-        _dbg("topLevel: paramless re-entry, using stashed context");
+        _dbg("topLevel: paramless walk re-entry, using stashed context");
     }
 
     _dbg("topLevel: artist_id=" . ($artistId // '-') . " artist=" . ($artist // '-')
         . " mbid=" . ($mbid // '-'));
 
-    # No artist context: reached from the Apps menu. Explain the entry point.
+    # No artist context: the app-root view (Apps menu) — search, about, and
+    # a live plugin-status list, sectioned with the same header dividers as
+    # the artist view.
     if (!$artistId && !$artist && !$mbid) {
-        $callback->({ items => [
-            { name => cstring($client, 'PLUGIN_DISCOGRAPHY_APPS_HINT'),  type => 'text' },
-            { name => cstring($client, 'PLUGIN_DISCOGRAPHY_APPS_HINT2'), type => 'text' },
-        ]});
+        $callback->(_rootView($client, $features));
         return;
     }
 
@@ -1119,7 +1168,12 @@ sub _buildList {
         IMG_BASE . 'dsc-bio_MTL_icon_person.png', \@bioRows,
         { id => 'sect:BIO', itemActions => _listItemActions($opts, 'sect:BIO') }) if @bioRows;
 
-    my @optRows = (_sortToggleItem($client, $opts), _refreshItem($client, $opts, $mbid));
+    # The search row rides here too: after any artist browse the app re-opens
+    # on that artist (the %lastCtx model), so the Apps-view search would be
+    # unreachable without it. Submission is walk-safe: the paramless re-fetch
+    # rebuilds this SAME view from ctx, so the row's item_id resolves.
+    my @optRows = (_sortToggleItem($client, $opts), _refreshItem($client, $opts, $mbid),
+                   _searchRow($client, $opts));
     my @items = (@bioRows,
         _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_OPTIONS', $useH,
             IMG_BASE . 'dsc-opt_MTL_icon_tune.png', \@optRows,
@@ -1505,6 +1559,292 @@ sub _refreshItem {
             Plugins::Discography::Sources->clearCandidates($pass->{artist})
                 if defined $pass->{artist} && length $pass->{artist};
             $cb->({ items => [] });
+        },
+    };
+}
+
+# ---------------------------------------------------------------------------
+# Global artist search — the plugin-view entry point that doesn't need the
+# Material artist context menu.
+#
+# SUBMISSION IS PARAM-ADDRESSED (0.37.1 — the stale-walk fix, verified live:
+# with an artist ctx stashed, the 0.37.0 positional submission walked into the
+# artist view's Biography row and rendered "Empty"). The row is a `type =>
+# 'search'` item WHOSE go ACTION IS OVERRIDDEN via itemActions: XMLBrowser's
+# search branch builds its positional item_id+search action first, but the
+# itemActions pass runs AFTER it and replaces `go` while keeping the `input`
+# field (Control/XMLBrowser.pm:1188 vs :1274). Material types a row as a
+# search input purely from its go-action params carrying the literal
+# `__TAGGEDINPUT__` under `search` (browse-resp.js:279) and substitutes the
+# typed term into those params on submit (browse-functions.js:2885) — so the
+# submitted command is `search:<text>` + features, NO item_id, and topLevel's
+# search dispatch renders the results directly: no positional walk, immune to
+# whatever ctx is stashed. The url coderef stays for legacy (classic web skin)
+# walks, which deliver the text as $args->{search} (XMLBrowser.pm:493).
+# The row sits in the hint view AND the artist view's Options section, so it
+# is reachable in both ctx states.
+# ---------------------------------------------------------------------------
+sub _searchRow {
+    my ($client, $opts) = @_;
+    my $features = $opts->{features} // '';
+    # line2 names what the search actually covers (the enabled sources, in
+    # priority order — same names the result rows use).
+    my @srcs = map { $_->{name} } Plugins::Discography::Sources::orderedSources();
+    return {
+        name        => cstring($client, 'PLUGIN_DISCOGRAPHY_SEARCH'),
+        type        => 'search',
+        image       => MENU_SEARCH,
+        (@srcs ? (line2 => join(" \x{00B7} ", @srcs)) : ()),
+        itemActions => { items => { command => ['discography', 'items'],
+            fixedParams => { search => '__TAGGEDINPUT__',
+                (length $features ? (features => $features) : ()) } } },
+        passthrough => [{ features => $features }],
+        url         => \&_artistSearch,
+    };
+}
+
+# Decorative banner row: random library ALBUM COVERS as a centred strip
+# (0.40.1 — was MAI artist photos, but an artist MAI has no image for
+# rendered as a blank/silhouette tile; covers are filtered to albums that
+# HAVE artwork, so a blank is impossible, and need no MAI). Cover URLs are
+# root-absolute so they resolve from Material's /material/ page. Fresh
+# server-side random roll per render. Returns undef (no row) when the
+# library has no artwork.
+#
+# RESPONSIVE COUNT (0.41.0): the server can't know the viewport (one feed
+# serves every client; Material's PWA breakpoints never reach plugin rows),
+# so the row carries MORE tiles than any screen needs (BANNER_MAX) at a
+# FIXED size, and pure CSS shows exactly as many complete tiles as fit:
+# flex-wrap pushes what doesn't fit onto a second row, which the one-row
+# max-height + overflow:hidden clips. Phone ~3, tablet ~5-6, desktop ~9+,
+# self-adjusting on resize/rotation. Hidden tiles cost only local thumbnail
+# fetches (LMS-resized, cached).
+sub _coverCollageRow {
+    my ($client) = @_;
+    my $covers = Plugins::Discography::Sources->randomAlbumCovers(BANNER_MAX);
+    return undef unless @$covers;
+    my $html = "<div style='display:flex;justify-content:center;align-items:center;"
+             . "gap:12px;flex-wrap:wrap;max-height:" . BANNER_TILE_PX . "px;"
+             . "overflow:hidden;margin:6px 8px'>";
+    for my $src (@$covers) {
+        $html .= "<img src='$src' style='width:" . BANNER_TILE_PX . "px;height:"
+               . BANNER_TILE_PX . "px;border-radius:8px;flex:0 0 auto'/>";
+    }
+    $html .= '</div>';
+    return { name => $html, type => 'text' };
+}
+
+# The app-root view — artist-photo banner, about, search, and a live
+# plugin-status list, in the artist view's own visual language:
+# _sectionHeader dividers (real headers under Material w/ features:hi, text
+# dividers elsewhere), _proseRow indent for the about text, MTL/_svg icons
+# throughout. Status rows are type 'text' + image: XMLBrowser styles text
+# rows itemNoAction, so they render as dead one-liner rows with the plugin's
+# icon — a status readout, not a control.
+sub _rootView {
+    my ($client, $features) = @_;
+    my $useH = _wantHeaders($features);
+    my @items;
+
+    # --- Decorative album-cover banner, re-rolled every open ---
+    # A single NON-clickable text row whose v-html is a strip of <img> tags
+    # (Simon: decorative only, no drill). The BROWSER composes the collage —
+    # no server-side image work (fleet rule: no GD/Imager). Skipped when the
+    # library has no artwork. Being a text row it cannot affect grid state
+    # beyond what the About prose already does.
+    if (my $banner = _coverCollageRow($client)) {
+        push @items, $banner;
+    }
+
+    # --- About ---
+    # The second prose row carries bottom padding: a visual gap before the
+    # "Find an artist" section (Simon: the sections butted together). Padding
+    # INSIDE the row keeps the item count/shape untouched (walk stability).
+    my @about = (
+        _proseRow(cstring($client, 'PLUGIN_DISCOGRAPHY_ABOUT_1')),
+        _proseRow(cstring($client, 'PLUGIN_DISCOGRAPHY_ABOUT_2'), ';padding-bottom:24px'),
+    );
+    push @items,
+        _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_ABOUT_HDR', $useH, ICON, \@about),
+        @about;
+
+    # --- Find an artist ---
+    my @search = ( _searchRow($client, { features => $features }) );
+    push @items,
+        _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_SEARCH_HDR', $useH, MENU_SEARCH, \@search),
+        @search;
+
+    # --- Works best with (live detection) ---
+    # v-html rows (0.42.0, Simon: rows felt crowded, wanted the real service
+    # badges and a tick instead of the word "detected"): each row is a dead
+    # text row whose HTML lays out the plugin's OWN icon as a badge, the bold
+    # name with a green tick (installed) or muted cross, and the role line —
+    # with vertical margin for breathing room. Badge geometry mimics a native
+    # icon row: 16px indent + 42px badge + 14px gap = text at the 72px avatar
+    # column. A not-installed plugin has no local logo to serve, so a spacer
+    # keeps the text aligned; ticks/crosses are HTML entities (the no-non-
+    # ASCII-literals rule).
+    # Badge src normalisation (0.42.1, field): _pluginDataFor('icon') is not
+    # always a relative path — MAI returns a FULL REMOTE URL (herger.net
+    # mai.svg), which a blind '/' prefix mangled into '/https://...' (broken
+    # img). Remote icons go through LMS's imageproxy (server-cached,
+    # same-origin — verified live: 200 image/svg+xml); relative paths get
+    # root-anchored; already-absolute paths pass through.
+    my $badgeSrc = sub {
+        my ($icon) = @_;
+        return undef unless $icon;
+        if ($icon =~ m{^https?://}) {
+            require URI::Escape;
+            return '/imageproxy/' . URI::Escape::uri_escape($icon) . '/image_96x96_f.png';
+        }
+        return $icon =~ m{^/} ? $icon : "/$icon";
+    };
+    my $status = sub {
+        my ($name, $installed, $roleToken, $img) = @_;
+        my $mark = $installed
+            ? "<span style='color:#4caf50;font-size:1.1em'>&#10003;</span>"
+            : "<span style='opacity:.45;font-size:1.1em'>&#10007;</span>";
+        my $role = _escHtml(cstring($client, $roleToken));
+        $role .= " \x{00B7} " . _escHtml(cstring($client, 'PLUGIN_DISCOGRAPHY_SVC_NOT_DETECTED'))
+            unless $installed;
+        my $src   = $badgeSrc->($img);
+        my $badge = $src
+            ? "<img src='$src' style='width:42px;height:42px;border-radius:8px;flex:0 0 auto'/>"
+            : "<div style='width:42px;height:42px;flex:0 0 auto'></div>";
+        return { type => 'text', name =>
+            "<div style='display:flex;align-items:center;gap:14px;margin:10px 8px 10px 16px'>"
+          . $badge
+          . "<div style='flex:1;min-width:0'>"
+          . "<div style='font-weight:bold'>" . _escHtml($name) . " $mark</div>"
+          . "<div style='opacity:.7'>$role</div>"
+          . '</div></div>' };
+    };
+    # ONE capability probe for the whole section: adapters() walks every
+    # service plugin's ->can() surface, and both the icon map and the
+    # installed/not-installed status derive from that same list.
+    my @adapters = Plugins::Discography::Sources::adapters();
+    my %icon     = map { $_->{name} => $_->{icon} } @adapters;
+    my @plugins;
+    for my $s (@{ Plugins::Discography::Sources::serviceStatus(\@adapters) }) {
+        push @plugins, $status->($s->{name}, $s->{installed},
+            'PLUGIN_DISCOGRAPHY_ROLE_STREAM', $icon{ $s->{name} });
+    }
+    my $mai = eval { Slim::Utils::PluginManager->isEnabled('Plugins::MusicArtistInfo::Plugin') } ? 1 : 0;
+    push @plugins, $status->('Music & Artist Information', $mai,
+        'PLUGIN_DISCOGRAPHY_ROLE_MAI',
+        $mai ? Plugins::Discography::Sources::_pluginIcon('Plugins::MusicArtistInfo::Plugin') : undef);
+    # Material Skin exposes no plugin icon (_pluginDataFor('icon') is undef) —
+    # use the skin's own served asset (verified live: 200).
+    my $mat = eval { Slim::Utils::PluginManager->isEnabled('Plugins::MaterialSkin::Plugin') } ? 1 : 0;
+    push @plugins, $status->('Material Skin', $mat,
+        'PLUGIN_DISCOGRAPHY_ROLE_MATERIAL',
+        $mat ? '/material/html/images/icon.png' : undef);
+    push @items,
+        _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_PLUGINS_HDR', $useH,
+            IMG_BASE . 'dsc-opt_MTL_icon_tune.png', \@plugins),
+        @plugins;
+
+    return { items => \@items };
+}
+
+# Legacy positional entry (classic web skin walk): same view, text from
+# $args->{search}.
+sub _artistSearch {
+    my ($client, $callback, $args, $pt) = @_;
+    my $features = ref $pt eq 'HASH' ? ($pt->{features} // '') : '';
+    _artistSearchView($client, $callback, $features, $args->{search});
+}
+
+# Search every source, merge, render result rows. The MERGED list is cached
+# briefly (SEARCH_TTL) so a re-issued identical query (view refresh, legacy
+# re-walk) sees the identical ordering even if a service times out the second
+# time.
+sub _artistSearchView {
+    my ($client, $callback, $features, $q) = @_;
+
+    $q //= '';
+    $q =~ s/^\s+|\s+$//g;
+    # An unsubstituted placeholder means the client sent the action verbatim
+    # without collecting input — treat as empty, never search for the literal.
+    $q = '' if $q eq '__TAGGEDINPUT__';
+    unless (length $q) { $callback->({ items => [] }); return }
+
+    # v2: 0.37.1 gated results — bypass any cached ungated 0.37.0 lists.
+    my $ckey = 'dsc:asearch:2:' . lc $q;
+    utf8::encode($ckey) if utf8::is_utf8($ckey);
+
+    if (my $cached = $cache->get($ckey)) {
+        _dbg("artist search '$q': cached (" . scalar(@$cached) . ' merged)');
+        $callback->({ items => _searchResultItems($client, $cached, $features) });
+        return;
+    }
+
+    Plugins::Discography::Sources->searchArtists($client, $q, sub {
+        my ($bySvc, $failed) = @_;
+        my $merged = Plugins::Discography::Sources->mergeArtistHits($q, $bySvc);
+        my @bad    = sort keys %{ $failed || {} };
+        _dbg("artist search '$q': " . scalar(@$merged) . ' merged from '
+            . join(',', map { "$_=" . scalar(@{ $bySvc->{$_} }) } sort keys %$bySvc)
+            . (@bad ? ' | FAILED: ' . join(',', @bad) : ''));
+        # Only persist a COMPLETE result set. A service that errored or timed
+        # out contributed an empty list, so caching here would pin the degraded
+        # ordering for SEARCH_TTL and every retry inside the window would be
+        # served from cache without re-searching (0.42.2). The user still sees
+        # what did come back — it just isn't remembered, so retrying works.
+        if (@bad) {
+            _dbg("artist search '$q': NOT cached (incomplete)");
+        }
+        else {
+            $cache->set($ckey, $merged, SEARCH_TTL);
+        }
+        $callback->({ items => _searchResultItems($client, $merged, $features) });
+    });
+}
+
+sub _searchResultItems {
+    my ($client, $merged, $features) = @_;
+    return [ { name => cstring($client, 'PLUGIN_DISCOGRAPHY_SEARCH_NONE'),
+               type => 'text' } ] unless @$merged;
+    return [ map { _searchResultRow($client, $_, $features) } @$merged ];
+}
+
+# One artist link row — the SAME drill-in as a similar-artist link, entered by
+# name (plus the contributor id when the library knows the artist, so the
+# reliable library-tag resolution path applies). line2 names the sources the
+# artist was found on — the dedupe means one row can speak for several.
+# (The 0.39.0 app-root spotlight also used this row with no sources, hence the
+# old conditional line2; that section was replaced by the cover banner in
+# 0.40.0, so search results are now the only caller and mergeArtistHits always
+# records at least one source per bucket.)
+sub _searchResultRow {
+    my ($client, $hit, $features) = @_;
+    my $name = $hit->{name};
+    my %fixed = (
+        artist => $name,
+        ($hit->{artist_id}  ? (artist_id => $hit->{artist_id}) : ()),
+        (length($features // '') ? (features => $features)     : ()),
+    );
+    return {
+        name        => $name,
+        type        => 'link',
+        image       => _artistImg($name),
+        line2       => join(" \x{00B7} ", @{ $hit->{sources} || [] }),
+        # Self-identifying go (stale-view fix): fresh top-level entry.
+        itemActions => { items => { command => ['discography', 'items'],
+            fixedParams => \%fixed } },
+        passthrough => [{ q_name => $name, q_aid => $hit->{artist_id},
+                          features => $features }],
+        url         => sub {
+            my ($c, $cb, $a, $p) = @_;
+            _dbg("search drill -> '$p->{q_name}'"
+                . ($p->{q_aid} ? " (artist_id $p->{q_aid})" : ''));
+            _discographyView($c, $cb, {
+                artist_id => $p->{q_aid},
+                artist    => $p->{q_name},
+                features  => $p->{features},
+                sort      => $prefs->get('sort_order') || 'newest',
+                force     => 0,
+            });
         },
     };
 }
