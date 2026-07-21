@@ -22,6 +22,7 @@ sub prefs {
     return ($prefs, qw(
         svc_priority_local svc_priority_qobuz svc_priority_tidal svc_priority_deezer
         sort_order show_types hide_unmatched show_bio show_library_extras
+        show_streaming_extras
         show_all_versions material_action mb_base_url debug_log
     ));
 }

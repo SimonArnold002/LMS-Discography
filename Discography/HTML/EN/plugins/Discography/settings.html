@@ -40,15 +40,19 @@
 	[% END %]
 
 	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_HIDE_UNMATCHED" desc="PLUGIN_DISCOGRAPHY_HIDE_UNMATCHED_DESC" %]
-		<input type="checkbox" name="pref_hide_unmatched" value="1" [% IF prefs.hide_unmatched %]checked="checked"[% END %] />
+		<label><input type="checkbox" name="pref_hide_unmatched" value="1" [% IF prefs.hide_unmatched %]checked="checked"[% END %] /> [% 'PLUGIN_DISCOGRAPHY_ENABLED' | string %]</label>
 	[% END %]
 
 	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_SHOW_BIO" desc="PLUGIN_DISCOGRAPHY_SHOW_BIO_DESC" %]
-		<input type="checkbox" name="pref_show_bio" value="1" [% IF prefs.show_bio %]checked="checked"[% END %] />
+		<label><input type="checkbox" name="pref_show_bio" value="1" [% IF prefs.show_bio %]checked="checked"[% END %] /> [% 'PLUGIN_DISCOGRAPHY_ENABLED' | string %]</label>
 	[% END %]
 
 	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_SHOW_EXTRAS" desc="PLUGIN_DISCOGRAPHY_SHOW_EXTRAS_DESC" %]
-		<input type="checkbox" name="pref_show_library_extras" value="1" [% IF prefs.show_library_extras %]checked="checked"[% END %] />
+		<label><input type="checkbox" name="pref_show_library_extras" value="1" [% IF prefs.show_library_extras %]checked="checked"[% END %] /> [% 'PLUGIN_DISCOGRAPHY_ENABLED' | string %]</label>
+	[% END %]
+
+	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_SHOW_STREAM_EXTRAS" desc="PLUGIN_DISCOGRAPHY_SHOW_STREAM_EXTRAS_DESC" %]
+		<label><input type="checkbox" name="pref_show_streaming_extras" value="1" [% IF prefs.show_streaming_extras %]checked="checked"[% END %] /> [% 'PLUGIN_DISCOGRAPHY_ENABLED' | string %]</label>
 	[% END %]
 
 </div>
@@ -57,7 +61,7 @@
 <div id="dsc_detail">
 
 	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_SHOW_ALL_VERSIONS" desc="PLUGIN_DISCOGRAPHY_SHOW_ALL_VERSIONS_DESC" %]
-		<input type="checkbox" name="pref_show_all_versions" value="1" [% IF prefs.show_all_versions %]checked="checked"[% END %] />
+		<label><input type="checkbox" name="pref_show_all_versions" value="1" [% IF prefs.show_all_versions %]checked="checked"[% END %] /> [% 'PLUGIN_DISCOGRAPHY_ENABLED' | string %]</label>
 	[% END %]
 
 </div>
@@ -66,7 +70,7 @@
 <div id="dsc_integration">
 
 	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_MATERIAL_ACTION" desc="PLUGIN_DISCOGRAPHY_MATERIAL_ACTION_DESC" %]
-		<input type="checkbox" name="pref_material_action" value="1" [% IF prefs.material_action %]checked="checked"[% END %] />
+		<label><input type="checkbox" name="pref_material_action" value="1" [% IF prefs.material_action %]checked="checked"[% END %] /> [% 'PLUGIN_DISCOGRAPHY_ENABLED' | string %]</label>
 	[% END %]
 
 	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_MB_BASE_URL" desc="PLUGIN_DISCOGRAPHY_MB_BASE_URL_DESC" %]
@@ -74,7 +78,7 @@
 	[% END %]
 
 	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_DEBUG_LOG" desc="PLUGIN_DISCOGRAPHY_DEBUG_LOG_DESC" %]
-		<input type="checkbox" name="pref_debug_log" value="1" [% IF prefs.debug_log %]checked="checked"[% END %] />
+		<label><input type="checkbox" name="pref_debug_log" value="1" [% IF prefs.debug_log %]checked="checked"[% END %] /> [% 'PLUGIN_DISCOGRAPHY_ENABLED' | string %]</label>
 	[% END %]
 
 </div>

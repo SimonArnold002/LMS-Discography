@@ -13,6 +13,12 @@ PLUGIN_DISCOGRAPHY_SEARCH_NONE
 PLUGIN_DISCOGRAPHY_SEARCH_HDR
 	EN	Find an artist
 
+PLUGIN_DISCOGRAPHY_SAME_NAME
+	EN	Other artists with this name
+
+PLUGIN_DISCOGRAPHY_SAME_NAME_NOINFO
+	EN	MusicBrainz artist
+
 PLUGIN_DISCOGRAPHY_ABOUT_HDR
 	EN	About Discography
 
@@ -103,6 +109,15 @@ PLUGIN_DISCOGRAPHY_OTHER
 PLUGIN_DISCOGRAPHY_LIBRARY_EXTRAS
 	EN	Also in your library
 
+PLUGIN_DISCOGRAPHY_STREAM_EXTRAS
+	EN	Also on streaming (unverified)
+
+PLUGIN_DISCOGRAPHY_SHOW_STREAM_EXTRAS
+	EN	Also on streaming
+
+PLUGIN_DISCOGRAPHY_SHOW_STREAM_EXTRAS_DESC
+	EN	Show a section of albums your streaming services carry for this artist that MusicBrainz did not list - so nothing playable is missed. These albums ARE playable, so "Hide releases you can't play" does not apply to them; they are missing from MusicBrainz, not missing a source. UNVERIFIED: because MusicBrainz does not list these releases, it cannot confirm who made them. Where a streaming service files several acts of the same name under one artist (Qobuz does this for "Madness"), the other acts' records will appear here too. Releases in the main discography are unaffected. Off by default.
+
 PLUGIN_DISCOGRAPHY_APPEARANCES
 	EN	Appearances
 
@@ -120,6 +135,9 @@ PLUGIN_DISCOGRAPHY_OTHER_VERSIONS
 
 PLUGIN_DISCOGRAPHY_HIDE_VERSIONS
 	EN	Hide other versions
+
+PLUGIN_DISCOGRAPHY_ENABLED
+	EN	Enabled
 
 PLUGIN_DISCOGRAPHY_SETTINGS_SOURCES
 	EN	Playback sources
@@ -161,10 +179,10 @@ PLUGIN_DISCOGRAPHY_SHOW_TYPES_DESC
 	EN	Which release-type sections to show in the discography.
 
 PLUGIN_DISCOGRAPHY_HIDE_UNMATCHED
-	EN	Hide unmatched releases
+	EN	Hide releases you can't play
 
 PLUGIN_DISCOGRAPHY_HIDE_UNMATCHED_DESC
-	EN	Hide releases that are neither in your library nor matched on a streaming service. Unchecked shows the complete discography, with unplayable releases included.
+	EN	Hide releases that are neither in your library nor matched on a streaming service - the ones with no way to play them. Unchecked shows the complete discography, unplayable releases included. This affects the discography sections only: "Also in your library" and "Also on streaming" list albums you CAN play, so this setting never hides anything from them.
 
 PLUGIN_DISCOGRAPHY_SHOW_BIO
 	EN	Artist biography
@@ -176,7 +194,7 @@ PLUGIN_DISCOGRAPHY_SHOW_EXTRAS
 	EN	Also in your library
 
 PLUGIN_DISCOGRAPHY_SHOW_EXTRAS_DESC
-	EN	Show a section of albums in your library under this artist that MusicBrainz did not list - so nothing you own is missed.
+	EN	Show a section of albums in your library under this artist that MusicBrainz did not list - so nothing you own is missed. You own these, so "Hide releases you can't play" does not apply to them.
 
 PLUGIN_DISCOGRAPHY_SETTINGS_DETAIL
 	EN	Release page

@@ -77,6 +77,13 @@ use constant PAGE_SIZE => 30;
 # `official_wait` overrides; 0 opts out of waiting entirely.
 use constant OFFICIAL_WAIT_DEFAULT => 15;
 
+# Seconds the first render waits for a COLD streaming pool when hide_unmatched
+# is on (see the await block in _discographyView). Purely a safety net against a
+# service handler that never calls back: the wait normally ends when resolution
+# does. Long enough for three services to answer, short enough that a wedged
+# handler doesn't look like a hung page.
+use constant POOL_WAIT_MAX => 20;
+
 # Secondary types NEVER shown (variant noise, not discography entries). Live
 # is deliberately NOT here — it's its own selectable section now.
 my %HIDE_SECONDARY = map { $_ => 1 } ('Remix', 'DJ-mix');
@@ -600,8 +607,46 @@ sub _discographyView {
             # any navigation re-renders with playable, tagged tiles — no drill
             # needed first. Client-gated: without a player context the service
             # handlers can't be created and would pollute the cache with empties.
-            Plugins::Discography::Sources->getCandidates($client, $artist, 0, sub {})
-                if $client && defined $artist && length $artist;
+            # SPINE-AWARE: with an ambiguous name a blind warm fetches the
+            # WRONG act's catalogue and caches it (field, 0.43.0 — the rapper's
+            # page matched against the ska band's 289 albums). So the warm is
+            # deferred to the release-group callback, where the MB titles that
+            # identify THIS artist are available. Unambiguous names warm
+            # immediately, exactly as before.
+            my $warm = sub {
+                my ($spine, $done) = @_;
+                $done ||= sub {};
+                unless ($client && defined $artist && length $artist) {
+                    return $done->();   # every path must settle $done
+                }
+
+                # FETCHED, not peeked. The same-name set was only ever
+                # populated by the plugin's own SEARCH, so an artist entered
+                # from the Material context menu - the main entry point - was
+                # never known to be ambiguous: no strict verification and no
+                # alias retry (field, 2026-07-19: Sonic Boom, FOUR MB artists
+                # of that name, resolved to a Qobuz entity holding 2 albums and
+                # nothing checked it). Cached 14 days, so this is one MB
+                # request per artist per fortnight.
+                Plugins::Discography::API->getArtistCandidates($artist, sub {
+                    my ($cands) = @_;
+                    my $ambig = ($mbid && $cands && @$cands > 1) ? 1 : 0;
+
+                    my $go = sub {
+                        Plugins::Discography::Sources->getCandidates(
+                            $client, $artist, 0, sub { $done->() },
+                            { spine => $spine, mbid => $mbid, aliases => $_[0],
+                              ambiguous => $ambig });
+                    };
+
+                    # Aliases only for an AMBIGUOUS name, where a failed
+                    # resolution is expected and the retry is what rescues it.
+                    if ($ambig) {
+                        Plugins::Discography::API->warmArtistAliases($mbid, $go);
+                    }
+                    else { $go->(undef) }
+                });
+            };
 
             # Bio + release groups fetched in PARALLEL; render once when both
             # settle. $render assigned BEFORE the fetches (all-caches-warm runs
@@ -609,9 +654,11 @@ sub _discographyView {
             # is awaited (not fire-and-forget) so its rows are part of the
             # first render — a bio popping in on a REBUILD would shift every
             # item_id below it (walk-stability).
-            my ($bio, $bioDone, $rgs, $rgsErr, $local, $offDone, $rendered);
+            my ($bio, $bioDone, $rgs, $rgsErr, $local, $offDone, $rendered,
+                $poolDone);
             my $render = sub {
-                return if $rendered || !$bioDone || !$offDone || (!defined $rgs && !$rgsErr);
+                return if $rendered || !$bioDone || !$offDone || !$poolDone
+                       || (!defined $rgs && !$rgsErr);
                 $rendered = 1;
                 if ($rgsErr) {
                     $callback->({ items => [{
@@ -629,10 +676,25 @@ sub _discographyView {
                 }
             };
 
+            # The MAI/Last.fm biography is name-keyed too — the prominent
+            # act's life story under a different artist's name is worse than no
+            # biography at all.
+            #
+            # ASYNC guard (0.44.5). The sync form answers from cache only and a
+            # cold cache answers "no", so the FIRST visit to a secondary act's
+            # page rendered the prominent act's biography — the exact leak Simon
+            # reported (Pete Kember's bio on the Sonic Boom group with Andrew
+            # Huang). The fetch is cached and the page is already waiting on MB,
+            # so correctness here costs nothing a user can perceive.
             if ($prefs->get('show_bio')) {
-                _fetchArtistBio($client, $artist, $mbid, sub {
-                    $bio = shift; $bioDone = 1; $render->();
-                });
+                Plugins::Discography::API->sharesNameWithProminentAsync(
+                    $opts->{artist}, $mbid, sub {
+                        my ($shared) = @_;
+                        if ($shared) { $bioDone = 1; $render->(); return }
+                        _fetchArtistBio($client, $artist, $mbid, sub {
+                            $bio = shift; $bioDone = 1; $render->();
+                        });
+                    });
             }
             else {
                 # Bio off (grid-friendly view): no text rows from us.
@@ -645,11 +707,72 @@ sub _discographyView {
                 onDone  => sub {
                     $rgs = shift;
 
+                    # A secondary act sharing the prominent one's exact name:
+                    # every name-keyed lookup below would return the PROMINENT
+                    # act's data. See API::sharesNameWithProminent.
+                    my $shared = Plugins::Discography::API
+                        ->sharesNameWithProminent($opts->{artist}, $mbid);
+                    $opts->{shared_name} = $shared;
+                    _dbg("'$opts->{artist}' shares its name with a more prominent"
+                        . ' act - suppressing name-keyed library/bio/similar')
+                        if $shared;
+
+                    # The MB titles for THIS mbid — the reference a service
+                    # artist has to corroborate when several share the name.
+                    # _resolveArtist self-gates on the service actually
+                    # returning >1 same-name artist, so passing this always is
+                    # safe: an unambiguous artist takes the identical path it
+                    # always did.
+                    # AWAIT the streaming warm when hide_unmatched is on and no
+                    # pool exists yet. Rendering first produces a page that
+                    # ignores the pref (the !resolved exemption treats "not
+                    # asked yet" as "asked and found nothing") and then
+                    # contradicts itself on the next visit — 85 unmatched
+                    # releases, then 0. Version-scoped pool keys mean EVERY
+                    # artist is cold after an update, so this was not an edge
+                    # case. Costs the streaming resolution once per artist.
+                    #
+                    # Only when the pref is on: with it off, unmatched releases
+                    # are shown anyway, so there is nothing to wait for.
+                    my $poolCold = Plugins::Discography::Sources
+                        ->peekPool($opts->{artist}, $mbid)->{cold};
+                    my $await = ($prefs->get('hide_unmatched') && $poolCold) ? 1 : 0;
+                    $poolDone = 1 unless $await;
+                    _dbg("pool is cold - awaiting streaming resolution before render")
+                        if $await;
+
+                    if ($await) {
+                        # SAFETY NET: getCandidates fans out to several service
+                        # plugins, and one that never calls back would leave the
+                        # page hanging forever — a far worse failure than the
+                        # one being fixed. Render regardless after this long.
+                        my $settled = 0;
+                        my $finish = sub {
+                            return if $settled++;
+                            $poolDone = 1;
+                            $render->();
+                        };
+                        Slim::Utils::Timers::setTimer(undef, time() + POOL_WAIT_MAX,
+                            sub {
+                                return if $settled;
+                                _dbg('pool warm did not settle in '
+                                    . POOL_WAIT_MAX . 's - rendering anyway');
+                                $finish->();
+                            });
+                        $warm->(_spineTitles($rgs), $finish);
+                    }
+                    else { $warm->(_spineTitles($rgs)) }
+
                     # Library albums, fetched ONCE here (sync DB) so we know which
                     # release MBIDs to pre-resolve; the same list is handed to
                     # _buildList so it doesn't query again.
-                    $local = Plugins::Discography::Sources->localAlbums(
-                        $opts->{artist_id}, $opts->{artist});
+                    # Library lookup is by NAME (via artist_id), so for a
+                    # shared-name act it returns the prominent act's albums and
+                    # would assert the user owns records this artist never made.
+                    # No signal exists to split them — suppress rather than lie.
+                    $local = $opts->{shared_name} ? []
+                           : Plugins::Discography::Sources->localAlbums(
+                                 $opts->{artist_id}, $opts->{artist});
 
                     # Release MBIDs the artist-wide browse hasn't already resolved
                     # -> resolve them directly (a few requests) so a library
@@ -720,7 +843,16 @@ sub _discographyView {
                         });
                     });
                 },
-                onError => sub { $rgsErr = 1; $offDone = 1; $render->() },
+                # EVERY $render flag must be settled here, $poolDone included:
+                # it is only otherwise set inside the onDone above, so an MB
+                # error left $render permanently gated and the callback was
+                # never fired at all — a spinner that hangs forever instead of
+                # the error row. There is nothing to await anyway: with no
+                # release groups there is no spine, so the streaming warm this
+                # flag exists to wait for is never started.
+                onError => sub {
+                    $rgsErr = 1; $offDone = 1; $poolDone = 1; $render->();
+                },
             );
     };
 
@@ -1009,7 +1141,26 @@ sub _warmArtistExtras {
     my ($client, $mbid, $artist, $cb) = @_;
     $cb ||= sub {};
     return $cb->() unless $client;
+    # Don't POISON the cache either: the fetch is by name, the key is by mbid,
+    # so warming a shared-name act writes the prominent act's similar artists
+    # under this artist's key — where a later render would trust it.
+    return $cb->() if Plugins::Discography::API
+                        ->sharesNameWithProminent($artist, $mbid);
     _warmSimilarArtists($client, $mbid, $artist, sub { $cb->() });
+}
+
+# Normalised MB release titles, used to tell same-named service artists apart.
+# Keyed with the matcher's own _norm so it compares like for like with the
+# candidate titles it will be scored against.
+sub _spineTitles {
+    my ($rgs) = @_;
+    my %t;
+    for my $rg (@{ $rgs || [] }) {
+        next unless ref $rg eq 'HASH' && defined $rg->{title};
+        my $n = Plugins::Discography::Sources::_norm($rg->{title});
+        $t{$n} = 1 if $n ne '';
+    }
+    return \%t;
 }
 
 sub _buildList {
@@ -1054,7 +1205,13 @@ sub _buildList {
     # Streaming candidate pools: read + reattached ONCE for the whole build,
     # then filtered per release. Peeking each release separately re-copied
     # every cached item (pools run to thousands since the artist-first fetch).
-    my $pool = Plugins::Discography::Sources->peekPool($opts->{artist});
+    # $mbid scopes the pool to THIS MusicBrainz artist — same key getCandidates
+    # wrote under. Without it the render reads the name-keyed pool and a
+    # same-name act matches against the prominent act's catalogue.
+    my $pool = Plugins::Discography::Sources->peekPool($opts->{artist}, $mbid);
+
+    # Filled by the release loop below: { svc => { album-id => 1 } }.
+    my %claimedSvc;
 
     # Bootleg filter: { rg-mbid => 0|1 } for the whole artist, or undef until
     # the background release browse has completed once. A release-group MISSING
@@ -1096,6 +1253,15 @@ sub _buildList {
             $rivals->{$rgNorm},
             { artistNorm => $artistNorm, albumNorm => $rgNorm, sources => $sources,
               index => $pool->{index} });
+        # Which streaming candidates a release group CLAIMED. Collected here
+        # rather than recomputed, because matching every candidate against
+        # every release group is exactly the work this loop already does.
+        for my $sec (@{ $peek->{sections} || [] }) {
+            next if ($sec->{svc} // '') eq 'Local';
+            $claimedSvc{ $sec->{svc} }{ $_->{_albumid} } = 1
+                for grep { defined $_->{_albumid} } @{ $sec->{items} || [] };
+        }
+
         my $visible = exists $snap->{ $rg->{mbid} }
             ? $snap->{ $rg->{mbid} }
             # Any match (local or streaming) shows; a miss only hides once
@@ -1287,6 +1453,118 @@ sub _buildList {
             IMG_BASE . 'dsc-bio_MTL_icon_person.png', 'APPEAR', \@appear);
     }
 
+    # ---------------------------------------------------------------------
+    # "Also on <service>" — the STREAMING safety net.
+    #
+    # Exactly the same principle as "Also in your library": MusicBrainz is the
+    # spine, and anything playable that the spine does not list must not
+    # silently vanish. Field case (2026-07-19): MB has ONE release group for
+    # the US rapper Manuel Gomez while Deezer carries TEN albums, so nine
+    # records were invisible.
+    #
+    # These rows are the service plugins' OWN rendered nodes, so they browse
+    # and play natively — no MB detail page to drill into, same as a library
+    # extras tile.
+    #
+    # Depends on _filterForeignArtist: without it Qobuz's ~20 appears-on
+    # entries by OTHER artist ids would land here as this artist's records.
+    # ---------------------------------------------------------------------
+    if ($prefs->get('show_streaming_extras')) {
+        my @unclaimed;
+        for my $svc (map { $_->{name} } @$sources) {
+            next if $svc eq 'Local';
+            my $claimed = $claimedSvc{$svc} || {};
+            for my $it (@{ $pool->{bySvc}{$svc} || [] }) {
+                next unless defined $it->{_albumid};
+                next if $claimed->{ $it->{_albumid} };
+
+                # CREDIT GATE. The pool is what a service returned for the
+                # artist SEARCH, which includes records by other acts with
+                # similar names and by bands this artist merely belongs to
+                # (field, 2026-07-19: Sonic Boom's section listed Experimental
+                # Audio Research releases). A matched release is verified by
+                # the MB spine; an UNCLAIMED one has nothing vouching for it,
+                # so it must at least be credited to this artist. Token-subset,
+                # so "Panda Bear & Sonic Boom" still counts as his.
+                #
+                # LIMIT (measured 2026-07-19, do not mistake this for a bug to
+                # fix here): this gate compares NAMES, so it is powerless when
+                # the intruder shares the artist's name. Qobuz files at least
+                # five different "Madness" acts under one artist id, all
+                # credited "Madness", and 90 of that entity's 139 albums are
+                # not the ska band's. Nothing available separates them — see
+                # the show_streaming_extras note in Plugin.pm for the three
+                # signals tested and why each fails. Hence the pref now
+                # defaults OFF and the section is labelled unverified.
+                next unless Plugins::Discography::Sources::_artistMatch(
+                    $artistNorm,
+                    Plugins::Discography::Sources::_norm($it->{_candArtist} // ''));
+
+                my %t = %$it;
+                $t{_svc} = $svc;   # line2 is built after the cross-service merge
+                # Self-identifying go (stale-view fix): WITHOUT this the row
+                # sends a positional item_id, the feed is rebuilt, and the click
+                # lands on whatever now sits at that index — field 2026-07-19,
+                # "Help Me Please" opened Experimental Audio Research's
+                # "Phenomena 256". Every other actionable row here is
+                # param-addressed; these were not.
+                $t{id}          = 'str:' . $svc . ':' . $t{_albumid};
+                $t{itemActions} = _listItemActions($opts, $t{id}, $t{play});
+                push @unclaimed, \%t;
+            }
+        }
+        # DEDUPE ACROSS SERVICES, as a matched release already does: one row per
+        # album naming every service that carries it, not one row per service
+        # (field, 2026-07-19: "Bajo Tu Voz · Tidal" directly above "Bajo Tu Voz
+        # · Qobuz"). Keyed on title+year, so genuinely different records that
+        # share a title stay apart. The FIRST occurrence wins the row, and the
+        # loop above runs in source-priority order, so the preferred service
+        # supplies the node that plays.
+        my (@merged, %byKey);
+        for my $t (@unclaimed) {
+            my $k = join('|', Plugins::Discography::Sources::_norm($t->{name} // ''),
+                              $t->{_year} // '');
+            if (my $have = $byKey{$k}) {
+                push @{ $have->{_svcs} }, $t->{_svc} if $t->{_svc};
+                next;
+            }
+            $t->{_svcs} = [ $t->{_svc} ? $t->{_svc} : () ];
+            $byKey{$k} = $t;
+            push @merged, $t;
+        }
+        for my $t (@merged) {
+            my %seen;
+            my @svcs = grep { !$seen{$_}++ } @{ $t->{_svcs} || [] };
+            $t->{line2} = join(" \x{00B7} ",
+                grep { length } ($t->{_year} // ''), join('/', @svcs));
+        }
+        @unclaimed = @merged;
+
+        if (@unclaimed) {
+            my @dated   = sort { ($a->{_year} || 0) <=> ($b->{_year} || 0) }
+                          grep {  $_->{_year} } @unclaimed;
+            my @undated = grep { !$_->{_year} } @unclaimed;
+            @dated = reverse @dated if $sort eq 'newest';
+            my @tiles = (@dated, @undated);
+
+            my ($vis, $pgRows) = _pageSection($client, $opts, 'STREAM', \@tiles);
+            my $hdr = {
+                name  => cstring($client, 'PLUGIN_DISCOGRAPHY_STREAM_EXTRAS')
+                       . ' (' . scalar(@tiles) . ')',
+                type  => $useH ? _headerType() : 'text',
+                image => IMG_BASE . 'dsc-lib_MTL_icon_library_music.png',
+            };
+            if ($useH) {
+                my @kids = (@$vis, @$pgRows);
+                $hdr->{id}          = 'sect:STREAM';
+                $hdr->{itemActions} = _listItemActions($opts, $hdr->{id});
+                $hdr->{url}         = sub { $_[1]->({ items => \@kids }) };
+                $hdr->{passthrough} = [{}];
+            }
+            push @items, $hdr, @$vis, @$pgRows;
+        }
+    }
+
     # "Also a member of" — LINKS to the discography of each band/project this
     # artist belongs to (MusicBrainz "member of band"; API::peekBands, warmed in
     # the MB chain). Shown regardless of show_library_extras: it's navigation,
@@ -1310,7 +1588,10 @@ sub _buildList {
     # as the bands section (peek is cache-only; warmed after the first render ->
     # appears on re-entry) and it sits AFTER bands as the LAST section, so a
     # cold->warm flip only adds trailing rows. Kept in MAI's relevance order.
-    my $similar = _peekSimilar($mbid);
+    # NB the CACHE is mbid-keyed but the DATA is not: _warmSimilarArtists asks
+    # Last.fm (via MAI) by NAME, so a shared-name act's key holds the prominent
+    # act's similar artists. Suppress rather than show the wrong band's peers.
+    my $similar = $opts->{shared_name} ? undef : _peekSimilar($mbid);
     if ($similar && @$similar) {
         push @items, _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_SIMILAR_ARTISTS',
             $useH, IMG_BASE . 'dsc-bio_MTL_icon_person.png',
@@ -1556,7 +1837,7 @@ sub _refreshItem {
             # band view keeps its stashed mbid, so it re-pulls by mbid.)
             Plugins::Discography::API->clearArtistCache(
                 name => $pass->{artist}, mbid => $pass->{mbid});
-            Plugins::Discography::Sources->clearCandidates($pass->{artist})
+            Plugins::Discography::Sources->clearCandidates($pass->{artist}, $pass->{mbid})
                 if defined $pass->{artist} && length $pass->{artist};
             $cb->({ items => [] });
         },
@@ -1770,12 +2051,23 @@ sub _artistSearchView {
     unless (length $q) { $callback->({ items => [] }); return }
 
     # v2: 0.37.1 gated results — bypass any cached ungated 0.37.0 lists.
-    my $ckey = 'dsc:asearch:2:' . lc $q;
+    # v3: `mergeArtistHits` buckets by `_norm`, and the decorative-mark change
+    # makes "Layo & Bushwacka!" and "Layo & Bushwacka" bucket TOGETHER. A v2
+    # entry holds them as separate rows. Only a 10-minute TTL, but that is
+    # exactly the window someone tests the fix in.
+    my $ckey = 'dsc:asearch:5:' . lc $q;
     utf8::encode($ckey) if utf8::is_utf8($ckey);
+
+    # Both the cached and the fresh path finish the same way: streaming rows
+    # first, then the MusicBrainz same-name section (see _withMbCandidates).
+    my $finish = sub {
+        my ($merged) = @_;
+        _withMbCandidates($client, $callback, $features, $q, $merged);
+    };
 
     if (my $cached = $cache->get($ckey)) {
         _dbg("artist search '$q': cached (" . scalar(@$cached) . ' merged)');
-        $callback->({ items => _searchResultItems($client, $cached, $features) });
+        $finish->($cached);
         return;
     }
 
@@ -1797,8 +2089,197 @@ sub _artistSearchView {
         else {
             $cache->set($ckey, $merged, SEARCH_TTL);
         }
-        $callback->({ items => _searchResultItems($client, $merged, $features) });
+        $finish->($merged);
     });
+}
+
+# ---------------------------------------------------------------------------
+# SAME-NAME ARTISTS FROM MUSICBRAINZ
+#
+# THE PROBLEM (field, 2026-07-18): several DIFFERENT acts share one name, and
+# only one of them was reachable. Searching "Madness" found the ska band on
+# every service; the seven other MB artists called Madness — a horrorcore
+# rapper, a US funk rock group, an Indiana black metal band — could not be
+# reached at all, and every route into the plugin (name search, or Search Hub
+# handing off by name) landed on the SAME prominent act. Wrong discography, no
+# way to correct it.
+#
+# The streaming services cannot fix this: their search returns whichever acts
+# they happen to carry, under one indistinguishable name. MusicBrainz can — it
+# models them as separate artists WITH disambiguation comments, which is the
+# only thing that makes them tellable apart in a list.
+#
+# So the search results gain a section listing every MB artist of that name,
+# each labelled with its comment ("English pop/ska band" / "Horrorcore rapper,
+# member of Bedlam"). Each row enters by MBID, skipping name resolution
+# entirely — which is the whole point, since the name is exactly what cannot
+# distinguish them.
+#
+# Shown only when MB has MORE THAN ONE artist by the name: a single candidate
+# is the act the streaming rows already lead to, and repeating it would just be
+# a duplicate row. The MB lookup is cached (14d), so this costs one request per
+# name and nothing on a repeat search.
+# ---------------------------------------------------------------------------
+sub _withMbCandidates {
+    my ($client, $callback, $features, $q, $merged) = @_;
+
+    # Drop rows whose page could only be empty BEFORE building any of them —
+    # both the row list and the "already covered above" test below must see the
+    # same set, or the disambiguation section would hide a candidate on the
+    # strength of a row that is no longer there. No-op unless MB is un-throttled
+    # (see API::filterRowsWithContent).
+    Plugins::Discography::API->filterRowsWithContent($merged, sub {
+    my ($kept) = @_;
+    $merged = $kept;
+
+    my @rows = @{ _searchResultItems($client, $merged, $features) };
+
+    Plugins::Discography::API->getArtistCandidates($q, sub {
+        my ($cands) = @_;
+        $cands ||= [];
+
+        if (@$cands < 2) {
+            _dbg("artist search '$q': " . scalar(@$cands)
+                . ' MB same-name artist(s) — no disambiguation section');
+            return $callback->({ items => \@rows });
+        }
+
+        # WAIT for the release-group counts rather than filtering on whatever a
+        # background warm happened to have finished.
+        #
+        # This used to fire the warm and filter on a PEEK, which meant the
+        # counts never existed on the visit that mattered: the FIRST search for
+        # a name rendered every candidate, and a later search silently removed
+        # the empty ones. Field-confirmed 2026-07-19 — a first search for
+        # "Bush" listed the "techno" act, which has zero release groups in MB.
+        # Simon: "I dont want users getting confused by stuff showing then
+        # disappearing", and chose correctness over resolution latency.
+        #
+        # COST: one MB browse per uncounted candidate, serialised at MB's
+        # 1 req/s etiquette (mbGap) — milliseconds against a local mirror,
+        # a few seconds against the public API, then cached for RGCOUNT_TTL.
+        # The planned move to the hosted LMS-community API removes the
+        # throttle, which is why this trade was acceptable.
+        Plugins::Discography::API->warmCandidateCounts($cands, sub {
+
+        # A candidate MB has catalogued NO releases for can only ever render an
+        # empty page — drop it. undef still means SHOW: an HTTP failure leaves
+        # the count uncached (see warmCandidateCounts), and a fetch that failed
+        # must never be read as "this artist has nothing".
+        my @live = grep {
+            my $n = Plugins::Discography::API->peekReleaseGroupCount($_->{mbid});
+            !defined $n || $n > 0;
+        } @$cands;
+        _dbg("artist search '$q': " . (scalar(@$cands) - scalar(@live))
+            . ' MB artist(s) dropped as having no releases')
+            if @live < @$cands;
+        $cands = \@live;
+
+        # A DIFFERENTLY SPELLED act is not something the user needs help
+        # telling apart — "Mädness" reads as its own artist. Those belong in
+        # the main result list, not under a "can't tell these apart" header,
+        # and because their name is unique the name-keyed artist photo is
+        # CORRECT for them (unlike the same-string acts, which would all get
+        # the prominent act's picture).
+        my (@distinct, @sameString);
+        for my $c (@$cands) {
+            if (lc($c->{name} // '') eq lc $q) { push @sameString, $c }
+            else                               { push @distinct,   $c }
+        }
+        push @rows, map { _mbCandidateRow($client, $_, $features, 1) } @distinct;
+
+        $cands = \@sameString;
+        if (@$cands < 2) {
+            _dbg("artist search '$q': " . scalar(@$cands)
+                . ' same-spelling artist(s) after filtering — no section');
+            return $callback->({ items => \@rows });
+        }
+
+        # DROP THE ACT THE ROWS ABOVE ALREADY REACH. getArtistCandidates sorts
+        # by MB score, and the top one is exactly what name resolution picks —
+        # so a streaming/library row for this name already drills into it, and
+        # listing it again put the ska band on the page TWICE under a header
+        # that says "OTHER artists" (field, 0.43.2).
+        #
+        # Only when such a row exists: with no result above (an artist absent
+        # from every service and the library), the whole set must stay or the
+        # prominent act becomes unreachable.
+        my $qn = Plugins::Discography::Sources::_norm($q);
+        my $covered = grep { Plugins::Discography::Sources::_norm($_->{name} // '') eq $qn }
+                      @{ $merged || [] };
+        my @show = @$cands;
+        shift @show if $covered;
+        unless (@show) {
+            _dbg("artist search '$q': every MB artist is already listed above");
+            return $callback->({ items => \@rows });
+        }
+
+        _dbg("artist search '$q': " . scalar(@$cands)
+            . ' MB artists share this name — listing ' . scalar(@show)
+            . ' other' . ($covered ? ' (top one already shown above)' : ''));
+
+        my @mb = map { _mbCandidateRow($client, $_, $features) } @show;
+        push @rows, _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_SAME_NAME',
+            _wantHeaders($features), IMG_BASE . 'dsc-bio_MTL_icon_person.png',
+            \@mb);
+        push @rows, @mb;
+
+        $callback->({ items => \@rows });
+        });   # warmCandidateCounts
+    });
+    });       # filterRowsWithContent
+}
+
+# One MB artist row. Entered by MBID (fixedParams `mbid`), which _discographyView
+# takes as a resolved identity and browses directly — the name would resolve
+# back to the prominent act and defeat the entire section.
+sub _mbCandidateRow {
+    my ($client, $cand, $features, $named) = @_;
+
+    # The ALIAS is the name this artist's records are actually sold under on the
+    # services ("Madness" the US rapper sells as "Tony Madness"), so it is often
+    # the most recognisable thing on the row — and it explains why a row named
+    # "Madness" leads to a catalogue filed elsewhere.
+    my $alias = (@{ Plugins::Discography::API->peekArtistAliases($cand->{mbid}) || [] })[0];
+
+    my @bits = grep { defined && length }
+               ($cand->{disambiguation}, $cand->{type}, $cand->{country});
+    unshift @bits, "aka $alias" if defined $alias && length $alias;
+    my $line2 = @bits ? join(" \x{00B7} ", @bits)
+                      : cstring($client, 'PLUGIN_DISCOGRAPHY_SAME_NAME_NOINFO');
+
+    my %fixed = (
+        mbid   => $cand->{mbid},
+        artist => $cand->{name},
+        (length($features // '') ? (features => $features) : ()),
+    );
+    return {
+        name        => $cand->{name},
+        type        => 'link',
+        line2       => $line2,
+        # _artistImg is keyed by NAME. For an act whose spelling is UNIQUE
+        # ($named) that resolves to the right artist, so it gets a real photo.
+        # For acts sharing one spelling it would hand every row the prominent
+        # act's picture — worse than none on a list whose purpose is telling
+        # them apart (field, 0.43.0) — so those keep the person icon.
+        image       => $named ? _artistImg($cand->{name})
+                              : IMG_BASE . 'dsc-bio_MTL_icon_person.png',
+        itemActions => { items => { command => ['discography', 'items'],
+            fixedParams => \%fixed } },
+        passthrough => [{ c_mbid => $cand->{mbid}, c_name => $cand->{name},
+                          features => $features }],
+        url         => sub {
+            my ($c, $cb, $a, $p) = @_;
+            _dbg("MB same-name drill -> '$p->{c_name}' ($p->{c_mbid})");
+            _discographyView($c, $cb, {
+                mbid     => $p->{c_mbid},
+                artist   => $p->{c_name},
+                features => $p->{features},
+                sort     => $prefs->get('sort_order') || 'newest',
+                force    => 0,
+            });
+        },
+    };
 }
 
 sub _searchResultItems {
@@ -2360,7 +2841,7 @@ sub _releaseDetail {
             passthrough => [{ artist => $artist }],
             url         => sub {
                 my ($c, $cb, $a, $p) = @_;
-                Plugins::Discography::Sources->clearCandidates($p->{artist});
+                Plugins::Discography::Sources->clearCandidates($p->{artist}, $p->{mbid});
                 $cb->({ items => [] });
             },
         };
@@ -2378,6 +2859,12 @@ sub _releaseDetail {
         mbid   => $rg->{mbid},
         onDone => sub { $links = shift; $compose->() if $sectionsDone && $reviewDone },
     );
+
+    # Same spine as the list view, or the detail page resolves a DIFFERENT
+    # service artist than the tile did and the two disagree — the exact class of
+    # bug 0.18.0 fixed for the rival/MBID context.
+    my $dSpine = _spineTitles(
+        Plugins::Discography::API->peekReleaseGroups($pass->{mbid}));
 
     Plugins::Discography::Sources->getCandidates($client, $artist, 0, sub {
         my $bySvc = shift;
@@ -2424,7 +2911,7 @@ sub _releaseDetail {
         else {
             $finish->(undef);
         }
-    });
+    }, { spine => $dSpine, mbid => $pass->{mbid} });
 }
 
 1;

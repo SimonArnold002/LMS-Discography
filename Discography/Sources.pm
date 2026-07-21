@@ -23,6 +23,7 @@ use strict;
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use Slim::Utils::Cache;
+use Slim::Utils::PluginManager;
 use Slim::Utils::Timers;
 use Slim::Control::Request;
 
@@ -42,6 +43,24 @@ use constant SVC_TIMEOUT    => 20;          # per-service fetch watchdog (s).
                                             # bucket pulls). The old 8s was
                                             # sized for a single 50-item search.
 use constant MAX_PER_SVC    => 4;           # editions shown per service
+use constant POOL_LOG_MAX   => 25;          # log a pool this small IN FULL
+
+# PERFORMANCE roles — the artist must PERFORM (solo, primary, band member or
+# guest), not merely have WRITTEN a song that appears. 0.19.0 added this to the
+# library album query after Bob Dylan's page filled with albums he only wrote a
+# track on (Richard Hawley, George Harrison, Ladysmith Black Mambazo).
+#
+# ONE constant, used by BOTH the library album query AND the artist SEARCH's
+# Local leg, because the two disagreeing is itself a bug: 0.19.0 filtered the
+# PAGE and left the SEARCH unfiltered, so a writer-only contributor was offered
+# as a "Local" search row and then opened a page that found nothing under them
+# (field, Simon: "several artists that claim are local but show no entries" —
+# John Bush / Steven Bush / David Bush, composer credits in his library).
+# Library rows are also EXEMPT from the dead-end filter, so nothing downstream
+# could catch it either. Spelling the policy once is what stops it drifting
+# apart again — widen this if composer support is ever built, and both call
+# sites widen together.
+use constant PERFORMANCE_ROLES => 'ARTIST,ALBUMARTIST,BAND,TRACKARTIST';
 use constant CAND_CACHE_V   => '4';         # bump on shape/matcher changes
                                             # v2: flush octet-query poisoned pools
                                             # v3: artist-first pools (search-cap
@@ -167,7 +186,7 @@ sub localAlbums {
     my $req = eval {
         Slim::Control::Request::executeRequest(undef,
             ['albums', 0, 500, "artist_id:$artistId",
-             'role_id:ARTIST,ALBUMARTIST,BAND,TRACKARTIST', 'tags:ljya']);
+             'role_id:' . PERFORMANCE_ROLES, 'tags:ljya']);
     };
     return [] unless $req;
 
@@ -304,9 +323,36 @@ sub serviceStatus {
 # Candidate fetch + cache
 # ---------------------------------------------------------------------------
 
+# $mbid scopes the key to ONE MusicBrainz artist. Only same-name-ambiguous
+# lookups pass it, so every ordinary artist keeps its existing name-keyed entry
+# (no mass cache invalidation) while two acts called Madness get their own.
+# The candidate pool is the ONE cache whose contents depend on resolver LOGIC
+# rather than on remote data: which service artist we picked, what the foreign-
+# artist filter dropped, whether the alias retry ran. So every change to that
+# logic can leave a pool that is stale in a way no TTL describes — and it
+# persists for CAND_FOUND_TTL (3 days), which during development repeatedly made
+# a WORKING fix look broken (Sonic Boom, 2026-07-19: the page only came right
+# after a manual clearcache).
+#
+# Including the plugin VERSION in the key makes every install self-invalidating:
+# a new build simply cannot read an old build's pools. Costs one refetch per
+# artist actually visited after an update, on demand — not a mass rebuild — and
+# removes a whole class of "is this the fix or the cache?" diagnosis. Old keys
+# are never read again and expire on their own.
+my $_pluginVer;
+sub _pluginVersion {
+    return $_pluginVer if defined $_pluginVer;
+    $_pluginVer = eval {
+        Slim::Utils::PluginManager->dataForPlugin('Plugins::Discography::Plugin')->{version};
+    };
+    $_pluginVer = 'dev' unless defined $_pluginVer && length $_pluginVer;
+    return $_pluginVer;
+}
+
 sub _candKey {
-    my ($svc, $artist) = @_;
-    my $key = 'dsc:cand:' . CAND_CACHE_V . ':' . lc($svc) . ':' . _norm($artist);
+    my ($svc, $artist, $mbid) = @_;
+    my $key = 'dsc:cand:' . CAND_CACHE_V . ':' . _pluginVersion() . ':' . lc($svc) . ':'
+            . ($mbid ? "mb:$mbid" : _norm($artist));
     utf8::encode($key) if utf8::is_utf8($key);   # octet key — non-Latin can't crash md5
     return $key;
 }
@@ -328,9 +374,10 @@ sub _reattach {
 }
 
 sub _cacheCands {
-    my ($key, $items, $ttl) = @_;
+    my ($key, $items, $ttl, $unresolved) = @_;
     my @store = map { my %x = %$_; delete $x{url}; \%x } @{ $items || [] };
-    eval { $cache->set($key, { items => \@store }, $ttl); 1 }
+    eval { $cache->set($key, { items => \@store,
+                               ($unresolved ? (unresolved => 1) : ()) }, $ttl); 1 }
         or $log->warn("candidate cache set failed: $@");
 }
 
@@ -339,7 +386,37 @@ sub _cacheCands {
 # watchdog. Cache hits skip the search entirely. $cb fires exactly once, after
 # every service settles (a hung one settles as an error at SVC_TIMEOUT).
 sub getCandidates {
-    my ($class, $client, $artist, $force, $cb) = @_;
+    my ($class, $client, $artist, $force, $cb, $opt) = @_;
+    $opt ||= {};
+
+    # %opt (all optional): spine => { normalised MB title => 1 }, mbid => '...'
+    # The spine is what an ambiguous name's candidates are scored against (see
+    # _resolveArtist) and may legitimately be EMPTY. The mbid scopes the cache
+    # so two acts sharing a name cannot share a pool, and is independent of the
+    # spine — see the write-key note below.
+    my $spine   = $opt->{spine};
+    my $aliases = $opt->{aliases};
+    # The NAME is shared by several MB artists: a lone same-name hit on a
+    # service proves nothing and must be checked against the spine too.
+    my $strict  = $opt->{ambiguous} ? 1 : 0;
+    # THE WRITE KEY, and it must be derived exactly as the READ keys are.
+    #
+    # This used to be `($spine && %$spine) ? $opt->{mbid} : undef` — vestigial
+    # from 0.43.1, when only ambiguous lookups were mbid-scoped. Both readers
+    # (peekPool via _buildList and the cold check) pass the mbid
+    # UNCONDITIONALLY, so an EMPTY spine wrote a name-keyed pool that nothing
+    # ever read back. Two ways that bit:
+    #   - an artist with no MB release groups: _spineTitles is {}, so the pool
+    #     was written name-keyed and read mb-keyed — a permanent miss, and with
+    #     hide_unmatched on the cold-pool await re-resolved every service on
+    #     EVERY visit, never warming.
+    #   - _releaseDetail builds its spine from peekReleaseGroups, a cache-ONLY
+    #     peek; on a miss the spine is empty, so the detail page resolved
+    #     against the name-keyed pool — the prominent same-name act's catalogue
+    #     — and disagreed with the tile that opened it.
+    # Same class as the 0.43.1/0.43.2 split key: a scope on a cache key must be
+    # derived the same way on both sides, or it fails silently.
+    my $mbid    = $opt->{mbid};
 
     my @adapters = orderedAdapters();
     unless (@adapters && defined $artist && length $artist) { $cb->({}); return }
@@ -358,7 +435,7 @@ sub getCandidates {
 
     for my $a (@adapters) {
         my $svc = $a->{name};
-        my $key = _candKey($svc, $artist);
+        my $key = _candKey($svc, $artist, $mbid);
 
         if (!$force && (my $c = $cache->get($key))) {
             $out{$svc} = _reattach($svc, $c->{items});
@@ -384,7 +461,13 @@ sub getCandidates {
             if (!defined $items) {
                 # Couldn't query (no handler / timeout / renderer died): cache
                 # empty briefly so the next open retries soon, not in 3 days.
-                _cacheCands($key, [], CAND_ERR_TTL);
+                # UNRESOLVED, not "this service has nothing". An empty pool
+                # that peekPool counts as `resolved` lets hide_unmatched hide
+                # the release — which is precisely what 0.43.1 set out to
+                # prevent and did not, because the marker was never stored
+                # (field, 2026-07-19: an unresolvable artist's page still read
+                # "No releases found").
+                _cacheCands($key, [], CAND_ERR_TTL, 1);
                 $out{$svc} = [];
             }
             else {
@@ -394,10 +477,18 @@ sub getCandidates {
             # Sample the pool head in the log: a healthy count full of the
             # WRONG artist (mangled query, wrong-artist adoption) is otherwise
             # indistinguishable from a good pool the matcher rejected.
+            #
+            # A SMALL pool is listed IN FULL (POOL_LOG_MAX), because for a
+            # missing release the whole question is "is it in the pool and
+            # failing the title match, or was it never fetched?" — and three
+            # examples can never answer that. Big pools stay sampled: a single
+            # render already writes ~100 match lines and log.txt tails.
             my $n = defined $items ? scalar(@$items) : undef;
+            my $show = ($n && $n <= POOL_LOG_MAX) ? $n : 3;
             my $sample = ($n && $n > 0)
-                ? ' e.g. ' . join('; ', map { ($_->{_candArtist} // '?') . ' - ' . ($_->{_candTitle} // '?') }
-                    @{$items}[0 .. ($n > 3 ? 2 : $n - 1)])
+                ? (($n <= POOL_LOG_MAX ? ' ALL: ' : ' e.g. ')
+                   . join('; ', map { ($_->{_candArtist} // '?') . ' - ' . ($_->{_candTitle} // '?') }
+                     @{$items}[0 .. ($n > $show ? $show - 1 : $n - 1)]))
                 : '';
             _dbg("candidates $svc/'$artist': "
                 . (defined $n ? $n . $sample : 'error (handler/timeout/renderer)'));
@@ -411,7 +502,7 @@ sub getCandidates {
         });
 
         my $query = ($a->{query_enc} || 'bytes') eq 'chars' ? $qChars : $qBytes;
-        eval { $a->{run}->($client, $query, $svc, $settle); 1 } or do {
+        eval { $a->{run}->($client, $query, $svc, $settle, $spine, $aliases, $strict); 1 } or do {
             $log->warn("candidates $svc failed: $@");
             $settle->(undef);
         };
@@ -419,10 +510,31 @@ sub getCandidates {
 }
 
 # Drop an artist's candidate caches (the detail page's "Refresh matches" row).
+# Clears BOTH scopes: the mbid-keyed pool (what an identified artist actually
+# uses) and the legacy/name-keyed one. Refresh must not leave a stale pool
+# behind just because the caller didn't know the mbid.
 sub clearCandidates {
-    my ($class, $artist) = @_;
+    my ($class, $artist, $mbid) = @_;
     return unless defined $artist && length $artist;
-    $cache->remove(_candKey($_->{name}, $artist)) for adapters();
+
+    # LOGS THE KEYS, and whether each actually held anything. clearcache
+    # reported success for a long time while the pool survived (2026-07-19),
+    # which silently invalidated every "cold cache" test run against this
+    # plugin — including ones that concluded a real bug was unreproducible.
+    # A clear that cannot be observed is a clear that cannot be trusted.
+    my @report;
+    for my $a (adapters()) {
+        for my $key (_candKey($a->{name}, $artist),
+                     ($mbid ? _candKey($a->{name}, $artist, $mbid) : ())) {
+            my $had = defined $cache->get($key) ? 'HIT' : 'miss';
+            $cache->remove($key);
+            my $now = defined $cache->get($key) ? 'STILL-PRESENT' : 'gone';
+            push @report, "$key [$had->$now]";
+        }
+    }
+    _dbg('clearCandidates: ' . (@report ? join(' | ', @report)
+                                        : 'NO ADAPTERS - nothing cleared'));
+    return \@report;
 }
 
 # ---------------------------------------------------------------------------
@@ -458,16 +570,45 @@ sub searchArtists {
     # accepted pattern), the same `artists search:` call localAlbums' name
     # fallback uses. Hits keep their contributor id so a drill-in resolves
     # via the reliable library-tag path.
+    #
+    # role_id MUST match what localAlbums asks for (PERFORMANCE_ROLES). Left
+    # unfiltered, `artists` falls back to activeContributorRoles /
+    # defaultContributorRoles (verified in LMS 9.0 Queries.pm:1047-1063), which
+    # include COMPOSER — so a writer-only contributor was returned here as a
+    # Local row while the page it opened filtered them out and showed nothing.
     if (($prefs->get('svc_priority_local') // 1) > 0) {
         my $enc = $query;
         utf8::encode($enc) if utf8::is_utf8($enc);
+        # LMS's OWN search does not fold "&" against "and" — verified live
+        # 2026-07-21: `artists search:Simon and Garfunkel` returns 0 while
+        # `search:Simon & Garfunkel` returns 1. `_norm` folds them, but this leg
+        # queries the LMS database DIRECTLY with the raw text, so the fold never
+        # reaches it and a user typing the other spelling was told they do not
+        # own an artist they demonstrably do (the streaming rows still appeared,
+        # so the row simply lost its Local source).
+        #
+        # Try the other spelling only when the first finds nothing: one extra
+        # sync DB query, on a miss, on a query the user typed.
+        my @tries = ($enc);
+        my $alt   = $enc;
+        if    ($alt =~ s/\s*&\s*/ and /g)  { push @tries, $alt }
+        elsif ($alt =~ s/\s+and\s+/ & /gi) { push @tries, $alt }
+
         my @hits;
-        my $req = eval { Slim::Control::Request::executeRequest(undef,
-            ['artists', 0, SEARCH_MAX, "search:$enc"]) };
-        if ($req) {
-            for my $e (@{ $req->getResult('artists_loop') || [] }) {
-                next unless defined $e->{artist} && length $e->{artist};
-                push @hits, { name => $e->{artist}, artist_id => $e->{id} };
+        for my $try (@tries) {
+            my $req = eval { Slim::Control::Request::executeRequest(undef,
+                ['artists', 0, SEARCH_MAX, "search:$try",
+                 'role_id:' . PERFORMANCE_ROLES]) };
+            if ($req) {
+                for my $e (@{ $req->getResult('artists_loop') || [] }) {
+                    next unless defined $e->{artist} && length $e->{artist};
+                    push @hits, { name => $e->{artist}, artist_id => $e->{id} };
+                }
+            }
+            if (@hits) {
+                _dbg("Local: '$try' matched " . scalar(@hits)
+                    . ($try eq $enc ? '' : " (via &/and variant of '$enc')"));
+                last;
             }
         }
         $out{Local} = \@hits;
@@ -495,8 +636,16 @@ sub searchArtists {
             my $ok = ref $hits eq 'ARRAY';
             $out{$svc}    = $ok ? $hits : [];
             $failed{$svc} = 1 unless $ok;
+            # NAMES, not just a count. A count cannot answer "was this artist
+            # ever returned?" - and that is the only question that matters when
+            # a row the user expected is missing (field: "The Iron Maidens"
+            # absent from an Iron Maiden search, present in Tidal's own
+            # results). It distinguishes a service/limit gap from the merge
+            # relevance gate dropping it downstream.
             _dbg("artist-search $svc/'$query': " . scalar(@{ $out{$svc} })
-                . ($ok ? '' : ' (error/timeout)'));
+                . ($ok ? '' : ' (error/timeout)')
+                . (@{ $out{$svc} } ? ' | ' . join('; ',
+                    map { $_->{name} // '?' } @{ $out{$svc} }) : ''));
             $cb->(\%out, \%failed) unless --$pending;
         };
         $timer = Slim::Utils::Timers::setTimer(undef, time() + SEARCH_TIMEOUT, sub {
@@ -617,6 +766,78 @@ sub _artistsDeezer {
 # returns, it must be DISCOGRAPHY-VERIFIED — corroborate that the entities'
 # release lists actually overlap (the 0.28.x library-disambiguation
 # philosophy) — never inferred from the name.
+# ---------------------------------------------------------------------------
+# TYPO TOLERANCE FOR THE RELEVANCE GATE
+#
+# THE BUG (field, 2026-07-21). Simon typed "Layo & Bushwaka" — one letter out —
+# and got NOTHING. The services had already done the hard part: Qobuz, Tidal
+# and Deezer ALL returned "Layo & Bushwacka!" for that misspelling. Our gate
+# then threw all 17 hits away and kept only a vague "Layo" (0 release groups),
+# which the dead-end filter correctly dropped. So the search was strictly WORSE
+# than the services it queries, and Simon was right that "from a user
+# perspective this is broken".
+#
+# THIS IS NOT THE ENTITY FOLDING DECLINED ON 2026-07-17, and the distinction is
+# the whole point. That decision rejected MERGING two service entities into one
+# row on string similarity ("Beatles" + "The Beatles"), because a name cannot
+# prove two entities are one act. Nothing here merges anything: bucketing is
+# still EXACT `_norm` equality. This only decides whether a hit the service
+# returned is relevant to what the USER TYPED — a query/result question, not an
+# identity claim — and every admitted row still faces the dead-end filter.
+#
+# PURELY ADDITIVE: it runs only after the three existing tests have all failed,
+# so it can never reject something that passes today. The 0.37.1 junk it must
+# keep out (Tidal answering "The Beatles" with Led Zeppelin, Pink Floyd, The
+# Monkees) is nowhere near the threshold.
+#
+# THRESHOLDS, measured against the REAL logged service hits (not invented):
+#   lowest wanted-KEEP  0.944  (layo and bushwaka -> layo and bushwacka)
+#   highest wanted-DROP 0.545  (the beatles -> beatless / the monkees)
+# 0.85 sits far above the junk with margin on both sides.
+#
+# THE LENGTH FLOOR IS NOT DECORATION — it is doing real work. On short names a
+# single edit is a DIFFERENT WORD: "eagles"/"beagles" scores 0.857 and
+# "slayer"/"player" 0.833, both ABOVE the ratio threshold, and only the floor
+# excludes them. Cost of the floor is a genuine miss on short typos
+# ("nirvna"), accepted deliberately: no result beats a confidently wrong one.
+use constant FUZZY_MIN_SIM => 0.85;
+use constant FUZZY_MIN_LEN => 8;
+
+# Levenshtein. NB the parameters are NOT $a/$b: a lexical $a/$b in scope
+# silently breaks any sort/min written in terms of them — the 0.44.18 bug, and
+# I reproduced it in this very function's first test harness.
+sub _editDistance {
+    my ($s1, $s2) = @_;
+    return length($s2) unless length $s1;
+    return length($s1) unless length $s2;
+    my @prev = (0 .. length($s2));
+    for my $i (1 .. length($s1)) {
+        my @cur = ($i);
+        for my $j (1 .. length($s2)) {
+            my $del = $prev[$j] + 1;
+            my $ins = $cur[$j - 1] + 1;
+            my $sub = $prev[$j - 1]
+                    + (substr($s1, $i - 1, 1) ne substr($s2, $j - 1, 1) ? 1 : 0);
+            my $min = $del;
+            $min = $ins if $ins < $min;
+            $min = $sub if $sub < $min;
+            push @cur, $min;
+        }
+        @prev = @cur;
+    }
+    return $prev[-1];
+}
+
+sub _closeEnough {
+    my ($qn, $hn) = @_;
+    return 0 unless length($qn) >= FUZZY_MIN_LEN && length $hn;
+    my $max = length($qn) > length($hn) ? length($qn) : length($hn);
+    # Cheap reject before the O(n*m) matrix: a length gap alone can already put
+    # the pair out of reach, and most candidates fail here.
+    return 0 if (abs(length($qn) - length($hn)) / $max) > (1 - FUZZY_MIN_SIM);
+    return ((1 - _editDistance($qn, $hn) / $max) >= FUZZY_MIN_SIM) ? 1 : 0;
+}
+
 sub mergeArtistHits {
     my ($class, $query, $bySvc, $order) = @_;
     my @order = $order ? @$order
@@ -639,7 +860,8 @@ sub mergeArtistHits {
             unless ($k eq $qk) {
                 my $hn = _norm($h->{name} // '');
                 next unless $qn ne '' && $hn ne ''
-                    && (index($hn, $qn) >= 0 || _artistMatch($qn, $hn));
+                    && (index($hn, $qn) >= 0 || _artistMatch($qn, $hn)
+                        || _closeEnough($qn, $hn));
             }
             my $b = $bucket{$k};
             unless ($b) {
@@ -790,16 +1012,45 @@ sub claimedLocalIds {
 # thousands of hash copies on the single-threaded event loop for one list
 # render. Callers building a whole list hoist this out of their loop and hand
 # the result to peekMatches.
+# $mbid MUST be passed wherever getCandidates was given one, or the render
+# reads a DIFFERENT cache entry than the warm wrote (field, 0.43.1: the warm
+# fetched into `mb:<mbid>` while this read the name-keyed pool, so the fix could
+# not take effect and the page still matched against the prominent act's
+# catalogue). Read key and write key are the same function for exactly this
+# reason — keep them that way.
 sub peekPool {
-    my ($class, $artist) = @_;
+    my ($class, $artist, $mbid) = @_;
     return { bySvc => {}, resolved => 0, index => {} }
         unless defined $artist && length $artist;
 
     my $artistNorm = _norm($artist);
     my (%bySvc, %index, $resolved);
+    # COLD = not one service has a cached entry, i.e. streaming was never
+    # fetched for this artist. Distinct from "fetched and nothing found"
+    # ($resolved==0 with entries present), and the two must not be conflated:
+    # the render EXEMPTS unmatched releases from hide_unmatched when streaming
+    # is unresolved, which is right for "we asked and the services don't have
+    # this artist" but wrong for "we haven't asked yet" — that just renders a
+    # page the next visit contradicts (field, 2026-07-19: 85 unmatched releases
+    # on the first view of Madness after an update, 0 on the second).
+    my $seen = 0;
     for my $a (orderedAdapters()) {
-        my $c = $cache->get(_candKey($a->{name}, $artist)) or next;
-        $resolved = 1;
+        # An mbid-scoped pool is authoritative for THIS act; fall back to the
+        # name-keyed one only when there is no mbid scope in play (ordinary
+        # artists), never as a second chance for an ambiguous one — that is the
+        # wrong act's catalogue by definition.
+        my $rkey = _candKey($a->{name}, $artist, $mbid);
+        my $c = $cache->get($rkey);
+        # Logged so the READ key can be diffed against the keys clearCandidates
+        # reports removing — the pair is the whole diagnosis when a clear does
+        # not take effect.
+        _dbg("peekPool read $rkey: " . ($c ? 'HIT' : 'miss'));
+        $c or next;
+        $seen++;
+        # An entry cached as UNRESOLVED (no artist could be identified on this
+        # service) must NOT count as "streaming was checked" — otherwise an
+        # empty pool hides every release behind hide_unmatched.
+        $resolved = 1 unless $c->{unresolved};
         my $items = _reattach($a->{name}, $c->{items});
         $bySvc{ $a->{name} } = $items;
 
@@ -813,7 +1064,8 @@ sub peekPool {
         }
         $index{ $a->{name} } = \%idx;
     }
-    return { bySvc => \%bySvc, resolved => $resolved ? 1 : 0, index => \%index };
+    return { bySvc => \%bySvc, resolved => $resolved ? 1 : 0, index => \%index,
+             cold => $seen ? 0 : 1 };
 }
 
 # Cache-only variant for sync paths (list-tile badges): never searches, never
@@ -831,7 +1083,7 @@ sub peekMatches {
     return { sections => [], resolved => 0 }
         unless defined $artist && length $artist;
 
-    $pool ||= $class->peekPool($artist);
+    $pool ||= $class->peekPool($artist, $opt->{mbid});
     return {
         sections => $class->matchesFor($pool->{bySvc}, $artist, $albumTitle, $local, $rgMbid, $relMap, $rivals, $opt),
         resolved => $pool->{resolved},
@@ -881,6 +1133,253 @@ sub _attachFavUrl {
 
 # Best service artist for the query: normalised exact name wins, else the
 # first (services rank by relevance) token-subset _artistMatch hit.
+# ---------------------------------------------------------------------------
+# SAME-NAME ARTIST RESOLUTION AGAINST THE MUSICBRAINZ SPINE
+#
+# THE BUG THIS EXISTS FOR (field, 0.43.0): browsing a SECONDARY same-name act
+# showed an empty page. Diagnosed live — the MB spine was right and everything
+# else was wrong:
+#
+#   topLevel: artist=Madness mbid=5d500d2e-...        (the horrorcore rapper)
+#   match 'Open Corpse': NO MATCH | pool: Qobuz=158, Tidal=131, Local=7
+#
+# The release group is the rapper's; the candidate pool is the SKA BAND's,
+# because getCandidates is keyed by artist NAME and _pickArtist picks the first
+# exact-name hit — a coin toss when eight artists share the name. Nothing
+# matched, hide_unmatched hid it, and the page read "No releases found". The
+# matcher was never at fault: it was handed the wrong pool.
+#
+# THE FIX: when a name is ambiguous, pick the service artist whose CATALOGUE
+# corroborates the release groups MusicBrainz already gave us. MB is an
+# authoritative title list for THIS mbid, so overlap is a real test of identity
+# rather than another name comparison.
+#
+# Bounded: only engages with a spine AND >1 same-name candidate, probes at most
+# SPINE_ARTISTS per service, and the result is cached under the mbid. Ordinary
+# artists never reach it and their cache entries are untouched.
+#
+# NO CORROBORATION = UNRESOLVED, NOT "no match". Settling as undef caches the
+# short error TTL and leaves peekMatches' `resolved` false, so hide_unmatched
+# does NOT hide the release: the user sees the real discography unplayable
+# rather than an empty page. Falling back to the name-keyed album search would
+# be worse than nothing — it returns the prominent act's records under the
+# wrong artist's page.
+# ---------------------------------------------------------------------------
+use constant SPINE_ARTISTS => 4;
+
+sub _sameName {
+    my ($query, $artists) = @_;
+    my $qn = _norm($query);
+    return () if $qn eq '';
+    return grep { ref $_ eq 'HASH' && defined $_->{id}
+                  && _norm($_->{name} // '') eq $qn } @{ $artists || [] };
+}
+
+sub _spineScore {
+    my ($albums, $spine) = @_;
+    my $hit = 0;
+    my %seen;
+    for my $al (@{ $albums || [] }) {
+        next unless ref $al eq 'HASH';
+        my $t = _norm($al->{title} // $al->{name} // '');
+        next if $t eq '' || $seen{$t}++;
+        $hit++ if $spine->{$t};
+    }
+    return $hit;
+}
+
+# An album whose OWN artist id differs from the one we asked for. Measured on
+# the live Qobuz API (2026-07-18): getArtist(85999) returns 139 albums by 85999
+# plus about twenty by eighteen OTHER artist ids - appears-on/related entries
+# that Qobuz's own app does not show on the artist page. Left in, they pollute
+# the candidate pool and (once unclaimed candidates are surfaced) would fill the
+# streaming-extras section with other artists' records.
+#
+# SELF-GUARDING, and it must be: TIDAL's album payloads use a DIFFERENT id space
+# from its artist ids - we ask for artist 9130 and not one album reports 9130 -
+# so a naive "must equal the requested id" filter would delete TIDAL's entire
+# discography. It therefore only engages once the requested id actually appears
+# in the response, which proves the two are comparable. Albums carrying no
+# artist id are always kept (Deezer sends none, and its endpoint is server-side
+# scoped to the artist anyway).
+sub _albumArtistId {
+    my ($al) = @_;
+    return undef unless ref $al eq 'HASH';
+    my $a = $al->{artist} || ($al->{artists} && $al->{artists}[0]) || {};
+    return (ref $a eq 'HASH' && defined $a->{id}) ? $a->{id} : undef;
+}
+
+sub _albumArtistName {
+    my ($al) = @_;
+    return '' unless ref $al eq 'HASH';
+    my $a = $al->{artist} || ($al->{artists} && $al->{artists}[0]) || {};
+    return (ref $a eq 'HASH' && defined $a->{name}) ? $a->{name}
+         : (!ref $a && defined $a) ? $a : '';
+}
+
+sub _filterForeignArtist {
+    my ($albums, $svc, $wantId, $wantName) = @_;
+    return $albums unless defined $wantId && ref $albums eq 'ARRAY';
+
+    my $mine = grep { my $a = _albumArtistId($_);
+                      defined $a && $a eq $wantId } @$albums;
+    return $albums unless $mine;          # id spaces differ - do not touch
+
+    # A COLLABORATION is credited to a different entity and is still genuinely
+    # this artist's record — "Panda Bear & Sonic Boom" carries the collab's
+    # artist id, not Sonic Boom's, and dropping it would lose an album the MB
+    # spine DOES list. So a differing id is forgiven when the credit still
+    # names the artist; only credits that do not (his other band's records)
+    # are dropped.
+    # The forgiveness must be NARROW. An EXACTLY equal credit under a different
+    # id is a DIFFERENT ACT WITH THE SAME NAME — the Madness problem again, and
+    # 0.44.1's softening let those straight back in (field: Sonic Boom's page
+    # listed "Bajo Tu Voz" and "El Mssiah" by another Sonic Boom). A genuine
+    # collaboration reads as the artist PLUS someone else ("Panda Bear & Sonic
+    # Boom"), i.e. strictly MORE tokens than the name alone. So: forgive a
+    # differing id only when the credit CONTAINS the artist and is not merely
+    # equal to it.
+    my $wn = defined $wantName ? _norm($wantName) : '';
+    # Partitioned in ONE pass so the dropped set is the exact complement of the
+    # kept set by construction — recomputing it, or matching on ref addresses,
+    # is how a diagnostic drifts from the decision it claims to explain.
+    my (@keep, @lost);
+    for my $al (@$albums) {
+        my $a  = _albumArtistId($al);
+        my $cn = _norm(_albumArtistName($al));
+        if (!defined $a || $a eq $wantId
+            || ($wn ne '' && $cn ne '' && $cn ne $wn && _artistMatch($wn, $cn))) {
+            push @keep, $al;
+        }
+        else { push @lost, $al }
+    }
+    my $n = scalar @lost;
+    if ($n) {
+        # NAMES THE DROPPED RECORDS, not just a count. A count cannot answer
+        # "was this album ever returned by the service?" - and that is the only
+        # question that matters when a release the user knows exists is missing
+        # from the page (field, 2026-07-21: Layo & Bushwacka's Low Life / All
+        # Night Long / Feels Closer / The Raw Road absent while Tidal dropped 8
+        # albums here). It also distinguishes the two failure modes that look
+        # identical on screen: a genuine foreign record (correctly dropped) vs
+        # the SAME act filed by the service under a second artist id, whose
+        # credit is exactly equal and is therefore dropped by the same-name
+        # rule that exists to keep a DIFFERENT act out. Same lesson as the
+        # 0.44.17 artist-search name list.
+        _dbg("$svc/$wantId: dropped $n album(s) credited to other artist ids | "
+            . join('; ', map {
+                  ($_->{title} // $_->{name} // '?') . ' [credit '
+                  . (_albumArtistName($_) || '?') . ' id '
+                  . (defined _albumArtistId($_) ? _albumArtistId($_) : '-') . ']'
+              } @lost[0 .. ($#lost > 7 ? 7 : $#lost)]));
+    }
+    return \@keep;
+}
+
+# How many MB aliases to retry under. Aliases are ordered as MB returns them;
+# an artist with a long alias list is usually one whose primary name works.
+use constant ALIAS_MAX => 3;
+
+# $fetch->($artistId, sub { \@rawAlbums })
+# $search->($name, sub { \@artists })   — re-runs the service's ARTIST search
+# $cb->($artist, \@rawAlbums)  — $artist undef means "could not resolve".
+#
+# Wrapper: try the searched name, then MB's ALIASES. A rapper whose records are
+# all sold as "Tony Madness" is not absent from the service — we were asking
+# under the wrong name (field, 2026-07-19). Alias retries cost one extra artist
+# search each and happen ONLY on the failure path.
+sub _resolveArtist {
+    my ($svc, $query, $artists, $spine, $fetch, $cb, $aliases, $search, $strict) = @_;
+
+    _resolveOne($svc, $query, $artists, $spine, $fetch, sub {
+        my ($artist, $albums) = @_;
+        return $cb->($artist, $albums) if $artist;
+
+        my @names = @{ $aliases || [] };
+        splice @names, ALIAS_MAX if @names > ALIAS_MAX;
+        return $cb->(undef, undef) unless @names && $search;
+
+        # Self-passing closure, not a captured lexical — avoids the reference
+        # cycle Perl never reclaims (the 0.30.1 leak fix).
+        my $i = 0;
+        my $step = sub {
+            my ($self) = @_;
+            my $alias = $names[$i++];
+            return $cb->(undef, undef) unless defined $alias;
+            _dbg("$svc: nothing under '$query' - retrying MB alias '$alias'");
+            $search->($alias, sub {
+                _resolveOne($svc, $alias, shift, $spine, $fetch, sub {
+                    my ($a, $al) = @_;
+                    return $cb->($a, $al) if $a;
+                    $self->($self);
+                }, $strict);
+            });
+        };
+        $step->($step);
+    }, $strict);
+}
+
+sub _resolveOne {
+    my ($svc, $query, $artists, $spine, $fetch, $cb, $strict) = @_;
+
+    my @same = _sameName($query, $artists);
+
+    # $strict: the NAME is known to be shared by several MB artists, so a
+    # single same-name hit on this service proves nothing - it is most likely
+    # the PROMINENT act. Score it against the spine like any other candidate,
+    # and if it does not corroborate, report unresolved so the caller can retry
+    # under MB's aliases.
+    #
+    # THE BUG THIS EXISTS FOR (field, 2026-07-19): Qobuz returns exactly ONE
+    # artist called "Madness", so the US rapper's page took the shortcut below,
+    # adopted the ska band, reported SUCCESS - and the alias retry that would
+    # have found "Tony Madness" never ran.
+    #
+    # Deliberately NOT the default: for an unambiguous artist a single name
+    # match is the right answer, and demanding catalogue corroboration would
+    # reject legitimate artists whose service titles are spelled differently
+    # from MusicBrainz's.
+    my $verify = $spine && %$spine && (@same > 1 || ($strict && @same));
+
+    unless ($verify) {
+        my $a = _pickArtist($query, $artists);
+        return $cb->(undef, undef) unless $a;
+        return $fetch->($a->{id}, sub { $cb->($a, shift) });
+    }
+
+    splice @same, SPINE_ARTISTS if @same > SPINE_ARTISTS;
+    my $left = scalar @same;
+    my @scored;
+    # NB the loop variable is NOT $a: a lexical $a in scope MASKS sort's own
+    # $a, so `sort { $b->{score} <=> $a->{score} }` would read `score` off the
+    # service-artist hashref (always undef) instead of the element being
+    # compared. That is not a sorted list - the top-scoring candidate need not
+    # end up first, so the wrong service artist gets adopted, and when the
+    # misordered head scores 0 the whole thing reports UNRESOLVED even though a
+    # candidate corroborated. Silent: `perl -c` cannot see it and this file has
+    # no `use warnings`, so the "uninitialized value" warning never fires.
+    for my $cand (@same) {
+        $fetch->($cand->{id}, sub {
+            my ($albums) = @_;
+            push @scored, { artist => $cand, albums => $albums,
+                            score => _spineScore($albums, $spine) };
+            return if --$left;
+
+            @scored = sort { $b->{score} <=> $a->{score} } @scored;
+            _dbg("$svc: '$query' is ambiguous - "
+                . join(', ', map { $_->{artist}{id} . '=' . $_->{score} } @scored)
+                . ' spine titles');
+
+            unless ($scored[0]{score}) {
+                _dbg("$svc: no candidate corroborates this artist's releases"
+                    . ' - UNRESOLVED (releases stay visible, unmatched)');
+                return $cb->(undef, undef);
+            }
+            $cb->($scored[0]{artist}, $scored[0]{albums});
+        });
+    }
+}
+
 sub _pickArtist {
     my ($query, $artists) = @_;
     my $qn = _norm($query);
@@ -989,28 +1488,51 @@ sub _renderAlbums {
 }
 
 sub _searchQobuz {
-    my ($client, $query, $svc, $collect) = @_;
+    my ($client, $query, $svc, $collect, $spine, $aliases, $strict) = @_;
 
     my $api = Plugins::Qobuz::Plugin::getAPIHandler($client);
     unless ($api) { $collect->(undef); return }
 
-    $api->search(sub {
-        my $res    = shift;
-        my $artist = _pickArtist($query, $res && $res->{artists} && $res->{artists}{items});
-        unless ($artist) {
-            _dbg("Qobuz: no artist hit for '$query' - album-search fallback");
-            _qobuzAlbumSearch($api, $client, $query, $svc, $collect);
-            return;
-        }
+    my $fetch = sub {
+        my ($id, $done) = @_;
         $api->getArtist(sub {
             my $r = shift;
-            my $albums = _albumArray(ref $r eq 'HASH' ? $r->{albums} : undef);
-            # A resolved artist with a raw-empty album list is a failed fetch
-            # far more often than a zero-album artist — settle as error (short
-            # retry), never a 1-day empty pin.
-            return $collect->(undef) unless $albums && @$albums;
-            $collect->(_renderQobuzAlbums($client, $albums, $svc, $artist->{name}));
-        }, $artist->{id});
+            # Filtered BEFORE scoring as well as rendering: a foreign album must
+            # not contribute to a candidate's spine score either.
+            $done->(_filterForeignArtist(
+                _albumArray(ref $r eq 'HASH' ? $r->{albums} : undef),
+                'Qobuz', $id, $query));
+        }, $id);
+    };
+
+    my $search = sub {
+        my ($name, $done) = @_;
+        $api->search(sub {
+            my $r = shift;
+            $done->($r && $r->{artists} && $r->{artists}{items});
+        }, lc($name), 'artists');
+    };
+
+    $api->search(sub {
+        my $res = shift;
+        _resolveArtist('Qobuz', $query,
+            $res && $res->{artists} && $res->{artists}{items}, $spine, $fetch,
+            sub {
+                my ($artist, $albums) = @_;
+                unless ($artist) {
+                    # With a spine, an unresolved artist is DELIBERATE (nothing
+                    # corroborated) and the album-search fallback would pull the
+                    # prominent same-named act — settle unresolved instead.
+                    if ($spine && %$spine) { return $collect->(undef) }
+                    _dbg("Qobuz: no artist hit for '$query' - album-search fallback");
+                    return _qobuzAlbumSearch($api, $client, $query, $svc, $collect);
+                }
+                # A resolved artist with a raw-empty album list is a failed fetch
+                # far more often than a zero-album artist — settle as error (short
+                # retry), never a 1-day empty pin.
+                return $collect->(undef) unless $albums && @$albums;
+                $collect->(_renderQobuzAlbums($client, $albums, $svc, $artist->{name}));
+            }, $aliases, $search, $strict);
     }, lc($query), 'artists');
 }
 
@@ -1032,21 +1554,15 @@ sub _renderQobuzAlbums {
 }
 
 sub _searchTidal {
-    my ($client, $query, $svc, $collect) = @_;
+    my ($client, $query, $svc, $collect, $spine, $aliases, $strict) = @_;
 
     my $api = Plugins::TIDAL::Plugin::getAPIHandler($client);
     unless ($api) { $collect->(undef); return }
 
-    $api->search(sub {
-        my $artists = shift;
-        my $artist  = _pickArtist($query, ref $artists eq 'ARRAY' ? $artists : []);
-        unless ($artist) {
-            _dbg("Tidal: no artist hit for '$query' - album-search fallback");
-            _tidalAlbumSearch($api, $query, $svc, $collect);
-            return;
-        }
-        # TIDAL splits a discography across filter buckets — fetch all three
-        # in parallel and merge (id-deduped; the buckets shouldn't overlap).
+    # TIDAL splits a discography across filter buckets — fetch all three in
+    # parallel and merge (id-deduped; the buckets shouldn't overlap).
+    my $fetch = sub {
+        my ($id, $done) = @_;
         my @filters = qw(ALBUMS EPSANDSINGLES COMPILATIONS);
         my (@albums, %seen);
         my $left = scalar @filters;
@@ -1055,11 +1571,31 @@ sub _searchTidal {
                 my $a = _albumArray(shift);
                 push @albums, grep { ref $_ eq 'HASH' && defined $_->{id} && !$seen{$_->{id}}++ }
                     @{ $a || [] };
-                return if --$left;
-                return $collect->(undef) unless @albums;   # all-empty = failed fetch, retry soon
-                $collect->(_renderTidalAlbums(\@albums, $svc, $artist->{name}));
-            }, $artist->{id}, $f);
+                $done->(_filterForeignArtist(\@albums, 'Tidal', $id, $query)) unless --$left;
+            }, $id, $f);
         }
+    };
+
+    my $search = sub {
+        my ($name, $done) = @_;
+        $api->search(sub { $done->(ref $_[0] eq 'ARRAY' ? $_[0] : []) },
+            { type => 'artists', search => $name, limit => 25 });
+    };
+
+    $api->search(sub {
+        my $artists = shift;
+        _resolveArtist('Tidal', $query, ref $artists eq 'ARRAY' ? $artists : [],
+            $spine, $fetch,
+            sub {
+                my ($artist, $albums) = @_;
+                unless ($artist) {
+                    if ($spine && %$spine) { return $collect->(undef) }
+                    _dbg("Tidal: no artist hit for '$query' - album-search fallback");
+                    return _tidalAlbumSearch($api, $query, $svc, $collect);
+                }
+                return $collect->(undef) unless $albums && @$albums;   # all-empty = failed fetch
+                $collect->(_renderTidalAlbums($albums, $svc, $artist->{name}));
+            }, $aliases, $search, $strict);
     }, { type => 'artists', search => $query, limit => 25 });
 }
 
@@ -1079,28 +1615,40 @@ sub _renderTidalAlbums {
 }
 
 sub _searchDeezer {
-    my ($client, $query, $svc, $collect) = @_;
+    my ($client, $query, $svc, $collect, $spine, $aliases, $strict) = @_;
 
     my $api = Plugins::Deezer::Plugin::getAPIHandler($client);
     unless ($api) { $collect->(undef); return }
 
+    my $fetch = sub {
+        my ($id, $done) = @_;
+        $api->artistAlbums(sub { $done->(_albumArray(shift)) }, $id);
+    };
+
+    my $search = sub {
+        my ($name, $done) = @_;
+        $api->search(sub { $done->(ref $_[0] eq 'ARRAY' ? $_[0] : []) },
+            { search => $name, type => 'artist', strict => 'off', limit => 25 });
+    };
+
     $api->search(sub {
         my $artists = shift;
-        my $artist  = _pickArtist($query, ref $artists eq 'ARRAY' ? $artists : []);
-        unless ($artist) {
-            _dbg("Deezer: no artist hit for '$query' - album-search fallback");
-            _deezerAlbumSearch($api, $query, $svc, $collect);
-            return;
-        }
-        $api->artistAlbums(sub {
-            my $albums = _albumArray(shift);
-            return $collect->(undef) unless $albums && @$albums;
-            # /artist/N/albums items carry NO artist object — Deezer's own
-            # _renderAlbum reads $item->{artist}{name} and would leave it undef,
-            # which is exactly why it takes the artist name as a 3rd arg. Pass
-            # the resolved name (verified: sub _renderAlbum($item,$addArtistToTitle,$artist)).
-            $collect->(_renderDeezerAlbums($albums, $svc, $artist->{name}));
-        }, $artist->{id});
+        _resolveArtist('Deezer', $query, ref $artists eq 'ARRAY' ? $artists : [],
+            $spine, $fetch,
+            sub {
+                my ($artist, $albums) = @_;
+                unless ($artist) {
+                    if ($spine && %$spine) { return $collect->(undef) }
+                    _dbg("Deezer: no artist hit for '$query' - album-search fallback");
+                    return _deezerAlbumSearch($api, $query, $svc, $collect);
+                }
+                return $collect->(undef) unless $albums && @$albums;
+                # /artist/N/albums items carry NO artist object — Deezer's own
+                # _renderAlbum reads $item->{artist}{name} and would leave it undef,
+                # which is exactly why it takes the artist name as a 3rd arg. Pass
+                # the resolved name (verified: sub _renderAlbum($item,$addArtistToTitle,$artist)).
+                $collect->(_renderDeezerAlbums($albums, $svc, $artist->{name}));
+            }, $aliases, $search, $strict);
     }, { search => $query, type => 'artist', strict => 'off', limit => 25 });
 }
 
@@ -1346,12 +1894,52 @@ sub _norm {
              Unicode::Normalize::NFD($s) =~ s/[\x{0300}-\x{036F}]+//gr );
         $s =~ s/([^\x00-\x7f])/exists $FOLD{$1} ? $FOLD{$1} : $1/ge;
     }
-    $s =~ s/\$/s/g;
+    # LEETSPEAK SUBSTITUTIONS — a punctuation mark standing in for a LETTER.
+    #
+    # Applied ONLY when a word character FOLLOWS the mark. That is precisely
+    # what separates a letter from decoration: "P!nk" -> pink and "Ke$ha" ->
+    # kesha (the mark sits INSIDE the word), while a trailing or free-standing
+    # mark is punctuation and falls through to the [^\p{Alnum}] rule below.
+    #
+    # WHY, and it is not cosmetic (field, 2026-07-21): the old unconditional
+    # fold made a name spelled WITH the mark disagree with the same name
+    # spelled WITHOUT it — "Layo & Bushwacka!" -> 'layo bushwackai' against
+    # 'layo bushwacka'. `_albumMatches`' artist gate is MANDATORY, so EVERY
+    # streaming candidate was rejected and the page read "No releases found"
+    # for an artist with five MB albums and a correctly resolved MBID. The same
+    # fold also made "Panic At The Disco" unsearchable without the "!", and let
+    # the same-name row fold pick a different survivor from one query to the
+    # next (whichever spelling won decided whether the page then worked).
+    #
+    # A name made ENTIRELY of these marks ("!!!", a real band) keeps the old
+    # unconditional fold: stripping would leave '', and `_artistMatch` rejects
+    # an empty side outright — i.e. this very bug in a new costume.
+    if ($s =~ /[\p{Alnum}]/) {
+        $s =~ s/\$(?=\w)/s/g;
+        $s =~ s/!(?=\w)/i/g;
+        $s =~ s/\@(?=\w)/a/g;
+    }
+    else {
+        $s =~ s/\$/s/g;
+        $s =~ s/!/i/g;
+        $s =~ s/\@/a/g;
+    }
     $s =~ s/\x{20ac}/e/g;   # euro sign
     $s =~ s/\x{a3}/l/g;     # pound sign
     $s =~ s/\x{a5}/y/g;     # yen sign
-    $s =~ s/!/i/g;
-    $s =~ s/\@/a/g;
+
+    # "&" and "+" are SPOKEN "and", and this is the same rule as every
+    # substitution above it — a symbol folded to the word it stands for, like
+    # $ -> s and ! -> i. Without it the two spellings key differently ("simon
+    # garfunkel" vs "simon and garfunkel", because & alone becomes a space
+    # below), so the SAME act arrives from two services as two search rows and
+    # only merges if MusicBrainz happens to record the variant as an alias.
+    # Field 2026-07-21: Deezer says "Layo and bushwacka!" where Tidal says
+    # "Layo & Bushwacka" — one act, two rows.
+    #
+    # "+" is included because services use it the same way; MB's own alias list
+    # for that duo literally carries "Layo + Bushwacka!".
+    $s =~ s/[&+]/ and /g;
     $s =~ s/[\(\[].*?[\)\]]//g;
     $s =~ s/[^\p{Alnum}]+/ /g;
     $s =~ s/^\s+//; $s =~ s/\s+$//;

@@ -87,6 +87,27 @@ $prefs->init({
     # "Also in your library" safety-net section: library albums under the
     # artist that no MusicBrainz release group claimed.
     show_library_extras => 1,
+    # Streaming albums MB doesn't list — the streaming twin of the library net.
+    #
+    # OFF by default (0.44.4), and the reason is structural rather than a bug
+    # awaiting a fix. These rows are exactly the records MusicBrainz does NOT
+    # list, so MB cannot vouch for them; a service artist entity that mixes
+    # several same-name acts (Qobuz id 85999 carries the UK ska band plus at
+    # least four unrelated "Madness" acts) therefore has nothing left to
+    # separate it by. Measured 2026-07-19, all three available signals fail:
+    #   - MB rival titles     — 0 of 30 polluting rows matched any rival release
+    #                           group; the intruders are streaming-only acts MB
+    #                           has never heard of, which is WHY they land here.
+    #   - service artist ids  — foreign ids are already filtered upstream; what
+    #                           remains shares the artist's own id.
+    #   - shared-name gating  — every artist measured has >=2 same-name MB acts
+    #                           (Panda Bear 2, Genesis 17), so it gates nothing.
+    # An id-diversity heuristic was prototyped and rejected: it missed Madness
+    # entirely and false-positived on Genesis (40 clean albums, 0 appears-on).
+    # So the net stays available for the case that motivated it — an artist
+    # whose records are on a service but absent from MB — and the user opts in
+    # knowing it is unverified. The durable fix is the streaming-spine work.
+    show_streaming_extras => 0,
 
     # Artist bio atop the list. NB: ANY text row disables Material's grid for
     # the whole view (hard rule in browse-resp.js, even window.textarea) — so
@@ -181,7 +202,10 @@ sub _cliClearCache {
     my $cleared = Plugins::Discography::API->clearArtistCache(
         name => $artist, mbid => $mbid);
     if (defined $artist && length $artist) {
-        Plugins::Discography::Sources->clearCandidates($artist);
+        # $mbid matters: pools are scoped to the MB artist (0.43.2), so clearing
+        # by name alone leaves an ambiguous artist's pool untouched — which is
+        # exactly the pool someone running clearcache is trying to shift.
+        Plugins::Discography::Sources->clearCandidates($artist, $mbid);
         push @$cleared, 'candidates';
     }
 
