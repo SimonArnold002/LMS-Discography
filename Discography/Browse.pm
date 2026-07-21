@@ -2055,7 +2055,7 @@ sub _artistSearchView {
     # makes "Layo & Bushwacka!" and "Layo & Bushwacka" bucket TOGETHER. A v2
     # entry holds them as separate rows. Only a 10-minute TTL, but that is
     # exactly the window someone tests the fix in.
-    my $ckey = 'dsc:asearch:5:' . lc $q;
+    my $ckey = 'dsc:asearch:6:' . lc $q;
     utf8::encode($ckey) if utf8::is_utf8($ckey);
 
     # Both the cached and the fresh path finish the same way: streaming rows

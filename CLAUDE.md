@@ -234,6 +234,22 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   likewise deliberately LBF-only and outside the shared engine.
 
 ## Development Log
+### 0.44.25 (2026-07-21) — FLEET PORT, and the port found a bug 0.44.24 shipped
+- **The `_norm` changes are now in all four sync repos** (DSC / LBF / PFR / SH — LBF 0.9.120, PFR 0.7.8, SH 0.12.1); **`matcher_sync_check.py` exits 0**. LL is untouched: the script pins its `_norm` as the legacy ASCII variant, which carries none of these substitutions.
+- **THE PORT CAUGHT A REAL BUG IN 0.44.24, and the sync check could never have found it.** Extracting all four copies and running them side by side over 21 names showed:
+  ```
+  '$uicideboy$'  ->  suicideboy      (0.44.24)   vs   suicideboys  (correct)
+  ```
+  0.44.19 scoped the boundary rule to `$` and `@` as well as `!`, but a TRAILING `$` is genuinely the letter *s* — `$uicideboy$` is Suicideboy**s**, a case PFR's own `_norm` comment names as supported. **`$` and `@` are now unconditional again; only `!` is boundary-scoped**, because `!` is the one with a real decorative use ("Wham!", "Panic!", "Godspeed You!") while the other two are effectively always letters.
+  - **The sync check compares TEXT, so it would have reported four identical copies of the bug.** Textual sync proves the bytes agree, not that they behave. A behavioural harness across the repos is the thing that catches a fleet-wide wrong answer, and it is worth keeping that distinction in mind whenever the check goes green.
+- **Aligned to the both-sides rule `s/(?<=\w)!(?=\w)/i/g`** — which is what Search Hub's CLAUDE.md had specified as the intended fleet implementation all along. Better than 0.44.19's lookahead-only form for a LEADING mark: "!Attention" now yields `attention` rather than `iattention`.
+- **Two deliberate deviations from that documented sketch, both recorded in SH's CLAUDE.md:**
+  1. `$`/`@` stay unconditional (the regression above).
+  2. **`!!!` keeps `iii` and does NOT fall back to `punctNorm`.** The sketch accepted that fallback; the matcher cannot live with it, because `_artistMatch` returns 0 when either side is empty, so an emptied name rejects every candidate — this same bug in a new costume.
+- **`dsc:acand:4` -> `5`, `dsc:asearch:5` -> `6`.** Most keys are unchanged (only names containing `$`, `@` or a leading `!` move), so this is deliberately cautious rather than forced: a moved key can land on an entry a DIFFERENT artist wrote under the old rule, and one MB request per name per fortnight is a cheap premium against serving the wrong candidate set.
+- **`tools/t_norm.pl` -> 25 assertions**, adding `$uicideboy$` -> `suicideboys` and `WOR$T` -> `worst` so this regression cannot return.
+- Gates: `zsh tools/syntax_check.sh` 5/5 OK; `t_norm.pl` 25/25; `t_fuzzy.pl` 19/19; `t_resolve.pl` 4/4; SH `check.sh` 61/61; cross-repo harness **21 identical, 0 divergent**; `matcher_sync_check.py` **exit 0**.
+
 ### 0.44.24 (2026-07-21) — typo tolerance: stop throwing away the correction the services already made
 - **Simon typed "Layo & Bushwaka" — one letter out — and got NOTHING.** The damning part is in the log: Qobuz, Tidal AND Deezer had ALL returned "Layo & Bushwacka!" for that misspelling. **17 hits went in, 1 came out**, and that one was a vague "Layo" with 0 release groups which the dead-end filter then correctly dropped. The search was strictly WORSE than the services it queries. Simon: "from a user perspective this is broken" — he was right, and it took several exchanges before I stopped defending the gate and measured it.
 - **`_closeEnough`: a normalised edit-similarity fallback**, tried ONLY after the three existing tests (exact key / substring / token-subset) have all failed. **Purely additive — it cannot reject anything that passes today.**

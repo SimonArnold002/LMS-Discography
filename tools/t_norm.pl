@@ -84,6 +84,16 @@ ok($norm->('P!nk')  eq 'pink',  'P!nk -> pink');
 ok($norm->('Ke$ha') eq 'kesha', 'Ke$ha -> kesha');
 ok($norm->('M@ss')  eq 'mass',  'M@ss -> mass');
 
+# A TRAILING "$" IS STILL A LETTER. Regression from the fleet port (2026-07-21):
+# scoping the boundary rule to "$" as well as "!" turned "$uicideboy$" into
+# "suicideboy", which no longer matches "Suicideboys" — a case PFR's own
+# comment documents as supported. "!" has a decorative use ("Wham!"); "$" and
+# "@" effectively do not, so only "!" is boundary-scoped. Caught by comparing
+# all four repos' _norm behaviourally, NOT by the sync check (which compares
+# text, so it would have happily reported four identical copies of a bug).
+ok($norm->('$uicideboy$') eq 'suicideboys', 'trailing $ is a letter, not decoration');
+ok($norm->('WOR$T')       eq 'worst',       'WOR$T -> worst');
+
 # 3. A name of nothing but marks must not normalise away.
 ok($norm->('!!!') ne '', "'!!!' does not normalise to empty (got '"
                           . $norm->('!!!') . "')");

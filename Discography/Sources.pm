@@ -1914,16 +1914,25 @@ sub _norm {
     # A name made ENTIRELY of these marks ("!!!", a real band) keeps the old
     # unconditional fold: stripping would leave '', and `_artistMatch` rejects
     # an empty side outright — i.e. this very bug in a new costume.
-    if ($s =~ /[\p{Alnum}]/) {
-        $s =~ s/\$(?=\w)/s/g;
-        $s =~ s/!(?=\w)/i/g;
-        $s =~ s/\@(?=\w)/a/g;
-    }
-    else {
-        $s =~ s/\$/s/g;
-        $s =~ s/!/i/g;
-        $s =~ s/\@/a/g;
-    }
+    # "$" and "@" are UNCONDITIONAL: in a stylised name they are effectively
+    # always a letter, including at the END - "$uicideboy$" is Suicideboy(s),
+    # so the trailing "$" is an s, not decoration. Scoping the boundary rule
+    # below to them broke exactly that (caught by the cross-repo behaviour
+    # harness, which PFR documents as a supported case).
+    $s =~ s/\$/s/g;
+    $s =~ s/\@/a/g;
+    # "!" IS different, and it is the one that motivated this: it has a real
+    # decorative use that the others do not - "Wham!", "Panic! At The Disco",
+    # "Godspeed You! Black Emperor", "Layo & Bushwacka!" - where the mark is
+    # punctuation and the name is spelled both ways in the wild. So "!" folds
+    # to a letter ONLY when a word character FOLLOWS it (inside a word, as in
+    # "P!nk"); otherwise it falls through to the [^\p{Alnum}] pass below.
+    #
+    # A name of nothing BUT marks ("!!!", a real band) keeps the unconditional
+    # fold: stripping would leave '', and `_artistMatch` rejects an empty side
+    # outright - this very bug in a new costume.
+    if ($s =~ /[\p{Alnum}]/) { $s =~ s/(?<=\w)!(?=\w)/i/g }
+    else                      { $s =~ s/!/i/g }
     $s =~ s/\x{20ac}/e/g;   # euro sign
     $s =~ s/\x{a3}/l/g;     # pound sign
     $s =~ s/\x{a5}/y/g;     # yen sign

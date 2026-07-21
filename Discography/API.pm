@@ -473,7 +473,7 @@ sub _candKey {
     # bushwacka") and now COLLIDES with what v2 stored for the mark-less
     # spelling — a set computed when the two were considered different names,
     # i.e. narrower again. Same reason as the v1 -> v2 bump.
-    my $k = 'dsc:acand:4:' . _nameKey($name);
+    my $k = 'dsc:acand:5:' . _nameKey($name);
     utf8::encode($k) if utf8::is_utf8($k);
     return $k;
 }
