@@ -87,4 +87,49 @@ else
   echo FAIL; perl -I"$S" -I"$ROOT" -e "use constant WEBUI=>1; require '$S/Plugins/Discography/Plugin.pm';" 2>&1 | head -3; fail=1
 fi
 
+
+# ---------------------------------------------------------------------------
+# CACHE_VERSION must be identical in all three modules AND match install.xml.
+# Slim::Utils::Cache->new returns the EXISTING instance for a namespace and
+# ignores later args, so whichever module loads first decides the version --
+# a mismatch would silently leave stale caches behind, which is the exact
+# failure this mechanism exists to prevent.
+plugin_ver=$(sed -n 's|.*<version>\(.*\)</version>.*|\1|p' Discography/install.xml | head -1)
+cv=$(grep -h "use constant CACHE_VERSION" Discography/API.pm Discography/Sources.pm Discography/Browse.pm \
+     | sed "s/.*=> *'\([^']*\)'.*/\1/" | sort -u)
+n=$(printf '%s\n' "$cv" | grep -c .)
+if [ "$n" != "1" ]; then
+    echo "CACHE_VERSION  FAIL - modules disagree: $(printf '%s ' $cv)"; exit 1
+elif [ "$cv" != "$plugin_ver" ]; then
+    echo "CACHE_VERSION  FAIL - '$cv' != install.xml '$plugin_ver' (bump it, or caches will not clear)"; exit 1
+else
+    echo "CACHE_VERSION  OK ($cv, matches install.xml)"
+fi
+
+# ---------------------------------------------------------------------------
+# THE MIRROR AUTO-DETECT PROBE MBID MUST BE A REAL ARTIST.
+#
+# 0.30.0 shipped `a74b1b7f-06a0-4672-a641-eb3353aa608d`, which 404s everywhere:
+# a mangled Radiohead id sharing only the first block. autodetectMirror
+# validates by fetching that artist and comparing its name, so a wrong id makes
+# the probe fail on EVERY candidate -- and the failure is indistinguishable
+# from "no mirror running here". It therefore cannot be caught at runtime, by a
+# stubbed unit test, or by reading the code: only by asking MusicBrainz.
+#
+# SKIPPED when offline, so this gate stays usable on a plane.
+probe_mbid=$(sed -n "s/.*MB_PROBE_MBID *=> *'\([^']*\)'.*/\1/p" Discography/API.pm | head -1)
+probe_name=$(sed -n "s/.*MB_PROBE_NAME *=> *'\([^']*\)'.*/\1/p" Discography/API.pm | head -1)
+printf '%-14s ' 'PROBE_MBID'
+probe_json=$(curl -s --max-time 8 -A "LMS-Discography-syntax-check/1.0 ( simon )" \
+             "https://musicbrainz.org/ws/2/artist/$probe_mbid?fmt=json" 2>/dev/null)
+if [ -z "$probe_json" ]; then
+    echo "SKIP (no network)"
+elif printf '%s' "$probe_json" | grep -q "\"name\":\"$probe_name\""; then
+    echo "OK ($probe_mbid is $probe_name)"
+else
+    echo "FAIL - $probe_mbid is NOT $probe_name on MusicBrainz; mirror auto-detect can never succeed"
+    printf '%s\n' "$probe_json" | head -c 200; echo
+    fail=1
+fi
+
 exit $fail

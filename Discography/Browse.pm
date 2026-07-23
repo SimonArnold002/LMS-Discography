@@ -28,7 +28,11 @@ use Plugins::Discography::Sources;
 
 my $log   = Slim::Utils::Log->logger('plugin.discography');
 my $prefs = preferences('plugin.discography');
-my $cache = Slim::Utils::Cache->new();
+# Dedicated, version-scoped cache namespace -- see the note in API.pm.
+# MUST match API.pm exactly (asserted by tools/syntax_check.sh).
+use constant CACHE_NS      => 'discography';
+use constant CACHE_VERSION => '0.50.5';
+my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
 use constant REVIEW_EMPTY_TTL =>  1 * 86400;
@@ -50,6 +54,9 @@ use constant ICON         => IMG_BASE . 'DiscographyIcon_svg.png';
 use constant MENU_SORT    => IMG_BASE . 'dsc-sort_MTL_icon_sort.png';
 use constant MENU_REFRESH => IMG_BASE . 'dsc-refresh_MTL_icon_refresh.png';
 use constant MENU_SEARCH  => IMG_BASE . 'dsc-find_MTL_icon_search.png';
+# Reuses the shipped library_music glyph for the local-only view toggle (both
+# states) — no new asset, per the 0.25.0 icon-reuse precedent.
+use constant MENU_LOCAL   => IMG_BASE . 'dsc-lib_MTL_icon_library_music.png';
 
 use constant SEARCH_TTL   => 600;  # merged artist-search results (item_id walk
                                    # determinism across legacy re-walks, not a
@@ -128,19 +135,59 @@ sub _groupOf {
 #      collections of it. Date alone would hand the White Album to a 1967 comp.
 #   2. earliest first-release-date (undated last).
 #   3. mbid, so ordering can never depend on hash iteration.
+# A candidate belongs to exactly ONE release group; this decides which. Order
+# matters twice over — `_rivalOwner` takes the FIRST rival whose year matches
+# the candidate, and the first rival outright when none does.
+#
+# TYPE RANK (0.46.8). Field, from the full-library sweep: **three of ABBA's nine
+# studio albums were missing** — Ring Ring, Waterloo and Super Trouper, i.e.
+# exactly the three whose title is ALSO a single. Measured against the mirror:
+#
+#   Waterloo       Album 1974-03-04   vs  Single 1974-03
+#   Super Trouper  Album 1980-11-03   vs  Single 1980-11
+#   Ring Ring      Album 1973-03-26   vs  Single 1973-02-14
+#
+# Sorting on `date cmp` put the SINGLE first every time, so it took the
+# streaming candidate and `hide_unmatched` then removed the album. Note WHY for
+# two of the three: a partial date is a PREFIX of the fuller one, so
+# "1980-11" sorts before "1980-11-03" — the tie-break was deciding on date
+# PRECISION rather than chronology, which was nobody's intent.
+#
+# A service release titled "Super Trouper" by ABBA is the ALBUM; 1970s vinyl
+# singles rarely exist as separate streaming releases at all. So primary type
+# ranks ahead of date: Album, then EP, then Single.
+#   KNOWN COST: where a service DOES carry both, both candidates now land on the
+#   album (its detail lists two versions) and the single row hides. Giving each
+#   rival its own best candidate needs a global assignment pass across every
+#   release group — far more than this defect warrants.
+my %RIVAL_TYPE_RANK = ( Album => 0, EP => 1, Single => 2 );
+
 sub _rivalsByTitle {
-    my ($rgs, $officialMap) = @_;
+    my ($rgs, $officialMap, $show) = @_;
 
     my %by;
     for my $rg (@$rgs) {
         next if grep { $HIDE_SECONDARY{$_} } @{ $rg->{secondary} };
         my $official = $officialMap ? $officialMap->{ $rg->{mbid} } : undef;
         next if defined $official && !$official;          # bootleg: can't own anything
+        # AND NOT A GROUP THE USER HAS HIDDEN (0.46.8). This list already
+        # excludes what cannot be rendered — bootlegs, Remix/DJ-mix — for
+        # exactly one reason: an invisible group must not win a candidate the
+        # visible album would then never show. The user's own type filter was
+        # missed, so with Singles hidden the single still claimed the album's
+        # candidate and NEITHER row appeared. Second half of the same sweep
+        # finding ("the matcher runs over release groups that are never
+        # rendered — 202 match calls for 75 rendered releases").
+        next if $show && !$show->{ _groupOf($rg) };
 
         push @{ $by{ Plugins::Discography::Sources::_norm($rg->{title}) } }, {
             mbid => $rg->{mbid},
             year => ($rg->{date} =~ /^(\d{4})/) ? $1 : undef,
             comp => ((grep { $_ eq 'Compilation' } @{ $rg->{secondary} }) ? 1 : 0),
+            # Unknown/absent primary type sorts with Album rather than last: it
+            # is what an untyped studio release usually is, and demoting it
+            # would recreate this bug for artists MB has typed loosely.
+            rank => ($RIVAL_TYPE_RANK{ $rg->{type} // '' } // 0),
             date => (length $rg->{date} ? $rg->{date} : '9999'),
         };
     }
@@ -148,6 +195,7 @@ sub _rivalsByTitle {
     for my $k (keys %by) {
         @{ $by{$k} } = sort {
                $a->{comp} <=> $b->{comp}
+            || $a->{rank} <=> $b->{rank}
             || $a->{date} cmp $b->{date}
             || $a->{mbid} cmp $b->{mbid}
         } @{ $by{$k} };
@@ -283,6 +331,11 @@ sub topLevel {
     my $itemParam = _cleanParam($params->{item});
     my $sortParam = _cleanParam($params->{sort});
     $sortParam = undef unless ($sortParam // '') =~ /^(?:newest|oldest)$/;
+    # local_only = show ONLY releases the user owns (the Options view toggle).
+    # A view-state param, threaded like sort: NOT stashed in ctx, it rides the
+    # rows' own itemActions (Material, param-addressed), so a legacy positional
+    # walk in a filtered view has the same best-effort limitation sort has.
+    my $localOnlyParam = (_cleanParam($params->{local_only}) // '') eq '1' ? 1 : 0;
 
     # Param-addressed search submission (the search row's overridden go
     # action: search:<text> + features, NO item_id — see _searchRow). Rendered
@@ -378,6 +431,7 @@ sub topLevel {
         mbid      => $mbid,
         features  => $features,
         sort      => $sortParam || $prefs->get('sort_order') || 'newest',
+        local_only => $localOnlyParam,
         force     => 0,
     };
 
@@ -633,14 +687,42 @@ sub _discographyView {
                     my $ambig = ($mbid && $cands && @$cands > 1) ? 1 : 0;
 
                     my $go = sub {
+                        my ($names) = @_;
+                        # MB's CANONICAL name goes in FRONT of any aliases.
+                        # A renamed act is filed by the services under its
+                        # CURRENT name, so that is the highest-value retry:
+                        # browsing "British Sea Power" must be able to ask
+                        # Qobuz for "Sea Power". Tidal/Deezer absorb the old
+                        # name themselves; Qobuz does not, and settled
+                        # unresolved -- the artist's whole Qobuz catalogue
+                        # missing (24/52 matched, Qobuz 0), while searching
+                        # "Sea Power" by hand finds it immediately.
+                        #
+                        # Purely ADDITIVE: _resolveArtist only consults these
+                        # after the browsed name has already failed to
+                        # corroborate, so no artist that resolves today can
+                        # change. Deduped against the browsed name via the
+                        # matcher's own fold, so an unchanged name adds nothing.
+                        my @alias = @{ $names || [] };
+                        my $canon = Plugins::Discography::API->peekArtistName($mbid);
+                        if ($canon && Plugins::Discography::Sources::_norm($canon)
+                                   ne Plugins::Discography::Sources::_norm($artist)) {
+                            my $ck = Plugins::Discography::Sources::_norm($canon);
+                            @alias = ($canon,
+                                      grep { Plugins::Discography::Sources::_norm($_) ne $ck }
+                                      @alias);
+                        }
                         Plugins::Discography::Sources->getCandidates(
                             $client, $artist, 0, sub { $done->() },
-                            { spine => $spine, mbid => $mbid, aliases => $_[0],
+                            { spine => $spine, mbid => $mbid,
+                              aliases => (@alias ? \@alias : undef),
                               ambiguous => $ambig });
                     };
 
                     # Aliases only for an AMBIGUOUS name, where a failed
                     # resolution is expected and the retry is what rescues it.
+                    # The canonical name above is added regardless -- it is
+                    # already cached, so it costs no request either way.
                     if ($ambig) {
                         Plugins::Discography::API->warmArtistAliases($mbid, $go);
                     }
@@ -655,10 +737,10 @@ sub _discographyView {
             # first render — a bio popping in on a REBUILD would shift every
             # item_id below it (walk-stability).
             my ($bio, $bioDone, $rgs, $rgsErr, $local, $offDone, $rendered,
-                $poolDone);
+                $poolDone, $extDone);
             my $render = sub {
                 return if $rendered || !$bioDone || !$offDone || !$poolDone
-                       || (!defined $rgs && !$rgsErr);
+                       || !$extDone || (!defined $rgs && !$rgsErr);
                 $rendered = 1;
                 if ($rgsErr) {
                     $callback->({ items => [{
@@ -700,6 +782,20 @@ sub _discographyView {
                 # Bio off (grid-friendly view): no text rows from us.
                 $bioDone = 1;
             }
+
+            # THE SIMILAR-ARTISTS WARM RUNS IN PARALLEL WITH MUSICBRAINZ, not
+            # behind it (0.47.4). MEASURED cold on the live box (Jamie Cullum,
+            # 2.32s total): this leg is **1,130ms — 49% of the render** — and it
+            # is MAI/Last.fm, not MusicBrainz, so queueing it inside the serial
+            # 1-req/s chain paid an etiquette tax it does not owe.
+            #
+            # STILL AWAITED (0.31.0's first-render decision stands): the section
+            # popping in on a later rebuild would shift item_ids below it. It
+            # simply stops waiting for MusicBrainz first. The `official_wait`
+            # deadline covers this flag too, so a hung MAI can no longer gate
+            # the page any longer than it could before.
+            _warmArtistExtras($client, $mbid, $artist,
+                              sub { $extDone = 1; $render->() });
 
             Plugins::Discography::API->getReleaseGroups(
                 mbid    => $mbid,
@@ -766,11 +862,22 @@ sub _discographyView {
                     # Library albums, fetched ONCE here (sync DB) so we know which
                     # release MBIDs to pre-resolve; the same list is handed to
                     # _buildList so it doesn't query again.
-                    # Library lookup is by NAME (via artist_id), so for a
-                    # shared-name act it returns the prominent act's albums and
-                    # would assert the user owns records this artist never made.
-                    # No signal exists to split them — suppress rather than lie.
-                    $local = $opts->{shared_name} ? []
+                    #
+                    # The shared-name suppression applies ONLY to a NAME-resolved
+                    # entry. `localAlbums($artist_id, ...)` is ID-keyed whenever an
+                    # artist_id is present (Sources.pm:380) — it is exact to THAT
+                    # contributor, so it cannot return the prominent act's albums
+                    # and there is nothing to suppress. Only the name fallback
+                    # (no artist_id) would grab the wrong act's catalogue, which is
+                    # the case 0.43.4 was written for. Suppressing the id-keyed
+                    # lookup too is what hid Simon's owned "The Bees" compilation
+                    # tracks (77854/79768): entered by their own contributor id,
+                    # their VA-comp appearance is correct and belongs in
+                    # "Appearances", but the guard forced $local empty so the page
+                    # read "No releases found". The bio and similar-artists
+                    # sections stay suppressed via $opts->{shared_name} — those ARE
+                    # name-keyed (MAI/Last.fm) and would show the prominent act.
+                    $local = ($opts->{shared_name} && !$opts->{artist_id}) ? []
                            : Plugins::Discography::Sources->localAlbums(
                                  $opts->{artist_id}, $opts->{artist});
 
@@ -812,19 +919,27 @@ sub _discographyView {
                     };
 
                     unless ($wait > 0) {           # 0 = never wait (opt-out)
-                        $offDone = 1; $render->();
+                        # Opt-out means render NOW, so the extras flag is
+                        # settled here too — it must never reintroduce a wait
+                        # the user has explicitly turned off.
+                        $offDone = 1; $extDone = 1; $render->();
                         Plugins::Discography::API->warmLocalReleases(\@needMbids, sub {
                             Plugins::Discography::API->warmBandMembers($mbid, sub {
-                                _warmArtistExtras($client, $mbid, $artist,
-                                    sub { $startBootleg->(undef) });
+                                $startBootleg->(undef);
                             });
                         });
                         return;
                     }
 
                     my $deadline = sub {
-                        return if $offDone;
-                        $offDone = 1;
+                        return if $offDone && $extDone;
+                        # Covers the parallel extras leg as well. Inside the
+                        # serial chain a hung MAI was already capped by this
+                        # timer (it blocked the bootleg leg, which the timer
+                        # overrode); gating a NEW flag without extending the
+                        # deadline would have made a hung MAI hang the page
+                        # forever — a regression hidden inside a speed-up.
+                        $offDone = 1; $extDone = 1;
                         _dbg("official-status: ${wait}s deadline hit - rendering, "
                              . "pass continues in the background");
                         $render->();
@@ -837,9 +952,11 @@ sub _discographyView {
                         # release map and the band list are cached before the
                         # bootleg leg sets $offDone, so both are ready for the
                         # first render (deadline permitting).
+                        # The MAI/Last.fm extras leg is NOT in this chain: it is
+                        # not a MusicBrainz request, so it owes no etiquette gap
+                        # and runs in parallel (0.47.4).
                         Plugins::Discography::API->warmBandMembers($mbid, sub {
-                            _warmArtistExtras($client, $mbid, $artist,
-                                sub { $startBootleg->($deadline) });
+                            $startBootleg->($deadline);
                         });
                     });
                 },
@@ -851,7 +968,7 @@ sub _discographyView {
                 # release groups there is no spine, so the streaming warm this
                 # flag exists to wait for is never started.
                 onError => sub {
-                    $rgsErr = 1; $offDone = 1; $poolDone = 1; $render->();
+                    $rgsErr = 1; $offDone = 1; $poolDone = 1; $extDone = 1; $render->();
                 },
             );
     };
@@ -1065,15 +1182,42 @@ sub _peekSimilar { $cache->get(_similarKey($_[0])) }
 
 # Row thumbnail: MAI's artist image proxy URL (name-keyed), or the person
 # icon when MAI isn't available (same look as pre-0.31.0).
+# KEY BY CONTRIBUTOR ID WHEN THE LIBRARY KNOWS THE ARTIST — the way LMS itself
+# does it (its own artist browse emits `contributor/<hash>/image`, identical for
+# every spelling of a name).
+#
+# FIELD (Simon, 2026-07-22): "when I play these albums or browse the artists I
+# get the correct artwork ... from MAI" — while the plugin's own row showed the
+# silhouette. The name-keyed proxy CANNOT resolve a name carrying typographic
+# punctuation, and 56 of his 4,288 library artists have some. Measured live:
+#
+#     name 'The La’s'    ->   5,071 bytes (placeholder)   id 57545 -> 418,519
+#     name 'The Go‐Go’s' ->   5,071 bytes (placeholder)   id       -> 411,927
+#     name 'The dB’s'    ->   5,071 bytes (placeholder)   id       ->  41,154
+#     name 'Radiohead'   -> 214,785 bytes                 id       -> 214,785
+#
+# An earlier plan to TRANSLITERATE the punctuation was dropped: it fixed the
+# symptom for library artists while leaving the plugin keyed differently from
+# the rest of LMS, and Simon's observation is what showed the id route exists.
+# NOTE the id route can return a SMALLER image (The B-52s: 234KB by id vs 1.9MB
+# by name) because it serves the artwork MAI already holds for that contributor
+# — that is the same picture the rest of his LMS shows, which is the point.
+#
+# No id (streaming-only rows, similar artists, MB candidates) keeps the
+# name route unchanged.
 sub _artistImg {
-    my ($name) = @_;
+    my ($name, $artistId) = @_;
     my $mai;
     eval {
         $mai = Slim::Utils::PluginManager->isEnabled('Plugins::MusicArtistInfo::Plugin');
         1;
     };
     return IMG_BASE . 'dsc-bio_MTL_icon_person.png'
-        unless $mai && defined $name && length $name;
+        unless $mai && ((defined $name && length $name) || $artistId);
+    return 'imageproxy/mai/artist/' . $artistId . '/image.png'
+        if defined $artistId && $artistId =~ /^\d+$/;
+    return IMG_BASE . 'dsc-bio_MTL_icon_person.png'
+        unless defined $name && length $name;
     require URI::Escape;
     return 'imageproxy/mai/artist/' . URI::Escape::uri_escape_utf8($name) . '/image.png';
 }
@@ -1144,9 +1288,20 @@ sub _warmArtistExtras {
     # Don't POISON the cache either: the fetch is by name, the key is by mbid,
     # so warming a shared-name act writes the prominent act's similar artists
     # under this artist's key — where a later render would trust it.
-    return $cb->() if Plugins::Discography::API
-                        ->sharesNameWithProminent($artist, $mbid);
-    _warmSimilarArtists($client, $mbid, $artist, sub { $cb->() });
+    #
+    # ASYNC guard (0.47.4), and it is what makes running this leg in PARALLEL
+    # with the MusicBrainz chain safe. The sync form answers from cache only,
+    # and it used to be warm here purely because the bio path had already
+    # fetched the same-name set several steps earlier in the serial chain.
+    # Off that chain the peek is COLD, a cold peek answers "not shared", and
+    # this would poison the cache for exactly the artists the guard exists to
+    # protect — the 0.44.5 bug, re-created by a change that never touched it.
+    # It costs no request: `getArtistCandidates` now dedupes in flight, so this
+    # rides the fetch the bio guard already started.
+    Plugins::Discography::API->sharesNameWithProminentAsync($artist, $mbid, sub {
+        return $cb->() if $_[0];
+        _warmSimilarArtists($client, $mbid, $artist, sub { $cb->() });
+    });
 }
 
 # Normalised MB release titles, used to tell same-named service artists apart.
@@ -1161,6 +1316,35 @@ sub _spineTitles {
         $t{$n} = 1 if $n ne '';
     }
     return \%t;
+}
+
+# Did we browse this artist under a name that is genuinely THEIRS? (0.48.5)
+#
+# Only used to decide whether a render is entitled to record an "empty"
+# verdict, which is keyed by MBID alone and therefore speaks for every row that
+# resolves to it. A joint-credit entry ("Nick Cave & Warren Ellis") resolves to
+# the HEAD act, so its page is built from a pool searched under a name that is
+# not the artist's — a fair render of a different question.
+#
+# MB's canonical name and the cached alias list are the two things that make a
+# name genuinely the artist's; a rename (British Sea Power -> Sea Power) is an
+# alias and still qualifies. Cache-only, no request.
+#
+# FAILS SAFE, deliberately: an unknown canonical name returns 0, so we decline
+# to record rather than record on a guess. The cost of a missing verdict is one
+# thin search row; the cost of a wrong one is a real artist hidden for a week.
+sub _browsedAsSelf {
+    my ($mbid, $name) = @_;
+    return 0 unless $mbid && defined $name && length $name;
+    my $canon = Plugins::Discography::API->peekArtistName($mbid);
+    return 0 unless defined $canon && length $canon;
+    my $n = Plugins::Discography::Sources::_norm($name);
+    return 0 unless length $n;
+    return 1 if $n eq Plugins::Discography::Sources::_norm($canon);
+    for my $a (@{ Plugins::Discography::API->peekArtistAliases($mbid) || [] }) {
+        return 1 if $n eq Plugins::Discography::Sources::_norm($a);
+    }
+    return 0;
 }
 
 sub _buildList {
@@ -1184,6 +1368,13 @@ sub _buildList {
     my $useH = _wantHeaders($opts->{features});
     my $show = _shownTypes();
     my $hideUnmatched = $prefs->get('hide_unmatched');
+    # local_only (the Options view toggle): render ONLY releases the user owns,
+    # and only their Local version rows — the spine, dates, artwork and type
+    # grouping stay, but streaming versions and the "Also on streaming" net are
+    # dropped. The bio, "Also in your library", and the band/similar links are
+    # kept (owned or navigation). It is a FILTERED view, so it neither sets nor
+    # clears the empty-artist verdict (see below).
+    my $localOnly = $opts->{local_only} ? 1 : 0;
 
     # WALK-STABILITY: hide_unmatched visibility is SNAPSHOTTED per visit. The
     # background warm means a release can gain/lose "matched" between the
@@ -1228,9 +1419,24 @@ sub _buildList {
                    %{ Plugins::Discography::API->peekLocalReleaseMap(
                           [ map { $_->{_mbid} } grep { $_->{_mbid} } @$local ] ) } };
 
+    # Owned TRACKS, for linking a release the user owns only as a compilation
+    # track (Simon's garage "The Bees" single, owned via Nuggets). LAZY: the
+    # coderef fetches (and memoises) the track list only when matchesFor reaches
+    # an otherwise-unmatched release, so an artist owned as albums never runs the
+    # extra `titles` query. Same shared-name suppression as $local — id-keyed is
+    # exact, only a name-resolved shared-name entry would grab the wrong act.
+    my $ltCache;
+    my $localTracks = sub {
+        return $ltCache if defined $ltCache;
+        $ltCache = ($opts->{shared_name} && !$opts->{artist_id}) ? []
+                 : Plugins::Discography::Sources->localTracks(
+                       $opts->{artist_id}, $opts->{artist});
+        return $ltCache;
+    };
+
     # Same-title release-groups compete for one candidate (four official groups
     # normalise to "the beatles"); this decides which one owns it.
-    my $rivals = _rivalsByTitle($rgs, $officialMap);
+    my $rivals = _rivalsByTitle($rgs, $officialMap, $show);
 
     # Invariants for the whole list, computed ONCE (matchesFor used to redo both
     # for every release group): the artist norm and the source order. The RG
@@ -1239,10 +1445,15 @@ sub _buildList {
     my $artistNorm = Plugins::Discography::Sources::_norm($opts->{artist} // '');
     my $sources    = [ Plugins::Discography::Sources::orderedSources() ];
 
+    # For the empty-artist verdict below: how many release groups the USER's own
+    # filters left on the table, and whether streaming was actually resolved.
+    my ($typeOk, $poolResolved) = (0, 0);
+
     my @shown;
     for my $rg (@$rgs) {
         next if grep { $HIDE_SECONDARY{$_} } @{ $rg->{secondary} };
         next unless $show->{ _groupOf($rg) };
+        $typeOk++;
 
         my $official = $officialMap ? $officialMap->{ $rg->{mbid} } : undef;
         my $bootleg = (defined $official && !$official) ? 1 : 0;
@@ -1252,7 +1463,8 @@ sub _buildList {
             $opts->{artist}, $rg->{title}, $local, $pool, $rg->{mbid}, $relMap,
             $rivals->{$rgNorm},
             { artistNorm => $artistNorm, albumNorm => $rgNorm, sources => $sources,
-              index => $pool->{index} });
+              index => $pool->{index}, aliases => $rg->{aliases},
+              localTracks => $localTracks });
         # Which streaming candidates a release group CLAIMED. Collected here
         # rather than recomputed, because matching every candidate against
         # every release group is exactly the work this loop already does.
@@ -1261,6 +1473,13 @@ sub _buildList {
             $claimedSvc{ $sec->{svc} }{ $_->{_albumid} } = 1
                 for grep { defined $_->{_albumid} } @{ $sec->{items} || [] };
         }
+        $poolResolved ||= $peek->{resolved} ? 1 : 0;
+
+        # In local_only mode a release shows iff the user OWNS it (has a Local
+        # section), and only its Local section(s) render. Local membership comes
+        # from the sync localAlbums query, stable for the whole visit, so it is
+        # snapshot-safe like everything else here.
+        my $localSecs = [ grep { ($_->{svc} // '') eq 'Local' } @{ $peek->{sections} || [] } ];
 
         my $visible = exists $snap->{ $rg->{mbid} }
             ? $snap->{ $rg->{mbid} }
@@ -1269,14 +1488,84 @@ sub _buildList {
             # Bootleg-only groups never show. Both live in the SAME snapshot so
             # a background resolve can't shift item_ids mid-visit.
             : ($snap->{ $rg->{mbid} } = $bootleg ? 0
+                : $localOnly ? (@$localSecs ? 1 : 0)
                 : (!$hideUnmatched || @{ $peek->{sections} } || !$peek->{resolved}) ? 1 : 0);
         next unless $visible;
 
-        push @shown, [ $rg, $peek->{sections} ];
+        push @shown, [ $rg, $localOnly ? $localSecs : $peek->{sections} ];
     }
 
-    unless (@shown) {
+    # TWO reasons an empty on-spine result FALLS THROUGH instead of returning
+    # "No releases found":
+    #   * local_only is a FILTERED view (owned releases only), not a verdict on
+    #     the artist's catalogue — an unfiltered render would still find plenty.
+    #   * the user OWNS material by this artist (@$local). A spine can render
+    #     empty even for an owned act — every release group is bootleg-only, or
+    #     the artist has none in MB at all (dd11eecd, "The Bees", is exactly
+    #     this: two release groups, both bootleg) — and showing "No releases
+    #     found" over the top of an album the user owns is plainly wrong. Fall
+    #     through to render the bio, "Also in your library" / "Appearances" and
+    #     the band/similar links, so the owned material is reachable.
+    # In both cases the markArtistEmpty guard below already refuses to record a
+    # verdict (it requires `!@$local` and is skipped entirely on local_only), so
+    # this only changes what is RENDERED, never what is remembered.
+    unless (@shown || $localOnly || @$local) {
+        # PROVE-THEN-REMEMBER (0.46.6). Simon: *"I thought we had put in place a
+        # way to stop displaying artists when searching that return no content.
+        # I am still finding these popping up."* The search-row filter asks
+        # MusicBrainz "does this artist have releases?" — it cannot ask "is any
+        # of it playable HERE", because that means resolving every row against
+        # every service, ~6 requests per row on a 15-row search.
+        #
+        # But THIS render has just answered that question the expensive way.
+        # Measured live on Luke Bushell (a "bush" search row): 8 release groups
+        # in MB, `pool: Deezer=1, Qobuz=1, Tidal=1`, every one NO MATCH. So the
+        # verdict is recorded here and `filterRowsWithContent` drops the row
+        # next time. No extra request, ever — it reuses work already done.
+        #
+        # FOUR GUARDS, because wrongly hiding a real artist is far worse than
+        # showing a thin one:
+        #   * the pool must have RESOLVED — a cold or errored pool means "not
+        #     asked yet", not "nothing there" (the 0.43.9 distinction, and the
+        #     0.44.5 peek-guard lesson: a cold cache must never answer "no").
+        #   * MB must actually list releases, and the user's own type filters
+        #     must have left at least one on the table — an empty page because
+        #     Singles are hidden is a PREFERENCE, not an absent artist (0.43.9:
+        #     check the user's view filters before diagnosing a match failure).
+        #   * never for an artist the user owns; owning the music outranks any
+        #     verdict we could reach.
+        #   * TTL'd, and cleared by Refresh / `clearcache`, so an artist whose
+        #     catalogue arrives later heals on its own.
+        #
+        # NB this return short-circuits BEFORE the "Also on streaming" and
+        # library-extras sections are built, so the verdict matches exactly what
+        # the user sees: an empty page. If that early return is ever changed to
+        # render those sections, this condition MUST move with it — otherwise a
+        # row whose page does show playable rows would be hidden.
+        #   * and (0.48.5) we must have browsed THIS artist under a name that is
+        #     actually theirs. A joint-credit row resolves to the HEAD act
+        #     (0.47.0: "Nick Cave & Warren Ellis" -> Nick Cave, because MB has no
+        #     such artist), so the page was built from a pool searched under a
+        #     DIFFERENT string — and the verdict is keyed by mbid alone, so
+        #     recording it there condemns the head artist's own row. That is
+        #     exactly how Simon lost solo Nick Cave from search while his page
+        #     rendered 9 albums. A rename/alias entry (British Sea Power ->
+        #     Sea Power) is a real name for the artist and still counts.
+        if ($mbid && $poolResolved && $typeOk && @$rgs && !@$local
+            && _browsedAsSelf($mbid, $opts->{artist})) {
+            Plugins::Discography::API->markArtistEmpty($mbid, $opts->{artist});
+        }
         return [{ name => cstring($client, 'PLUGIN_DISCOGRAPHY_NO_RESULTS'), type => 'text' }];
+    }
+
+    # THIS RENDER DISPROVES ANY "EMPTY" VERDICT ON THE ARTIST (0.48.5). The
+    # verdict could previously only be SET — see API::clearArtistEmpty for why
+    # that made a wrong one unfixable from the search it hides the row from.
+    # Never from a filtered (local_only) render — @shown there is owned releases
+    # only, which neither proves nor disproves the catalogue verdict.
+    if (!$localOnly && $mbid && Plugins::Discography::API->clearArtistEmpty($mbid)) {
+        _dbg("empty verdict CLEARED for " . ($opts->{artist} // '?') . " ($mbid) - "
+            . 'this render found ' . scalar(@shown) . ' release(s)');
     }
 
     my %bucket;
@@ -1338,7 +1627,11 @@ sub _buildList {
     # on that artist (the %lastCtx model), so the Apps-view search would be
     # unreachable without it. Submission is walk-safe: the paramless re-fetch
     # rebuilds this SAME view from ctx, so the row's item_id resolves.
-    my @optRows = (_sortToggleItem($client, $opts), _refreshItem($client, $opts, $mbid),
+    # The local-only toggle is offered whenever the user owns anything by this
+    # artist (or the filter is already on, so there is always a way back out).
+    my @optRows = (_sortToggleItem($client, $opts),
+                   ((@$local || $localOnly) ? (_localOnlyToggleItem($client, $opts)) : ()),
+                   _refreshItem($client, $opts, $mbid),
                    _searchRow($client, $opts));
     my @items = (@bioRows,
         _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_OPTIONS', $useH,
@@ -1469,7 +1762,9 @@ sub _buildList {
     # Depends on _filterForeignArtist: without it Qobuz's ~20 appears-on
     # entries by OTHER artist ids would land here as this artist's records.
     # ---------------------------------------------------------------------
-    if ($prefs->get('show_streaming_extras')) {
+    # Suppressed in local_only mode: an unclaimed STREAMING record is by
+    # definition not owned, so it has no place in a "what you own" view.
+    if (!$localOnly && $prefs->get('show_streaming_extras')) {
         my @unclaimed;
         for my $svc (map { $_->{name} } @$sources) {
             next if $svc eq 'Local';
@@ -1813,6 +2108,29 @@ sub _sortToggleItem {
     };
 }
 
+# Local-only view toggle — same mechanics as the sort toggle: a FRESH entry
+# with an explicit local_only param (drill-in UX; back returns), and the opened
+# view's own rows re-issue the command with the flag via _identParams, so it
+# sticks. The label names the ACTION (what tapping does), not the current state.
+sub _localOnlyToggleItem {
+    my ($client, $opts) = @_;
+    my $on   = $opts->{local_only} ? 1 : 0;
+    my $flip = $on ? 0 : 1;
+    return {
+        name        => cstring($client, $on ? 'PLUGIN_DISCOGRAPHY_SHOW_ALL_SOURCES'
+                                            : 'PLUGIN_DISCOGRAPHY_SHOW_LOCAL_ONLY'),
+        type        => 'link',
+        image       => MENU_LOCAL,
+        itemActions => { items => { command => ['discography', 'items'],
+            fixedParams => { _identParams({ %$opts, local_only => $flip }) } } },
+        passthrough => [{ %$opts, local_only => $flip }],
+        url         => sub {
+            my ($c, $cb, $a, $pass) = @_;
+            _discographyView($c, $cb, $pass);
+        },
+    };
+}
+
 # Refresh is NOT a drill-in (LBF's pattern): clear the cache, return empty
 # with nextWindow=>'refresh', and the client re-fetches the PARENT view — which
 # still carries the artist params. A drill-in Refresh would also poison later
@@ -2040,6 +2358,24 @@ sub _artistSearch {
 # briefly (SEARCH_TTL) so a re-issued identical query (view refresh, legacy
 # re-walk) sees the identical ordering even if a service times out the second
 # time.
+# The spelling to hand a streaming service's artist SEARCH: a name with
+# typographic punctuation folded to ASCII, because the services match the plain
+# forms. Measured live (2026-07-23): Qobuz's artist search returns "The La's"
+# for the STRAIGHT apostrophe (U+0027) but only unrelated junk for MusicBrainz's
+# canonical "The La’s" (U+2019). Deliberately NOT _norm — that strips the
+# punctuation the services key on (folding "The Las"/"The La's"/"The La’s" all to
+# "the las"); this keeps letters, spacing and case and only normalises the marks.
+sub _svcQueryName {
+    my ($s) = @_;
+    return $s unless defined $s;
+    $s =~ tr/\x{2018}\x{2019}\x{201A}\x{201B}\x{2032}/'/;      # curly/prime -> '
+    $s =~ tr/\x{201C}\x{201D}\x{201E}\x{2033}/"/;              # curly double -> "
+    $s =~ s/[\x{2010}-\x{2015}\x{2212}]/-/g;                   # dashes -> hyphen
+    $s =~ s/\x{2026}/.../g;                                    # ellipsis
+    $s =~ s/\x{00A0}/ /g;                                      # nbsp -> space
+    return $s;
+}
+
 sub _artistSearchView {
     my ($client, $callback, $features, $q) = @_;
 
@@ -2055,7 +2391,11 @@ sub _artistSearchView {
     # makes "Layo & Bushwacka!" and "Layo & Bushwacka" bucket TOGETHER. A v2
     # entry holds them as separate rows. Only a 10-minute TTL, but that is
     # exactly the window someone tests the fix in.
-    my $ckey = 'dsc:asearch:6:' . lc $q;
+    # v11: the cached rows now CARRY the ranking keys (`_seq`/`_exact`), which
+    # the post-attach re-rank reads. A v10 entry has neither, so every row would
+    # re-rank as non-exact — a worse order than before, for the ten minutes
+    # someone is testing this in.
+    my $ckey = 'dsc:asearch:11:' . lc $q;
     utf8::encode($ckey) if utf8::is_utf8($ckey);
 
     # Both the cached and the fresh path finish the same way: streaming rows
@@ -2071,9 +2411,30 @@ sub _artistSearchView {
         return;
     }
 
-    Plugins::Discography::Sources->searchArtists($client, $q, sub {
-        my ($bySvc, $failed) = @_;
-        my $merged = Plugins::Discography::Sources->mergeArtistHits($q, $bySvc);
+    # SECOND PASS UNDER MUSICBRAINZ'S CANONICAL NAME (0.45.2).
+    #
+    # Field (Simon): searching "British Sea Power" returned the row WITHOUT
+    # Qobuz, while entering the same artist from the Artists list resolved all
+    # three services. The band renamed to "Sea Power", so the services file it
+    # under the NEW name; Tidal and Deezer absorb the old one, Qobuz does not.
+    # 0.45.0 fixed exactly this for the BROWSE path (getCandidates) -- but
+    # searchArtists is a SEPARATE path and did not get it. Simon's rule, and it
+    # is the right one: "we need to ensure all fixes we do for matching are done
+    # across matching from the rows in Artists and via our search."
+    #
+    # So: resolve the TYPED query to an MB artist (cached 30d, and this is the
+    # same lookup the rows do anyway), and if MB's canonical name differs, run
+    # the service legs again under it and merge both result sets before ranking.
+    # Bounded -- ONE extra round, only when the name actually differs, which is
+    # the rename/alias case alone.
+    my $runMerge = sub {
+        my ($bySvc, $failed, $canon) = @_;
+        # $canon is passed ONLY when the second pass actually ran, so the
+        # relevance gate judges those hits against the name they were fetched
+        # under (0.46.4). Without it Deezer's "The B-52's" was discarded from a
+        # "b52s" search while Qobuz/Tidal survived on a spelling coincidence.
+        my $merged = Plugins::Discography::Sources->mergeArtistHits(
+            $q, $bySvc, undef, ($canon ? [$canon] : undef));
         my @bad    = sort keys %{ $failed || {} };
         _dbg("artist search '$q': " . scalar(@$merged) . ' merged from '
             . join(',', map { "$_=" . scalar(@{ $bySvc->{$_} }) } sort keys %$bySvc)
@@ -2090,6 +2451,60 @@ sub _artistSearchView {
             $cache->set($ckey, $merged, SEARCH_TTL);
         }
         $finish->($merged);
+    };
+
+    Plugins::Discography::Sources->searchArtists($client, $q, sub {
+        my ($bySvc, $failed) = @_;
+
+        # THROTTLE-GATED, matching filterRowsWithContent (API.pm:808). This
+        # costs one MB lookup per NEW search term -- milliseconds against a
+        # mirror, but 1.1s of etiquette delay on the public API, on every
+        # search a user types. The plugin's established policy is that extra
+        # MB work runs only where MB is un-throttled, and a rename is exactly
+        # the case a mirror user hits most.
+        if (Plugins::Discography::API->mbGap(1.1)) {
+            return $runMerge->($bySvc, $failed);
+        }
+
+        Plugins::Discography::API->getArtistMbid(artist => $q, onDone => sub {
+            my ($mbid) = @_;
+            my $canon = $mbid
+                ? Plugins::Discography::API->peekArtistName($mbid) : undef;
+            # The spelling to actually search the services under (see
+            # _svcQueryName): MB's canonical name with typographic marks folded
+            # to ASCII. _norm MUST NOT gate this — it discards the very
+            # punctuation the services key on, so "The Las" and MB's "The La’s"
+            # both fold to "the las" and the pass was skipped as "same as typed",
+            # leaving Qobuz (which only matches the straight-apostrophe form)
+            # permanently absent from the row.
+            my $svcName = _svcQueryName($canon);
+
+            # Nothing to add: no MB artist, or the service spelling of the
+            # canonical name IS what the first pass already searched (case-only
+            # difference; also the straight-apostrophe query whose first pass
+            # already matched). This gate is STRICTLY WIDER than the old _norm
+            # one — _norm folds more than _svcQueryName, so _norm-equal implies
+            # svcName-equal — hence it can only ADD second passes, never drop one.
+            if (!$canon || lc($svcName) eq lc($q)) {
+                return $runMerge->($bySvc, $failed);
+            }
+
+            _dbg("artist search '$q': MB canonical '$canon' (service spelling "
+                 . "'$svcName') differs from the query - searching services under it too");
+            Plugins::Discography::Sources->searchArtists($client, $svcName, sub {
+                my ($bySvc2, $failed2) = @_;
+                # Union per service. mergeArtistHits buckets by _norm, so a
+                # duplicate hit collapses into the same row rather than
+                # doubling it; this only ever ADDS services to that row.
+                for my $svc (keys %$bySvc2) {
+                    push @{ $bySvc->{$svc} ||= [] }, @{ $bySvc2->{$svc} || [] };
+                }
+                # A failure in EITHER pass makes the set incomplete, so the
+                # merged list must not be cached (0.42.2's rule, unchanged).
+                $failed->{$_} = 1 for keys %{ $failed2 || {} };
+                $runMerge->($bySvc, $failed, $canon);
+            });
+        });
     });
 }
 
@@ -2122,6 +2537,32 @@ sub _artistSearchView {
 # ---------------------------------------------------------------------------
 sub _withMbCandidates {
     my ($client, $callback, $features, $q, $merged) = @_;
+
+    # Attach owned artists the Local leg could not spell-match, BEFORE anything
+    # else looks at the rows (see Sources::attachLibraryArtists for the "The
+    # Las" case this exists for). Deliberately here rather than beside the
+    # merge: both the cached and the fresh path funnel through this sub, so a
+    # row served from the 10-minute search cache is judged against the library
+    # as it is NOW. It also runs ahead of filterRowsWithContent, whose MB alias
+    # attach is guarded on `!$artist_id` — so this makes that path do LESS
+    # work, not more, and it works on public installs where that path bails out.
+    $merged = Plugins::Discography::Sources->attachLibraryArtists($merged);
+
+    # SPLIT an owned row into one row per owned IDENTITY (Simon's three "The
+    # Bees"): the merge kept only the first same-name contributor id, so distinct
+    # owned acts collapsed into one row that drilled into the wrong band. This
+    # re-derives the discarded contributors, folds those sharing a MB tag and
+    # separates those that differ, and stamps `_ident_mbid` on every owned row
+    # for the disambiguation section below. Runs on the cached path too (like the
+    # attach), so the split is judged against the library as it is NOW.
+    $merged = Plugins::Discography::Sources->splitOwnedByIdentity($merged);
+
+    # RE-RANK, because the attach above is what makes some rows Local at all —
+    # "The La's" is not found by the Local leg, so at merge time it ranked as a
+    # streaming-only row. Same comparator as the merge (see rankArtistHits);
+    # running it here is what makes "Local trumps" true for the rows 0.48.1
+    # rescues, and it must stay AFTER the attach for that reason.
+    $merged = Plugins::Discography::Sources->rankArtistHits($merged);
 
     # Drop rows whose page could only be empty BEFORE building any of them —
     # both the row list and the "already covered above" test below must see the
@@ -2175,6 +2616,22 @@ sub _withMbCandidates {
             if @live < @$cands;
         $cands = \@live;
 
+        # OWNED ACTS BELONG ABOVE, NOT IN "OTHER ARTISTS WITH THIS NAME". Every
+        # owned identity is now a real row (splitOwnedByIdentity stamps each with
+        # its `_ident_mbid`), so drop any MB candidate the user already owns —
+        # matched by mbid, which is exact, rather than by the old name heuristic.
+        # This is what makes the section unowned-only: Simon's three "The Bees"
+        # appear as owned rows and none of them reappears here.
+        my %ownedMbid = map { $_->{_ident_mbid} => 1 }
+                        grep { $_->{_ident_mbid} } @{ $merged || [] };
+        if (keys %ownedMbid) {
+            my @keep = grep { !$ownedMbid{ lc($_->{mbid} // '') } } @$cands;
+            _dbg("artist search '$q': " . (scalar(@$cands) - scalar(@keep))
+                . ' MB artist(s) dropped from the section as OWNED')
+                if @keep < @$cands;
+            $cands = \@keep;
+        }
+
         # A DIFFERENTLY SPELLED act is not something the user needs help
         # telling apart — "Mädness" reads as its own artist. Those belong in
         # the main result list, not under a "can't tell these apart" header,
@@ -2204,8 +2661,16 @@ sub _withMbCandidates {
         # Only when such a row exists: with no result above (an artist absent
         # from every service and the library), the whole set must stay or the
         # prominent act becomes unreachable.
+        #
+        # ONLY an UNOWNED row triggers this. An owned row drills by artist_id
+        # (its tag), so it reaches its OWN identity — already excluded by mbid
+        # above — never the section's top candidate; counting it here would drop
+        # a legitimate unowned act on the strength of an owned row that does not
+        # reach it. An unowned streaming row named like the query DOES drill by
+        # name resolution to the top candidate, so it still shifts it away.
         my $qn = Plugins::Discography::Sources::_norm($q);
-        my $covered = grep { Plugins::Discography::Sources::_norm($_->{name} // '') eq $qn }
+        my $covered = grep { !$_->{artist_id}
+                             && Plugins::Discography::Sources::_norm($_->{name} // '') eq $qn }
                       @{ $merged || [] };
         my @show = @$cands;
         shift @show if $covered;
@@ -2262,8 +2727,12 @@ sub _mbCandidateRow {
         # For acts sharing one spelling it would hand every row the prominent
         # act's picture — worse than none on a list whose purpose is telling
         # them apart (field, 0.43.0) — so those keep the person icon.
-        image       => $named ? _artistImg($cand->{name})
-                              : IMG_BASE . 'dsc-bio_MTL_icon_person.png',
+        # A library artist_id, when the candidate carries one, is BETTER than a
+        # unique spelling: it is exact, and it resolves names the name-keyed
+        # proxy cannot (0.48.3).
+        image       => ($cand->{artist_id} || $named)
+                       ? _artistImg($cand->{name}, $cand->{artist_id})
+                       : IMG_BASE . 'dsc-bio_MTL_icon_person.png',
         itemActions => { items => { command => ['discography', 'items'],
             fixedParams => \%fixed } },
         passthrough => [{ c_mbid => $cand->{mbid}, c_name => $cand->{name},
@@ -2308,7 +2777,14 @@ sub _searchResultRow {
     return {
         name        => $name,
         type        => 'link',
-        image       => _artistImg($name),
+        # For a same-name split act, use LMS's OWN artist icon (folder art):
+        # `_img` when LMS holds art, a neutral person icon when it knows the act
+        # but has none (`_noart`) — NOT MAI's online guess of the prominent act,
+        # which is the "bootleg shows the UK band" bug. Ordinary rows still use
+        # the MAI proxy, which resolves a unique name correctly.
+        image       => $hit->{_img}
+                       || ($hit->{_noart} ? IMG_BASE . 'dsc-bio_MTL_icon_person.png'
+                                          : _artistImg($name, $hit->{artist_id})),
         line2       => join(" \x{00B7} ", @{ $hit->{sources} || [] }),
         # Self-identifying go (stale-view fix): fresh top-level entry.
         itemActions => { items => { command => ['discography', 'items'],
@@ -2454,6 +2930,10 @@ sub _identParams {
         # view re-issues its own command on refresh, keeping its order).
         (($opts->{sort} // '') =~ /^(?:newest|oldest)$/
                                          ? (sort      => $opts->{sort})      : ()),
+        # local_only rides the params the same way sort does: a view opened
+        # with the filter on re-issues its own command (toggles/paging) with
+        # local_only=1 still set, so the filter sticks throughout that view.
+        ($opts->{local_only}             ? (local_only => 1)                 : ()),
     );
 }
 
@@ -2728,7 +3208,8 @@ sub _releaseDetail {
             # thumbnail; the all-services view stays behind the pref.
             if (@$sections) {
                 my %row = %{ $sections->[0]{items}[0] };
-                $row{line2} = $sections->[0]{svc};
+                $row{line2} = $sections->[0]{svc}
+                    . ($row{_track} && $row{_fromAlbum} ? " \x{00B7} from $row{_fromAlbum}" : '');
                 # A WORKING play string (Qobuz needs .qbz; the native url coderef
                 # still handles drill + row Play, but tile-play-via-expansion
                 # collects this string).
@@ -2774,7 +3255,8 @@ sub _releaseDetail {
                     my %row = %$it;
                     # Native node from the service plugin's own renderer (url
                     # coderef + passthrough), so play/add/insert work natively.
-                    $row{line2} = $sec->{svc};
+                    $row{line2} = $sec->{svc}
+                        . ($row{_track} && $row{_fromAlbum} ? " \x{00B7} from $row{_fromAlbum}" : '');
                     # Tile play collects EVERY play-string row in this feed
                     # (XMLBrowser one-level collection) — only the FIRST
                     # (preferred) version gets a WORKING play string (Qobuz
@@ -2869,6 +3351,15 @@ sub _releaseDetail {
     Plugins::Discography::Sources->getCandidates($client, $artist, 0, sub {
         my $bySvc = shift;
         my $local = Plugins::Discography::Sources->localAlbums($pass->{artist_id}, $artist);
+        # Lazy owned-track pool, so the drill agrees with the tile for a release
+        # owned only as a compilation track (same suppression as $local).
+        my $ltCache;
+        my $localTracks = sub {
+            return $ltCache if defined $ltCache;
+            $ltCache = ($pass->{shared_name} && !$pass->{artist_id}) ? []
+                     : Plugins::Discography::Sources->localTracks($pass->{artist_id}, $artist);
+            return $ltCache;
+        };
         my $ambid = $pass->{mbid};   # artist MBID (carried on the tile)
 
         # Rebuild the SAME context the list used, so drill-in agrees with the
@@ -2883,7 +3374,8 @@ sub _releaseDetail {
         my $finish = sub {
             my ($rivalBucket) = @_;
             $sections = Plugins::Discography::Sources->matchesFor(
-                $bySvc, $artist, $rg->{title}, $local, $rg->{mbid}, $relMap, $rivalBucket);
+                $bySvc, $artist, $rg->{title}, $local, $rg->{mbid}, $relMap, $rivalBucket,
+                { aliases => $rg->{aliases}, localTracks => $localTracks });
             $sectionsDone = 1;
             # Review needs $sections (Qobuz-description fallback rides the match).
             _fetchAlbumReview($client, $artist, $rg->{title}, $rg->{mbid}, $sections, sub {
@@ -2901,8 +3393,12 @@ sub _releaseDetail {
                 mbid   => $ambid,
                 onDone => sub {
                     my $rgs = shift;
+                    # Same type filter as the list view — the detail page must
+                    # compute the SAME owner, or a drill-in disagrees with the
+                    # tile that opened it (the 0.18.0 class of bug).
                     my $rivals = _rivalsByTitle($rgs,
-                        Plugins::Discography::API->peekOfficial($ambid));
+                        Plugins::Discography::API->peekOfficial($ambid),
+                        _shownTypes());
                     $finish->($rivals->{ Plugins::Discography::Sources::_norm($rg->{title}) });
                 },
                 onError => sub { $finish->(undef) },

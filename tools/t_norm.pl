@@ -67,8 +67,18 @@ require Plugins::Discography::Sources;
 my $norm = \&Plugins::Discography::Sources::_norm;
 my $amat = \&Plugins::Discography::Sources::_artistMatch;
 my ($pass, $fail) = (0, 0);
-sub ok { my ($c, $n) = @_; if (scalar $c) { $pass++; print "ok   - $n\n" }
-                           else           { $fail++; print "FAIL - $n\n" } }
+sub ok {
+    my ($c, $n) = @_;
+    # STRUCTURAL GUARD against the list-context trap that has cost time five
+    # times in this repo: a bare `=~` (or grep/map) in ok()'s argument list
+    # returns the EMPTY LIST on failure, which shifts the test NAME into the
+    # condition slot so a FAILING assertion prints as a pass. A missing name is
+    # the fingerprint, so refuse it loudly instead of scoring it.
+    die "ok() called without a test name - wrap the condition in scalar()\n"
+        unless defined $n;
+    if (scalar $c) { $pass++; print "ok   - $n\n" }
+    else           { $fail++; print "FAIL - $n\n" }
+}
 
 # 1. THE BUG: a decorative mark must not change the normalised form.
 for my $p (['Layo & Bushwacka!',           'Layo & Bushwacka'],
@@ -142,6 +152,90 @@ utf8::encode($octets);
 ok($norm->($chars)  eq 'sigur ros', 'accents fold (decoded string, as MB JSON)');
 ok($norm->($octets) eq 'sigur ros', 'accents fold (octets, as a CLI param)');
 ok($norm->($chars) eq $norm->($octets), 'both encodings agree');
+
+# 7. APOSTROPHES ELIDE — they do not become a space (field, 2026-07-21).
+#
+# Spacing keyed "Jane's Addiction" as 'jane s addiction' against
+# 'janes addiction'. `_artistMatch` is an exact-token SUBSET test, so the token
+# 'janes' matched nothing and the act failed against EVERY source, library and
+# streaming alike. Both spellings are common in the wild, and LMS's own index
+# tokenises on the mark (verified live: `artists search:Connor` returns
+# "Sinead O'Connor"), so eliding is what puts them on one key.
+for my $p (["Jane's Addiction",  'Janes Addiction'],
+           ["D'Angelo",          'DAngelo'],
+           ["O'Neal",            'ONeal'],
+           ["The B-52's",        'The B-52s'],
+           ["'Til Tuesday",      'Til Tuesday'],
+           ["Guns N' Roses",     'Guns N Roses']) {
+    ok($norm->($p->[0]) eq $norm->($p->[1]),
+       "'$p->[0]' == '$p->[1]'  (" . $norm->($p->[0]) . ')');
+}
+
+# 7a. The typographic apostrophe folds identically to the ASCII one — services
+#     and MB disagree on which they use for the SAME act.
+ok($norm->("Jane\x{2019}s Addiction") eq $norm->("Jane's Addiction"),
+   'curly apostrophe == straight apostrophe');
+
+# 7b. GUARD THE GUARD — "'n'" contracting "and" joins two WORDS rather than
+#     sitting inside one, so a blind elide would key "Rock'n'Roll" as
+#     'rocknroll' while the spaced form stayed 'rock n roll'. All three
+#     spellings agreed BEFORE this change and must still agree after it.
+ok($norm->("Rock'n'Roll") eq $norm->("Rock 'n' Roll"),
+   "\"Rock'n'Roll\" == \"Rock 'n' Roll\"  (" . $norm->("Rock'n'Roll") . ')');
+ok($norm->("Rock'n'Roll") eq $norm->('Rock N Roll'),
+   "\"Rock'n'Roll\" == 'Rock N Roll'");
+ok($norm->("Rock \x{2019}n\x{2019} Roll") eq $norm->('Rock N Roll'),
+   'curly "n" contraction agrees too');
+
+# 7c. It must NOT over-merge: eliding a mark cannot make different acts collide,
+#     and it must not swallow a name down to a token that matches anything.
+ok($norm->("Jane's Addiction") ne $norm->('Jane'),
+   "'Jane's Addiction' != 'Jane'");
+ok($norm->('N.W.A') ne $norm->('N.E.R.D'),
+   "'N.W.A' != 'N.E.R.D' (initialisms keep their separate tokens)");
+ok($norm->("Jane's Addiction") eq 'janes addiction', 'elide, not space');
+ok($amat->($norm->("Sin\x{e9}ad O\x{2019}Connor"), $norm->("Sinead O'Connor")),
+   'accent + apostrophe fold together through _artistMatch');
+
+# 8. ACCENTED NAMES MUST BE FINDABLE TYPED PLAIN (Simon, 2026-07-21:
+#    "any accented characters need to pass").
+#
+# Two different mechanisms, and the distinction is the point:
+#   - a letter + COMBINING MARK (ó ö ř é è ï ü ñ) folds via the NFD pass, which
+#     needs no table and covers the whole Unicode range;
+#   - a letter carrying a STROKE, HOOK or LIGATURE (ø đ ł ŧ æ œ ß ĳ ǉ) has NO
+#     canonical decomposition, so NFD cannot touch it and %FOLD must.
+# Tested in the OCTET encoding, which is how a library name actually arrives.
+for my $p (["Sigur R\x{f3}s",       'Sigur Ros'],
+           ["Bj\x{f6}rk",           'Bjork'],
+           ["Mot\x{f6}rhead",       'Motorhead'],
+           ["Beyonc\x{e9}",         'Beyonce'],
+           ["Blue \x{d6}yster Cult",'Blue Oyster Cult'],
+           ["Antonin Dvo\x{159}\x{e1}k", 'Antonin Dvorak'],
+           ["Bj\x{f6}rk Gu\x{f0}mundsd\x{f3}ttir", 'Bjork Gudmundsdottir'],
+           ["Stra\x{df}e",          'Strasse'],
+           ["\x{c6}on",             'Aeon'],
+           ["\x{141}ukasz",         'Lukasz'],
+           ["Ni\x{f1}o",            'Nino']) {
+    my ($x, $y) = map { my $s = $_; utf8::encode($s); $norm->($s) } @$p;
+    ok($x eq $y, "'$p->[0]' == '$p->[1]'  ($x)");
+}
+
+# 8a. NOTHING accented may reach the key still non-ASCII, or the name is
+#     unfindable typed plain. Swept over the Latin ranges; the only survivors
+#     allowed are click/glottal/tone letters with no ASCII base.
+{
+    my @bad;
+    for my $cp (0xC0 .. 0x24F) {
+        my $ch = chr($cp);
+        next unless $ch =~ /\p{L}/;
+        my $s = "test${ch}name";
+        utf8::encode($s);
+        push @bad, sprintf('U+%04X', $cp) if $norm->($s) =~ /[^\x00-\x7f]/;
+    }
+    ok(@bad <= 26, 'Latin sweep: no accented letter survives to the key ('
+       . scalar(@bad) . ' unmapped phonetic letters, was 130)');
+}
 
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

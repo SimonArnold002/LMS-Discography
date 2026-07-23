@@ -57,14 +57,28 @@ require Plugins::Discography::Sources;
 my $S = 'Plugins::Discography::Sources';
 
 my ($pass, $fail) = (0, 0);
-sub ok { my ($c, $n) = @_; if (scalar $c) { $pass++; print "ok   - $n\n" }
-                           else           { $fail++; print "FAIL - $n\n" } }
+sub ok {
+    my ($c, $n) = @_;
+    # STRUCTURAL GUARD against the list-context trap that has cost time five
+    # times in this repo: a bare `=~` (or grep/map) in ok()'s argument list
+    # returns the EMPTY LIST on failure, which shifts the test NAME into the
+    # condition slot so a FAILING assertion prints as a pass. A missing name is
+    # the fingerprint, so refuse it loudly instead of scoring it.
+    die "ok() called without a test name - wrap the condition in scalar()\n"
+        unless defined $n;
+    if (scalar $c) { $pass++; print "ok   - $n\n" }
+    else           { $fail++; print "FAIL - $n\n" }
+}
 
 # Run the REAL merge and report which display names survived the gate.
+# %bySvc may carry a _canon key: the name 0.45.2's second pass ALSO searched
+# the services under, which the gate must judge those hits against (0.46.4).
 sub merged {
     my ($query, %bySvc) = @_;
+    my $canon = delete $bySvc{_canon};
     my %in = map { $_ => [ map { { name => $_ } } @{ $bySvc{$_} } ] } keys %bySvc;
-    my $out = $S->mergeArtistHits($query, \%in, [ sort keys %bySvc ]);
+    my $out = $S->mergeArtistHits($query, \%in, [ sort keys %bySvc ],
+                                  ($canon ? [$canon] : undef));
     return [ map { $_->{name} } @$out ];
 }
 sub has { my ($rows, $want) = @_; return scalar grep { $_ eq $want } @$rows }
@@ -129,6 +143,66 @@ $r = merged('beatl', Tidal => ['The Beatles']);
 ok(has($r, 'The Beatles'), 'partial typing still works (substring rule)');
 $r = merged('Beatles', Tidal => ['The Beatles']);
 ok(has($r, 'The Beatles'), 'token-subset still works');
+
+# ---------------------------------------------------------------------------
+# THE CANONICAL-NAME PASS (0.46.4). Field: Simon searched "b52s" and the row
+# came back WITHOUT Deezer, while "b-52s" had all three.
+#
+# Deezer was never missing -- the log reads `Deezer=2` -- its two hits were
+# discarded HERE, because 0.45.2 fetches them under MusicBrainz's canonical
+# name and the gate then judged them against what the user TYPED. Qobuz and
+# Tidal survived only because their lists happened to also contain "B52's",
+# which folds exactly onto the typed query: a spelling coincidence, not a
+# service difference. Fixture verbatim from the artist-search log lines.
+# ---------------------------------------------------------------------------
+my $CANON  = "The B\x{2010}52s";                  # MB's spelling: U+2010 HYPHEN
+my @deezer = ("The B-52's", 'B-52');              # everything Deezer returned
+# Tidal's answer to the CANONICAL name is mostly free association -- the exact
+# junk the 0.37.1 gate exists to reject, now arriving through the new door.
+my @tidal_b52 = ("The B-52's", 'Talking Heads', 'DEVO', "The Go-Go's",
+                 'Missing Persons', 'Kate Pierson', 'The B-69s');
+
+$r = merged('b52s', Deezer => \@deezer, Tidal => \@tidal_b52);
+ok(!has($r, "The B-52's"),
+   'PRE-FIX: judged against "b52s" alone, the canonical hit is thrown away');
+
+$r = merged('b52s', _canon => $CANON, Deezer => \@deezer, Tidal => \@tidal_b52);
+ok(has($r, "The B-52's"),
+   'a hit fetched under the canonical name is judged against THAT name');
+ok(!has($r, 'Talking Heads') && !has($r, 'DEVO') && !has($r, "The Go-Go's")
+   && !has($r, 'Missing Persons'),
+   '... and the free-association junk is STILL rejected');
+ok(!has($r, 'Kate Pierson'), '... including a band MEMBER, who is a real artist');
+# "B-52" and "The B-69s" are the near misses that prove the door is narrow:
+# neither normalises onto the typed query OR the canonical name.
+ok(!has($r, 'B-52') && !has($r, 'The B-69s'),
+   '... and near-miss names are not swept in with it');
+
+# The row must speak for every service that reached it — that is the whole
+# report ("missing Deezer").
+my %in = (Deezer => [ map { { name => $_ } } @deezer ],
+          Tidal  => [ map { { name => $_ } } @tidal_b52 ]);
+my ($row) = grep { $_->{name} eq "The B-52's" }
+            @{ $S->mergeArtistHits('b52s', \%in, [qw(Deezer Tidal)], [$CANON]) };
+ok($row && (grep { $_ eq 'Deezer' } @{ $row->{sources} })
+        && (grep { $_ eq 'Tidal'  } @{ $row->{sources} }),
+   '... and the surviving row lists BOTH services');
+
+# The extra query is OPTIONAL, and omitting it must change NOTHING — most
+# searches never run a second pass. Compared as whole result lists (names AND
+# order), not a spot check, because ranking reads the same exactness flag.
+my %layo = (Tidal  => [ map { { name => $_ } } @tidal_layo ],
+            Qobuz  => [ { name => 'Layo & Bushwacka!' } ],
+            Deezer => [ { name => 'Layo and bushwacka!' } ]);
+my @ord  = qw(Deezer Qobuz Tidal);
+my $old  = $S->mergeArtistHits('Layo & Bushwaka', \%layo, \@ord);
+my $new  = $S->mergeArtistHits('Layo & Bushwaka', \%layo, \@ord, undef);
+# scalar() is load bearing: `... && @$old` in ok()'s LIST of args flattens the
+# array into the argument list and the test name becomes a hashref — the 0.43.5
+# fixture trap, which duly reappeared while writing this.
+ok(scalar(join('|', map { $_->{name} } @$old) eq join('|', map { $_->{name} } @$new)
+          && @$old),
+   'the extra query is OPTIONAL — omitted, the result is unchanged');
 
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

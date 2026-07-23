@@ -72,6 +72,13 @@ my $norm = \&Plugins::Discography::Sources::_norm;
 my ($pass, $fail) = (0, 0);
 sub ok {
     my ($cond, $name) = @_;
+    # STRUCTURAL GUARD against the list-context trap that has cost time five
+    # times in this repo: a bare `=~` (or grep/map) in ok()'s argument list
+    # returns the EMPTY LIST on failure, which shifts the test NAME into the
+    # condition slot so a FAILING assertion prints as a pass. A missing name is
+    # the fingerprint, so refuse it loudly instead of scoring it.
+    die "ok() called without a test name - wrap the condition in scalar()\n"
+        unless defined $name;
     # scalar() deliberately: `ok($x =~ /re/, 'name')` puts the match in LIST
     # context, and on failure the empty list shifts the NAME into the condition
     # slot so the assertion "passes" (0.43.5 lesson).
