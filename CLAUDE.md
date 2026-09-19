@@ -940,6 +940,14 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
      is otherwise untouched and still runs whenever the tag finds nothing. An explicit `artist_id` (an
      Artists row, an already-attached search row) still outranks both: that is the user pointing at a
      contributor. Three call sites pass it (`_discographyView`, `_buildList`, the release-detail path).
+     **AMENDED 0.51.8 (2026-09-19, Simon via LMS search): an explicit id that performs on NO album
+     falls back.** LMS's own search lists "The B-52's" (137553), a contributor that exists only as one
+     track's COMPOSER tag, beside the band's "The B-52s" (137542); tapping it opened a page with nothing
+     Local. The three page builders opt in (`_idFallback`): re-resolve WITHOUT the id — MB tag first,
+     then the name, the empty id excluded so the name ladder cannot land on it again. A same-name page
+     falls back by tag ONLY (`'mbid'`), never borrowing the other act's catalogue by name. Same for
+     `localTracks`. An id owning even one album is untouched and pays nothing; callers that do not opt
+     in (band links, disambiguation, joint credits) are unchanged. Pinned in `t_local.pl` §10.
   2. **`API::filterRowsWithContent`** — kept rows with no `artist_id` are claimed by their resolved
      mbid, gaining `artist_id` + a leading **Local** source, so the row says Local BEFORE you click it
      rather than only after.

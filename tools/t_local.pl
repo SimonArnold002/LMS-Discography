@@ -35,6 +35,7 @@ use FindBin;
 our @QUERIES;    # every search: string the code asked LMS for, in order
 our %LIBRARY;    # search string -> rows LMS would return
 our %CONTRIB;    # lc MusicBrainz artist mbid -> library contributors carrying it
+our %OWNS;       # artist_id -> { albums => [...], titles => [...] } it PERFORMS on
 
 BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
@@ -58,7 +59,13 @@ BEGIN {
     *{'Slim::Control::Request::executeRequest'} = sub {
         my (undef, $args) = @_;
         my ($search) = grep { /^search:/ } @$args;
-        return bless { rows => [] }, 'T::Req' unless defined $search;
+        unless (defined $search) {
+            # The id-keyed albums/titles queries answer from %OWNS (empty for
+            # an unlisted id, as before).
+            my ($aid) = map { /^artist_id:(\d+)$/ ? $1 : () } @$args;
+            my $kind  = ($args->[0] // '') eq 'titles' ? 'titles' : 'albums';
+            return bless { rows => ($aid && $main::OWNS{$aid} ? $main::OWNS{$aid}{$kind} || [] : []) }, 'T::Req';
+        }
         $search =~ s/^search://;
         push @QUERIES, $search;
         return bless { rows => $LIBRARY{$search} || [] }, 'T::Req';
@@ -311,6 +318,58 @@ ok(scalar(grep { $_ eq 'Bjork' } @QUERIES) == 1,
 @QUERIES = ();
 Plugins::Discography::Sources->localAlbums(4242, $BJORK, $MB);
 ok(scalar(@QUERIES) == 0, 'an explicit artist_id outranks the tag (and the name)');
+
+# ---------------------------------------------------------------------------
+# 10. AN EMPTY EXPLICIT ID FALLS BACK (field, The B-52's, 2026-09-19). LMS's own
+#     search lists "The B-52's" (137553), a contributor that exists ONLY as the
+#     COMPOSER of one track; the band's albums sit under "The B-52s" (137542).
+#     Tapping it opened a page where nothing read Local. An id that performs on
+#     no album cannot be what the user meant, so the page builders opt in to a
+#     fallback: the MB tag first (exact), then the name, never the name on a
+#     same-name page ('mbid' mode), and never back to the empty id itself.
+# ---------------------------------------------------------------------------
+{
+    my $MB52  = '127f591a-7e27-4435-92db-0780f219f3a1';
+    my $DEBUT = { id => 45730, album => "The B\x{2010}52s", year => 1979, artist => 'The B-52s' };
+    my $TRACK = { id => 678355, title => 'Rock Lobster', album => "The B\x{2010}52s" };
+    local %OWNS = (137542 => { albums => [ $DEBUT ], titles => [ $TRACK ] });
+    my $ids = sub { join ',', sort map { $_->{_albumid} } @{ $_[0] || [] } };
+    my $LA  = sub { Plugins::Discography::Sources->localAlbums(@_) };
+    my $LT  = sub { Plugins::Discography::Sources->localTracks(@_) };
+    my $both = [ { id => 137553, artist => "The B-52's" }, { id => 137542, artist => 'The B-52s' } ];
+
+    # By the library's MusicBrainz tag.
+    local %CONTRIB = ($MB52 => [ T::Contrib->new(id => 137542, name => 'The B-52s') ]);
+    %LIBRARY = ();
+    ok($ids->($LA->(137553, "The B-52's", $MB52, { fallback => 'name' })) eq '45730',
+       'an explicit id that performs on nothing falls back to the band by MB tag');
+
+    # By name, when the library carries no tag. The empty id comes FIRST in the
+    # search result, so the fallback must skip it or it just picks it again.
+    %CONTRIB = (); %LIBRARY = ("The B-52's" => $both);
+    ok($ids->($LA->(137553, "The B-52's", $MB52, { fallback => 'name' })) eq '45730',
+       '... and by NAME in an untagged library, skipping the empty id itself');
+
+    # A SAME-NAME page ('mbid' mode) never borrows another act by name.
+    @QUERIES = ();
+    ok(!@{ $LA->(137553, "The B-52's", $MB52, { fallback => 'mbid' }) },
+       'on a same-name page the name fallback is OFF (no borrowed catalogue)');
+    ok(!@QUERIES, '... and no name search is even made');
+
+    # Controls: callers that do not opt in, and an id that owns albums.
+    ok(!@{ $LA->(137553, "The B-52's", $MB52) },
+       'without the opt-in an explicit id still outranks everything (other callers unchanged)');
+    @QUERIES = ();
+    ok($ids->($LA->(137542, 'The B-52s', $MB52, { fallback => 'name' })) eq '45730'
+       && !@QUERIES, 'an id that OWNS albums is used as-is, with no fallback lookup');
+
+    # The linked singles come back with the albums.
+    my $t = $LT->(137553, "The B-52's", { fallback => 'name', mbid => $MB52 });
+    ok(scalar(@{ $t || [] }) == 1 && $t->[0]{_trackid} == 678355,
+       'localTracks falls back the same way (the linked singles come back too)');
+    ok(!@{ $LT->(137553, "The B-52's") }, '... and only when asked (control)');
+    %LIBRARY = ();
+}
 
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

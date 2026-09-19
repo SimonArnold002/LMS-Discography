@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.7';
+use constant CACHE_VERSION => '0.51.8';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -886,7 +886,8 @@ sub _discographyView {
                     # instead of by spelling — 0.51.3.
                     $local = ($opts->{shared_name} && !$opts->{artist_id}) ? []
                            : Plugins::Discography::Sources->localAlbums(
-                                 $opts->{artist_id}, $opts->{artist}, $mbid);
+                                 $opts->{artist_id}, $opts->{artist}, $mbid,
+                                 { fallback => _idFallback($opts) });
 
                     # Release MBIDs the artist-wide browse hasn't already resolved
                     # -> resolve them directly (a few requests) so a library
@@ -1050,6 +1051,15 @@ sub _matchWeight {
     return 0.5 if length $n && $n eq Plugins::Discography::Sources::_norm($artist // '');
     return 0.5 if $GENERIC_TITLE{$n};
     return 1.0;
+}
+
+# The page builders' opt-in for localAlbums/localTracks when the entry id
+# performs on no album (LMS search lists composer-only contributors — "The
+# B-52's", 2026-09-19). A same-name page may fall back by MB tag only: a name
+# there would borrow the other act's catalogue (0.43.4).
+sub _idFallback {
+    my ($o) = @_;
+    return $o->{shared_name} ? 'mbid' : 'name';
 }
 
 # Among the SAME-NAME MusicBrainz artists, pick the one whose discography best
@@ -1615,7 +1625,8 @@ sub _buildList {
     # (which needs the mbids to pre-resolve them); fetched here on the paths that
     # don't (e.g. a direct unit call).
     $local ||= Plugins::Discography::Sources->localAlbums(
-        $opts->{artist_id}, $opts->{artist}, $opts->{mbid});
+        $opts->{artist_id}, $opts->{artist}, $opts->{mbid},
+        { fallback => _idFallback($opts) });
 
     # Streaming candidate pools: read + reattached ONCE for the whole build,
     # then filtered per release. Peeking each release separately re-copied
@@ -1654,7 +1665,8 @@ sub _buildList {
         return $ltCache if defined $ltCache;
         $ltCache = ($opts->{shared_name} && !$opts->{artist_id}) ? []
                  : Plugins::Discography::Sources->localTracks(
-                       $opts->{artist_id}, $opts->{artist});
+                       $opts->{artist_id}, $opts->{artist},
+                       { fallback => _idFallback($opts), mbid => $opts->{mbid} });
         return $ltCache;
     };
 
@@ -3644,14 +3656,16 @@ sub _releaseDetail {
     Plugins::Discography::Sources->getCandidates($client, $artist, 0, sub {
         my $bySvc = shift;
         my $local = Plugins::Discography::Sources->localAlbums(
-            $pass->{artist_id}, $artist, $pass->{mbid});
+            $pass->{artist_id}, $artist, $pass->{mbid},
+            { fallback => _idFallback($pass) });
         # Lazy owned-track pool, so the drill agrees with the tile for a release
         # owned only as a compilation track (same suppression as $local).
         my $ltCache;
         my $localTracks = sub {
             return $ltCache if defined $ltCache;
             $ltCache = ($pass->{shared_name} && !$pass->{artist_id}) ? []
-                     : Plugins::Discography::Sources->localTracks($pass->{artist_id}, $artist);
+                     : Plugins::Discography::Sources->localTracks($pass->{artist_id}, $artist,
+                           { fallback => _idFallback($pass), mbid => $pass->{mbid} });
             return $ltCache;
         };
         my $ambid = $pass->{mbid};   # artist MBID (carried on the tile)

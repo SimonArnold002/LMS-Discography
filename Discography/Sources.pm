@@ -32,7 +32,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.7';
+use constant CACHE_VERSION => '0.51.8';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
@@ -375,9 +375,12 @@ sub _creditParts {
 #   * browsed name is single, a library contributor is joint AND NAMES IT as
 #     one of its parts -> that contributor counts too.
 sub _localArtistIds {
-    my ($artist) = @_;
+    my ($artist, $exclude) = @_;
     my $an = _normKey($artist);
     my @rows = @{ _localArtistRows($artist) };
+    # A fallback from an EMPTY contributor must not pick that contributor again
+    # (localAlbums' fallback; it can be the first exact hit LMS lists).
+    @rows = grep { ($_->{artist_id} // '') ne $exclude } @rows if $exclude;
     my ($exact) = grep { _normKey($_->{name}) eq $an } @rows;
 
     # (B) Joint contributors naming this artist as a part. Deliberately NOT
@@ -416,9 +419,11 @@ sub _localArtistIds {
 }
 
 sub localAlbums {
-    my ($class, $artistId, $artist, $mbid) = @_;
+    my ($class, $artistId, $artist, $mbid, $opt) = @_;
+    $opt ||= {};
     return [] unless ($prefs->get('svc_priority_local') // 1) > 0;
 
+    my $explicitId = $artistId;
     my @ids      = $artistId ? ($artistId) : ();
     my $intersect = 0;
 
@@ -427,9 +432,12 @@ sub localAlbums {
     # local DB read, and it runs BEFORE the name ladder — which stays exactly
     # as it was for every untagged library, and still runs whenever this finds
     # nothing. An explicit artist_id (an Artists row, a search row that already
-    # attached) still outranks it: that is the user pointing at a contributor.
+    # attached) still outranks it: that is the user pointing at a contributor —
+    # UNLESS it performs on no album at all and the caller opted in to a
+    # fallback (see the end of this sub).
     if (!@ids && $mbid) {
-        my @byMbid = localArtistIdsByMbid($mbid);
+        my @byMbid = grep { !$opt->{exclude} || $_ ne $opt->{exclude} }
+                     localArtistIdsByMbid($mbid);
         if (@byMbid) {
             @ids = @byMbid;
             _dbg("localAlbums: mbid $mbid -> artist_id " . join('+', @ids)
@@ -440,7 +448,7 @@ sub localAlbums {
     # No artist_id (non-library entry surface): resolve by name, norm-verified
     # so a fuzzy `artists search:` can't adopt the wrong artist.
     if (!@ids && defined $artist && length $artist) {
-        my ($found, $needAll) = _localArtistIds($artist);
+        my ($found, $needAll) = _localArtistIds($artist, $opt->{exclude});
         @ids       = @$found;
         $intersect = $needAll;
         _dbg("localAlbums: name '$artist' -> "
@@ -489,6 +497,24 @@ sub localAlbums {
         }
     }
     @rows = grep { $hits{ $_->{id} } == scalar @ids } @rows if $intersect;
+
+    # AN EXPLICIT ID THAT PERFORMS ON NOTHING (field, The B-52's, 2026-09-19).
+    # LMS's own search lists every contributor, including one that exists only
+    # as a COMPOSER credit ("The B-52's", one track's composer tag) while the
+    # band's albums sit under "The B-52s". Tapping it opened a page with nothing
+    # Local. An id with no album cannot be what the user meant, so a caller may
+    # opt in ($opt->{fallback}) to resolve again WITHOUT it: the MB tag first,
+    # then the name — 'name' mode only; a same-name page passes 'mbid' so it
+    # never borrows the other act's catalogue. The empty id is excluded so the
+    # name ladder cannot land on it again. An id owning even one album never
+    # gets here, so it costs nothing.
+    if (!@rows && $explicitId && $opt->{fallback}) {
+        _dbg("localAlbums: artist_id $explicitId performs on no album - falling back ("
+             . $opt->{fallback} . ')');
+        return $class->localAlbums(undef,
+            ($opt->{fallback} eq 'name' ? $artist : undef), $mbid,
+            { exclude => $explicitId });
+    }
     return [] unless @rows;
 
     # MUSICBRAINZ_ALBUMID off the tags, read straight from the schema: the
@@ -545,12 +571,18 @@ sub localAlbums {
 # LAZILY by the caller (only when a release goes otherwise-unmatched), so an
 # artist owned as albums never pays for it.
 sub localTracks {
-    my ($class, $artistId, $artist) = @_;
+    my ($class, $artistId, $artist, $opt) = @_;
+    $opt ||= {};
     return [] unless ($prefs->get('svc_priority_local') // 1) > 0;
 
     my @ids = $artistId ? ($artistId) : ();
-    if (!$artistId && defined $artist && length $artist) {
-        my ($found) = _localArtistIds($artist);
+    # The tag, when a fallback hands one over (localAlbums' identity-first).
+    if (!$artistId && $opt->{mbid}) {
+        @ids = grep { !$opt->{exclude} || $_ ne $opt->{exclude} }
+               localArtistIdsByMbid($opt->{mbid});
+    }
+    if (!@ids && !$artistId && defined $artist && length $artist) {
+        my ($found) = _localArtistIds($artist, $opt->{exclude});
         @ids = @$found;
         return [] unless @ids;
     }
@@ -582,6 +614,13 @@ sub localTracks {
                 _fromAlbum  => $e->{album},
             };
         }
+    }
+    # Same fallback as localAlbums, so the linked singles come back with the
+    # albums rather than leaving the page half-restored.
+    if (!@out && $artistId && $opt->{fallback}) {
+        return $class->localTracks(undef,
+            ($opt->{fallback} eq 'name' ? $artist : undef),
+            { mbid => $opt->{mbid}, exclude => $artistId });
     }
     _dbg("local tracks for artist_id=" . join('+', @ids) . ": " . scalar @out);
     return \@out;
