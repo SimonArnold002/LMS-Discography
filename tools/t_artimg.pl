@@ -167,6 +167,16 @@ ok(scalar(!$ph->('https://cdn-images.dzcdn.net/images/artist/'
    'The Mothers of Invention\'s LIVE Deezer picture is not a placeholder');
 ok(scalar(!$ph->(undef)) && scalar(!$ph->('')),
    'undef/empty are not placeholders (nothing to serve is not a false photo)');
+# The OTHER no-picture form: an EMPTY hash segment. Deezer's own search hands
+# it back for a picture-less entity (live 2026-09-19, "Teddybears feat. CeeLo &
+# B52's", id 14102297), and the CDN serves the identical 16,802-byte
+# placeholder as the md5 form. It carries no md5, so the sentinel missed it.
+ok(scalar($ph->('https://cdn-images.dzcdn.net/images/artist//1000x1000-000000-80-0-0.jpg')),
+   'the EMPTY-hash Deezer picture (/images/artist//) is a placeholder too');
+ok(scalar($ph->('/images/artist//500x500-000000-80-0-0.jpg')),
+   '... including as a bare path');
+ok(scalar(!$ph->('https://static.qobuz.com/images/artists/covers//large/abc.jpg')),
+   '... but a double slash elsewhere in another service\'s path is not (control)');
 
 # ---------------------------------------------------------------------------
 # 6. SERVICE ARTIST PHOTOS come from each plugin's OWN url builder, and a
@@ -197,6 +207,9 @@ ok(scalar(!defined $svcImg->('Deezer', { name => 'Nobody', picture_xl =>
     'https://cdn-images.dzcdn.net/images/artist/'
     . 'd41d8cd98f00b204e9800998ecf8427e/500x500-000000-80-0-0.jpg' })),
    '... and its placeholder is dropped, not shown');
+ok(scalar(!defined $svcImg->('Deezer', { name => 'Nobody', picture_xl =>
+    'https://cdn-images.dzcdn.net/images/artist//1000x1000-000000-80-0-0.jpg' })),
+   '... and so is its empty-hash form, so an exact hit carrying it counts as NO photo');
 ok(scalar(($svcImg->('Tidal', { name => 'X', picture => 'aa-bb-cc' }) // '')
     eq 'http://resources.tidal.com/images/aa/bb/cc/750x750.jpg'),
    'TIDAL: the picture uuid is expanded by the plugin, not by us');

@@ -32,7 +32,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.9';
+use constant CACHE_VERSION => '0.51.10';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
@@ -1185,6 +1185,9 @@ sub _artistsDeezer {
 
 # Deezer's "no picture" sentinel: md5(''). It shows up BOTH as the target of a
 # 302 from a stale hash and, sometimes, directly in a live `picture_*` field.
+# Its twin is an EMPTY hash segment, `/images/artist//…`, which Deezer's own
+# search returns for a picture-less entity and the CDN answers with the same
+# placeholder image (live 2026-09-19, "Teddybears feat. CeeLo & B52's").
 use constant DEEZER_NO_PIC => 'd41d8cd98f00b204e9800998ecf8427e';
 
 use constant ARTIMG_FOUND_TTL => 30 * 86400;
@@ -1195,7 +1198,8 @@ use constant ARTIMG_TIMEOUT   => 15;    # per-service watchdog for the lookup
 sub isPlaceholderImage {
     my ($url) = @_;
     return 0 unless defined $url && !ref $url && length $url;
-    return index($url, DEEZER_NO_PIC) >= 0 ? 1 : 0;
+    return 1 if index($url, DEEZER_NO_PIC) >= 0;
+    return $url =~ m{/images/[a-z]+//}i ? 1 : 0;
 }
 
 # The artist photo carried by a service's own search hit, via THAT plugin's URL
