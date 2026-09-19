@@ -564,9 +564,11 @@ sub localAlbums {
 }
 
 # Owned TRACKS for the artist — the track-level twin of localAlbums, for a
-# release the user owns only as a VARIOUS ARTISTS COMPILATION TRACK (Simon: an act's single that
-# he owns only via a Nuggets/Pushin'-Too-Hard comp). Same PERFORMANCE-role gate
-# and same id-vs-name resolution as localAlbums. Each track carries a direct
+# release the user owns only as a VARIOUS ARTISTS COMPILATION TRACK (Simon: an
+# act's single he owns only via a Nuggets/Pushin'-Too-Hard comp; VA-only since
+# 0.51.9). Same PERFORMANCE-role gate as localAlbums, applied to the per-role
+# ids because `titles` ignores role_id; same id-vs-name resolution, including
+# the empty-id fallback (gated on the id owning no album, 0.51.11). Each track carries a direct
 # `db:track.id` play string and the comp it lives on (for the row hint). Fetched
 # LAZILY by the caller (only when a release goes otherwise-unmatched), so an
 # artist owned as albums never pays for it.
@@ -663,7 +665,7 @@ sub localTracks {
 # here would reintroduce the empty-artist trap that fix exists for.
 #
 # This is the SAME read `getArtistMbid` trusts ahead of any MB search
-# (API.pm:286) — one direction of it was simply never wired to the name paths.
+# (API::getArtistMbid) — one direction of it was simply never wired to the name paths.
 # Untagged library / schema change -> empty list, and every caller falls
 # through to the name ladder exactly as before.
 sub localArtistsByMbid {
@@ -1482,7 +1484,8 @@ sub _closeEnough {
 #
 # The row is already labelled with a service spelling the library CAN match
 # ("The La's" -> library "The La’s"), so one more lookup settles it. Costs NO
-# MusicBrainz request -- which is the cost API.pm:1066 was avoiding -- and runs
+# MusicBrainz request -- which is the cost filterRowsWithContent's alias fetch
+# (duplicated groups only) was avoiding -- and runs
 # on public installs too, where filterRowsWithContent bails out entirely.
 #
 # NORM-VERIFIED, the same gate the other attach paths use: an exact `_normKey`
@@ -1640,7 +1643,7 @@ sub attachLibraryArtists {
 }
 
 # A contributor's MusicBrainz artist tag (the SAME read getArtistMbid trusts
-# first, API.pm:285), lowercased, or undef when untagged / not a UUID. Cheap: a
+# first, in API::getArtistMbid), lowercased, or undef when untagged / not a UUID. Cheap: a
 # local DB lookup, no network.
 sub _contribMbid {
     my ($id) = @_;
@@ -1660,7 +1663,7 @@ sub _contribMbid {
 # a US garage band and a third with a bootleg-only spine — as three separate
 # library contributors, each carrying its own MusicBrainz tag. LMS's own library
 # search shows all three; ours showed one, because `mergeArtistHits` buckets by
-# `_norm(name)` and keeps only the FIRST contributor id (Sources.pm:1348) — so
+# `_norm(name)` and keeps only the FIRST contributor id (its `artist_id //=`) — so
 # two of the three acts were unreachable, and the surviving row drilled into
 # whichever contributor happened to be first (the garage band).
 #
@@ -1962,7 +1965,7 @@ sub _trackLinksRelease {
 # dedupe + cap; streaming items get the ListenLater favurl handshake (Local
 # ones don't — there's no service scheme to hand over).
 # $opt->{localTracks} (an arrayref OR a lazy coderef) links a release the user
-# owns ONLY as a compilation track — see the track-link pass below.
+# owns ONLY as a Various Artists compilation track — see the track-link pass below.
 sub matchesFor {
     my ($class, $bySvc, $artist, $albumTitle, $local, $rgMbid, $relMap, $rivals, $opt) = @_;
     $opt ||= {};
@@ -2068,7 +2071,8 @@ sub matchesFor {
         push @sections, { svc => $svc, icon => $a->{icon}, items => \@matched } if @matched;
     }
 
-    # TRACK LINKING — a release the user owns ONLY as a compilation track.
+    # TRACK LINKING — a release the user owns ONLY as a Various Artists
+    # compilation track (localTracks keeps VA-comp tracks only, 0.51.9).
     # Runs ONLY when nothing else matched (an orphaned, otherwise-unplayable
     # spine release): if an owned track links to this release's title, add a
     # Local section that plays that track directly (db:track.id). The comp album

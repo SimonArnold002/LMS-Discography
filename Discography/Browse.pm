@@ -868,8 +868,10 @@ sub _discographyView {
                     #
                     # The shared-name suppression applies ONLY to a NAME-resolved
                     # entry. `localAlbums($artist_id, ...)` is ID-keyed whenever an
-                    # artist_id is present (Sources.pm:380) — it is exact to THAT
-                    # contributor, so it cannot return the prominent act's albums
+                    # artist_id is present — it is exact to THAT contributor, and
+                    # when that contributor owns no album its fallback (0.51.8)
+                    # re-resolves by MB tag ONLY on a shared-name page
+                    # (_idFallback), so it cannot return the prominent act's albums
                     # and there is nothing to suppress. Only the name fallback
                     # (no artist_id) would grab the wrong act's catalogue, which is
                     # the case 0.43.4 was written for. Suppressing the id-keyed
@@ -1654,12 +1656,15 @@ sub _buildList {
                    %{ Plugins::Discography::API->peekLocalReleaseMap(
                           [ map { $_->{_mbid} } grep { $_->{_mbid} } @$local ] ) } };
 
-    # Owned TRACKS, for linking a release the user owns only as a compilation
-    # track (Simon's garage "The Bees" single, owned via Nuggets). LAZY: the
+    # Owned TRACKS, for linking a release the user owns only as a Various
+    # Artists compilation track (Simon's garage "The Bees" single, owned via
+    # Nuggets; 0.51.9). LAZY: the
     # coderef fetches (and memoises) the track list only when matchesFor reaches
     # an otherwise-unmatched release, so an artist owned as albums never runs the
-    # extra `titles` query. Same shared-name suppression as $local — id-keyed is
-    # exact, only a name-resolved shared-name entry would grab the wrong act.
+    # extra `titles` query. Same shared-name suppression and the same id
+    # fallback as $local — id-keyed is exact (an id owning no album re-resolves
+    # by tag only on a shared-name page); only a name-resolved shared-name entry
+    # would grab the wrong act.
     my $ltCache;
     my $localTracks = sub {
         return $ltCache if defined $ltCache;
@@ -2757,7 +2762,7 @@ sub _artistSearchView {
     Plugins::Discography::Sources->searchArtists($client, $q, sub {
         my ($bySvc, $failed) = @_;
 
-        # THROTTLE-GATED, matching filterRowsWithContent (API.pm:808). This
+        # THROTTLE-GATED, matching filterRowsWithContent's mbGap gate. This
         # costs one MB lookup per NEW search term -- milliseconds against a
         # mirror, but 1.1s of etiquette delay on the public API, on every
         # search a user types. The plugin's established policy is that extra
