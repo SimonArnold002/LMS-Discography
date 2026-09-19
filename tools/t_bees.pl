@@ -37,6 +37,16 @@ my @LIB = (
     { name => 'The Bats', artist_id => 501 },
     { name => 'Radiohead', artist_id => 100 },
     { name => 'Solo Soul', artist_id => 200 },   # owned, untagged, unique name
+    # SAINT ETIENNE (field, 2026-09-19): a Various Artists compilation credited
+    # the curator as a track artist, minting empty same-name contributors with
+    # LOWER ids than the real act (which owns every album).
+    { name => 'Saint Etienne', artist_id => 600 },
+    { name => 'Saint Etienne', artist_id => 601 },
+    { name => 'Saint Etienne', artist_id => 602 },
+    { name => 'Saint Etienne', artist_id => 650 },   # the real act
+    # TIE: two acts with the SAME album count -> the lower id goes first.
+    { name => 'The Ties', artist_id => 710 },
+    { name => 'The Ties', artist_id => 700 },
 );
 my %MBID = (
     75007 => '276cfa71-6bc0-4b0f-8a9c-000000000001',
@@ -46,9 +56,16 @@ my %MBID = (
     401   => 'ca700000-6bc0-4b0f-8a9c-000000000004',   # SAME tag as 400
     100   => 'a74b1b7f-71a5-4011-9441-d0b5e4122711',
     # 500/501/200 deliberately untagged
+    600   => '5a100000-6bc0-4b0f-8a9c-000000000600',
+    601   => '5a100000-6bc0-4b0f-8a9c-000000000601',
+    602   => '5a100000-6bc0-4b0f-8a9c-000000000602',
+    650   => '3997d4a6-bc09-43e7-8650-000000000650',
+    700   => '71e50000-6bc0-4b0f-8a9c-000000000700',
+    710   => '71e50000-6bc0-4b0f-8a9c-000000000710',
 );
 my %ALBUMS = (75007 => 18, 79768 => 7, 77854 => 1, 400 => 5, 401 => 0,
-              500 => 3, 501 => 2, 100 => 9, 200 => 4);
+              500 => 3, 501 => 2, 100 => 9, 200 => 4,
+              600 => 0, 601 => 0, 602 => 0, 650 => 31, 700 => 2, 710 => 2);
 # LMS's own artist icon per act (folder artist-art). Two acts HAVE art; the
 # bootleg act (77854) is in the menu but has NONE -> the split must give it a
 # neutral icon, never MAI's online guess of the prominent act.
@@ -167,7 +184,9 @@ sub beeRow { row(name => 'The Bees', artist_id => 79768,
     my $out = split_([ beeRow() ]);
     ok(scalar(@$out == 3), 'three owned "The Bees" acts become THREE rows');
     ok(scalar(join(',', ids($out)) eq '75007,77854,79768'),
-       '... one per distinct contributor identity, order deterministic by id');
+       '... one per distinct contributor identity');
+    ok(scalar(join(',', map { $_->{artist_id} } @$out) eq '75007,79768,77854'),
+       '... emitted MOST ALBUMS FIRST (18, 7, 1), not by contributor id');
     ok(scalar(!grep { $_->{name} ne 'The Bees' } @$out),
        '... all still named "The Bees"');
     ok(scalar(!grep { my %s = map { $_ => 1 } @{ $_->{sources} };
@@ -261,6 +280,30 @@ sub beeRow { row(name => 'The Bees', artist_id => 79768,
     my %probed = map { $_ => 1 } grep { /^Owned Xyzzy \d+$/ } @QUERIES;
     ok(scalar(keys %probed) <= 10,
        'at most LIB_PROBE_MAX owned rows probed (' . scalar(keys %probed) . ')');
+}
+
+# ---------------------------------------------------------------------------
+# 8. SAINT ETIENNE (field, 2026-09-19). Empty same-name contributors with LOWER
+#    ids than the real act must not top the search: by id alone an empty one
+#    came first and drilled to a blank page. The act with the albums leads;
+#    equal counts fall back to the id, so the item_id walk stays deterministic.
+# ---------------------------------------------------------------------------
+{
+    my $out = split_([ row(name => 'Saint Etienne', artist_id => 600) ]);
+    ok(scalar(@$out == 4), 'four Saint Etienne identities -> four rows');
+    ok(scalar(($out->[0]{artist_id} // 0) == 650),
+       '... the act OWNING the albums is FIRST, despite the highest id');
+    ok(scalar(join(',', map { $_->{artist_id} } @$out[1..3]) eq '600,601,602'),
+       '... the empty ones follow, in id order (ties are deterministic)');
+    ok(scalar(!grep { $_->{_seq} != 0 } @$out),
+       '... all keep the original _seq, so rankArtistHits cannot reorder them');
+    my $ranked = $SRC->rankArtistHits($out);
+    ok(scalar(($ranked->[0]{artist_id} // 0) == 650),
+       '... and the real act is still first after rankArtistHits');
+
+    $out = split_([ row(name => 'The Ties', artist_id => 710) ]);
+    ok(scalar(join(',', map { $_->{artist_id} } @$out) eq '700,710'),
+       'equal album counts -> lower contributor id first');
 }
 
 print "\n$pass passed, $fail failed\n";

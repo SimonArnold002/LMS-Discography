@@ -61,8 +61,8 @@ sub to_json {''} sub from_json {{}} sub objToJson {''} sub jsonToObj {{}}
 EOF
 
 for m in Slim/Utils/Cache Slim/Utils/PluginManager Slim/Utils/Timers \
-         Slim/Control/Request Slim/Networking/SimpleAsyncHTTP \
-         Slim/Plugin/OPMLBased Slim/Schema Slim/Web/Settings; do
+         Slim/Utils/Misc Slim/Control/Request Slim/Networking/SimpleAsyncHTTP \
+         Slim/Plugin/OPMLBased Slim/Schema Slim/Web/Settings Slim/Web/ImageProxy; do
   pkg="${m//\//::}"
   printf 'package %s;\nuse strict; use warnings;\nour $AUTOLOAD;\nsub AUTOLOAD {}\nsub DESTROY {}\nsub new { bless {}, shift }\n1;\n' "$pkg" > "$S/$m.pm"
 done

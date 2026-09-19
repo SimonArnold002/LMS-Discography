@@ -20,7 +20,10 @@ use Slim::Utils::Strings qw(cstring);
 use Slim::Utils::Cache;
 use Slim::Utils::PluginManager;
 use Slim::Utils::Timers;
+use Slim::Networking::SimpleAsyncHTTP;
+use Slim::Utils::Misc;
 use Slim::Schema;
+use File::Spec;
 use Time::HiRes ();
 
 use Plugins::Discography::API;
@@ -31,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.50.5';
+use constant CACHE_VERSION => '0.51.5';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -877,9 +880,13 @@ sub _discographyView {
                     # read "No releases found". The bio and similar-artists
                     # sections stay suppressed via $opts->{shared_name} — those ARE
                     # name-keyed (MAI/Last.fm) and would show the prominent act.
+                    # $mbid is the artist we RESOLVED, so a name-entered view
+                    # (search drill-in, similar-artist or band link) can find
+                    # the owned albums by the library's own MusicBrainz tag
+                    # instead of by spelling — 0.51.3.
                     $local = ($opts->{shared_name} && !$opts->{artist_id}) ? []
                            : Plugins::Discography::Sources->localAlbums(
-                                 $opts->{artist_id}, $opts->{artist});
+                                 $opts->{artist_id}, $opts->{artist}, $mbid);
 
                     # Release MBIDs the artist-wide browse hasn't already resolved
                     # -> resolve them directly (a few requests) so a library
@@ -1118,6 +1125,30 @@ sub _disambiguateByLibrary {
 # pattern (guarded; artist MBID passed for exact identity). Cached per artist;
 # '' = confirmed none. No Last.fm fallback (that needs LBF's key infra).
 # ---------------------------------------------------------------------------
+# TEXT IN THE CACHE MUST BE OCTETS (0.51.2). `Slim::Utils::DbCache` dies with
+# "Wide character in subroutine entry" on a character string, and MAI hands us
+# bios and reviews as CHARACTERS — so every accented bio (i.e. most of them)
+# was failing to cache inside an eval that swallowed the error, and was
+# re-fetched on every single render. Found in the live log while chasing the
+# same defect on the artist-name cache (API::_setMbName has the full autopsy).
+# Read gives characters back, which is what the feed rows are built from.
+sub _cacheSetText {
+    my ($key, $text, $ttl) = @_;
+    my $enc = defined $text ? $text : '';
+    utf8::encode($enc) if utf8::is_utf8($enc);
+    eval { $cache->set($key, $enc, $ttl); 1 }
+        or $log->warn("text cache set failed for $key: $@");
+    return;
+}
+
+sub _cacheGetText {
+    my ($key) = @_;
+    my $v = $cache->get($key);
+    return undef unless defined $v;
+    utf8::decode($v) unless utf8::is_utf8($v);
+    return $v;
+}
+
 sub _fetchArtistBio {
     my ($client, $artist, $mbid, $cb) = @_;
 
@@ -1125,7 +1156,7 @@ sub _fetchArtistBio {
 
     my $key = 'dsc:bio:1:' . lc $artist;
     utf8::encode($key) if utf8::is_utf8($key);
-    if (defined(my $c = $cache->get($key))) {
+    if (defined(my $c = _cacheGetText($key))) {
         $cb->(length $c ? $c : undef);
         return;
     }
@@ -1153,7 +1184,7 @@ sub _fetchArtistBio {
                 if (defined $t && length $t) { $text = _stripHtml($t); last }
             }
             _dbg("bio '$artist': " . (defined $text ? 'len=' . length $text : 'empty'));
-            eval { $cache->set($key, $text // '', (defined $text && length $text) ? BIO_FOUND_TTL : BIO_EMPTY_TTL); 1 };
+            _cacheSetText($key, $text, (defined $text && length $text) ? BIO_FOUND_TTL : BIO_EMPTY_TTL);
             $cb->( (defined $text && length $text) ? $text : undef );
         }, {}, { artist => $artist, ($mbid ? (mbid => $mbid) : ()) });
         1;
@@ -1203,8 +1234,11 @@ sub _peekSimilar { $cache->get(_similarKey($_[0])) }
 # by name) because it serves the artwork MAI already holds for that contributor
 # — that is the same picture the rest of his LMS shows, which is the point.
 #
-# No id (streaming-only rows, similar artists, MB candidates) keeps the
-# name route unchanged.
+# No id (streaming-only rows, similar artists, MB candidates) takes OUR OWN
+# proxy since 0.51.0 — same lazy in-view load, but a resolver that can tell a
+# placeholder from a photograph and fill the gap from a service (see
+# artistImageProxy). The id route is untouched: it already serves the picture
+# the rest of LMS shows, which is the whole point of 0.46.2.
 sub _artistImg {
     my ($name, $artistId) = @_;
     my $mai;
@@ -1212,14 +1246,200 @@ sub _artistImg {
         $mai = Slim::Utils::PluginManager->isEnabled('Plugins::MusicArtistInfo::Plugin');
         1;
     };
-    return IMG_BASE . 'dsc-bio_MTL_icon_person.png'
-        unless $mai && ((defined $name && length $name) || $artistId);
     return 'imageproxy/mai/artist/' . $artistId . '/image.png'
-        if defined $artistId && $artistId =~ /^\d+$/;
+        if $mai && defined $artistId && $artistId =~ /^\d+$/;
     return IMG_BASE . 'dsc-bio_MTL_icon_person.png'
         unless defined $name && length $name;
+    # No MAI *and* no services = nothing to resolve; don't route a request
+    # through the proxy only to answer it with the icon we already have.
+    return IMG_BASE . 'dsc-bio_MTL_icon_person.png'
+        unless $mai || eval { scalar(Plugins::Discography::Sources::orderedAdapters()) };
     require URI::Escape;
-    return 'imageproxy/mai/artist/' . URI::Escape::uri_escape_utf8($name) . '/image.png';
+    return 'imageproxy/dsc/artist/' . URI::Escape::uri_escape_utf8($name) . '/image.png';
+}
+
+# ---------------------------------------------------------------------------
+# THE ARTIST-ARTWORK RESOLVER (0.51.0) — `imageproxy/dsc/artist/<name>`
+#
+# WHY WE OWN THE PROXY NOW. MAI's name route ends at api.lms-community.org's
+# `/artist/<name>/picture`, a PERIODIC SNAPSHOT of Deezer. When Deezer's own
+# picture hash moves, the snapshot URL 302s to the md5 of the empty string and
+# MAI faithfully serves the placeholder it was handed — the "no artwork" rows
+# Simon reported for The Mothers of Invention (2026-07-29), and the same cause
+# as Pink Floyd / B52's in 0.46.5, all three still reproducing today. Nothing
+# in the row, the name or the cache is wrong, so nothing on our side could fix
+# it by asking MAI more carefully: the ONLY fix is to notice and go elsewhere.
+#
+# TIERS, first answer wins, whole verdict cached 30d (1d for a miss):
+#   1. MAI local artwork — the user's own artist photo files. Unconditionally
+#      first: a file the user put there outranks anything online, and it is the
+#      one fix 0.46.5 could offer for a dead upstream picture.
+#   2. MAI's online picture — UNLESS it is a Deezer CDN url that HEADs to the
+#      "no picture" entity (one request, redirect-following off, cached with
+#      the verdict). Keeping MAI ahead of the services is deliberate: it is
+#      what the rest of LMS shows for that artist.
+#   3. The user's own services (Qobuz/Tidal/Deezer in svc_priority order) —
+#      live, so a moved Deezer hash resolves here even when the snapshot is
+#      stale.
+#   4. The person icon. An honest blank, not a silhouette we didn't choose.
+#
+# The handler runs ONCE PER VISIBLE THUMBNAIL, not per render: the browser asks
+# only for rows it actually paints, so a 25-row Similar-artists section costs
+# nothing until it is scrolled — and nothing at all on the second visit.
+# ---------------------------------------------------------------------------
+
+use constant ARTIMG_FOUND_TTL => 30 * 86400;
+use constant ARTIMG_EMPTY_TTL =>  1 * 86400;
+use constant ARTIMG_PROBE_TO  => 10;   # HEAD watchdog for the placeholder probe
+use constant MAI_PHOTO_TO     => 15;   # MAI must answer or we move on
+
+sub _artImgKey {
+    my ($name) = @_;
+    my $key = 'dsc:artimg:v1:' . lc($name // '');
+    utf8::encode($key) if utf8::is_utf8($key);   # octet key (see Sources::_candKey)
+    return $key;
+}
+
+# The plugin's own person icon as a file:// url — the imageproxy only accepts
+# file/http(s), so the web-relative IMG_BASE path can't be handed back here.
+sub _personIconFile {
+    my $p = eval {
+        my $dir = Slim::Utils::PluginManager->dataForPlugin(
+            'Plugins::Discography::Plugin')->{basedir};
+        $dir ? File::Spec->catfile($dir, 'HTML', 'EN', 'plugins', 'Discography',
+                                   'html', 'images', 'dsc-bio_MTL_icon_person.png')
+             : undef;
+    };
+    return undef unless $p && -f $p;
+    return eval { Slim::Utils::Misc::fileURLFromPath($p) };
+}
+
+# Slim::Web::ImageProxy handler. Returning a url answers synchronously;
+# returning undef means "I called $cb" (ImageProxy.pm:229).
+sub artistImageProxy {
+    my ($url, $spec, $cb) = @_;
+
+    # ImageProxy hands us the path with the trailing /image* segment already
+    # stripped (`imageproxy/(.*)/[^/]*`), so what is left is our escaped name.
+    my ($enc) = ($url // '') =~ m{^dsc/artist/(.+)$};
+    return _personIconFile() unless defined $enc && length $enc;
+    require URI::Escape;
+    my $name = URI::Escape::uri_unescape($enc);
+    # uri_unescape returns OCTETS; every consumer below wants CHARACTERS.
+    # MAI's getArtistPhoto runs uri_escape_utf8 over what we hand it, so octets
+    # would be encoded a second time and "Sigur Rós" would go out as
+    # "Sigur RÃ³s" — the fleet's chars-vs-bytes trap, and it would silently cost
+    # exactly the accented artists this resolver exists to rescue.
+    utf8::decode($name);
+
+    my $key = _artImgKey($name);
+    if (defined(my $c = $cache->get($key))) {
+        return $c || _personIconFile() || '';
+    }
+
+    _resolveArtistImage($name, sub {
+        my ($u) = @_;
+        eval { $cache->set($key, $u // '',
+            $u ? ARTIMG_FOUND_TTL : ARTIMG_EMPTY_TTL); 1 };
+        _dbg("artist image '$name': " . ($u || 'nothing found - person icon'));
+        $cb->($u || _personIconFile() || '');
+    });
+    return undef;
+}
+
+sub _resolveArtistImage {
+    my ($name, $cb) = @_;
+
+    # Tier 1 — the user's own files. Sync (filesystem), like MAI's own handler.
+    my $local = eval {
+        Slim::Utils::PluginManager->isEnabled('Plugins::MusicArtistInfo::Plugin')
+            && Plugins::MusicArtistInfo::LocalArtwork->can('getArtistPhoto')
+            ? Plugins::MusicArtistInfo::LocalArtwork->getArtistPhoto(
+                  { artist => $name, rawUrl => 1 })
+            : undef;
+    };
+    if ($local && -f $local) {
+        my $u = eval { Slim::Utils::Misc::fileURLFromPath($local) };
+        return $cb->($u) if $u;
+    }
+
+    # Tier 2 -> 3.
+    _maiArtistPhoto($name, sub {
+        my ($u) = @_;
+        return $cb->($u) if $u;
+        Plugins::Discography::Sources->artistImage(undef, $name, sub { $cb->(shift) });
+    });
+}
+
+# MAI's ONLINE picture for a name, or undef when there isn't a real one.
+# $cb fires exactly once (no photo / dead photo / good photo / MAI absent /
+# MAI never answering).
+sub _maiArtistPhoto {
+    my ($name, $cb) = @_;
+    my $fn;
+    eval {
+        $fn = Plugins::MusicArtistInfo::API->can('getArtistPhoto')
+            if Slim::Utils::PluginManager->isEnabled('Plugins::MusicArtistInfo::Plugin');
+        1;
+    };
+    return $cb->(undef) unless $fn;
+
+    my $settled = 0;
+    my $timer;
+    my $done = sub {
+        return if $settled++;
+        Slim::Utils::Timers::killSpecific($timer) if $timer;
+        $cb->($_[0]);
+    };
+    $timer = Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + MAI_PHOTO_TO, sub {
+        return if $settled;
+        _dbg("artist image '$name': MAI did not answer in " . MAI_PHOTO_TO . 's');
+        $done->(undef);
+    });
+
+    my $ok = eval {
+        $fn->('Plugins::MusicArtistInfo::API', sub {
+            my $photo = shift || {};
+            my $u = $photo->{url};
+            return $done->(undef)
+                unless defined $u && !ref $u && $u =~ m{^https?://}i;
+            return $done->(undef)
+                if Plugins::Discography::Sources::isPlaceholderImage($u);
+            # Only Deezer's CDN has the stale-hash failure mode, and only it
+            # needs the probe — a last.fm/Discogs url is served as-is.
+            return _probeArtistImage($u, $name, $done)
+                if $u =~ m{dzcdn\.net/images/artist/}i;
+            $done->($u);
+        }, { artist => $name });
+        1;
+    };
+    unless ($ok) {
+        $log->warn("MAI getArtistPhoto threw: $@");
+        $done->(undef);
+    }
+}
+
+# Is this Deezer CDN url a photograph, or the "no picture" entity in disguise?
+# HEAD with redirects OFF (maxRedirect => 0, honoured by Async::HTTP), so the
+# 302 lands in the ERROR callback with its Location intact — that target is the
+# whole signal. Anything else (timeout, DNS, a 4xx) is INCONCLUSIVE and keeps
+# MAI's url: a network hiccup must not demote a good picture.
+sub _probeArtistImage {
+    my ($url, $name, $cb) = @_;
+    Slim::Networking::SimpleAsyncHTTP->new(
+        sub { $cb->($url) },
+        sub {
+            my (undef, $error, $res) = @_;
+            my $loc = eval { $res->header('Location') } // '';
+            if (Plugins::Discography::Sources::isPlaceholderImage($loc)) {
+                _dbg("artist image '$name': MAI's Deezer picture is the "
+                     . 'no-picture placeholder - trying the services');
+                return $cb->(undef);
+            }
+            $cb->($url);
+        },
+        { timeout => ARTIMG_PROBE_TO, maxRedirect => 0 },
+    )->head($url);
 }
 
 sub _maiFn {
@@ -1391,7 +1611,8 @@ sub _buildList {
     # NOT mark a release streaming-resolved. Passed in by _discographyView
     # (which needs the mbids to pre-resolve them); fetched here on the paths that
     # don't (e.g. a direct unit call).
-    $local ||= Plugins::Discography::Sources->localAlbums($opts->{artist_id}, $opts->{artist});
+    $local ||= Plugins::Discography::Sources->localAlbums(
+        $opts->{artist_id}, $opts->{artist}, $opts->{mbid});
 
     # Streaming candidate pools: read + reattached ONCE for the whole build,
     # then filtered per release. Peeking each release separately re-copied
@@ -1580,8 +1801,17 @@ sub _buildList {
         my $expanded = $lastCtx{ _cid($client) }{bio}{$akey};
         my ($summary, $truncated) = _reviewSummary($bio);
         if ($expanded && $truncated) {
+            # A setext-underlined section title ("Description and history" over a row
+            # of dashes) is ONE block here, so collapsing whitespace ran the dashes
+            # onto the end of the title. Drop the underline and render the title bold
+            # instead — it is the only thing the underline was ever there to say.
             push @bioRows,
-                map { (my $t = $_) =~ s/\s+/ /g; _proseRow($t) }
+                map {
+                    my $t    = $_;
+                    my $head = $t =~ s/\n[-=_~*]{3,}[ \t]*$//s ? 1 : 0;
+                    $t =~ s/\s+/ /g;
+                    _proseRow($t, $head ? ';font-weight:bold' : undef);
+                }
                 grep { /\S/ } split /\n{2,}/, $bio;
             push @bioRows, {
                 name        => cstring($client, 'PLUGIN_DISCOGRAPHY_SHOW_LESS'),
@@ -1886,7 +2116,39 @@ sub _buildList {
     # NB the CACHE is mbid-keyed but the DATA is not: _warmSimilarArtists asks
     # Last.fm (via MAI) by NAME, so a shared-name act's key holds the prominent
     # act's similar artists. Suppress rather than show the wrong band's peers.
-    my $similar = $opts->{shared_name} ? undef : _peekSimilar($mbid);
+    #
+    # AN ARTIST ALREADY LISTED AS A BAND IS DROPPED HERE (0.51.1) — and it is
+    # not merely tidiness, it is what makes the BANDS row exist at all.
+    #
+    # FIELD (Simon, screenshot): Frank Zappa's "Also a member of" showed Ned and
+    # Nelda / Ruben and the Jets / The Midnighters, with **The Mothers of
+    # Invention missing** — while the identical name rendered fine under
+    # Similar artists. The feed was never at fault: the SlimBrowse response
+    # carries all four band rows (verified live, `menu:1`, both sections). The
+    # row is lost in MATERIAL, and only when the plugin is entered from My Apps:
+    #
+    #   * `browse-resp.js` sets `isApps` from the parent's section, and every
+    #     descendant inherits it — so the whole app path takes the Apps id
+    #     ladder: `params.item_id` -> `presetParams.favorites_url` ->
+    #     `actions.go.params.item_id` -> **`parent.id + "." + i.title`**.
+    #   * OUR link rows carry NONE of the first three. `params.item_id` is
+    #     emitted by XMLBrowser only for PLAYABLE items (XMLBrowser.pm: the
+    #     `$isPlayable || $touchToPlay` gate), a favurl only for playable ones,
+    #     and our self-identifying `go` (the stale-view fix) deliberately sends
+    #     artist/mbid INSTEAD of an item_id. So the id falls back to the TITLE.
+    #   * Two rows with the same title therefore get the SAME id, and the list
+    #     is keyed `:key="item.id"` — duplicate Vue keys, one tile rendered.
+    #     The later section wins, which is exactly what the screenshot shows.
+    #
+    # Album tiles are immune (playable -> real `params.item_id`), so this can
+    # only ever bite the non-playable navigation rows, i.e. these two sections.
+    # Material can't be changed from here (no-patch constraint), and the drill
+    # is IDENTICAL either way, so the duplicate is worth nothing to keep: the
+    # BAND row wins, because membership is asserted MusicBrainz data while
+    # Last.fm "similar" is a suggestion — and a band the artist is actually IN
+    # is a strange thing to file under "similar" in the first place.
+    my $similar = _dropBandDupes(
+        ($opts->{shared_name} ? undef : _peekSimilar($mbid)), $bands);
     if ($similar && @$similar) {
         push @items, _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_SIMILAR_ARTISTS',
             $useH, IMG_BASE . 'dsc-bio_MTL_icon_person.png',
@@ -1944,6 +2206,30 @@ sub _bandLinkRow {
             });
         },
     };
+}
+
+# Similar-artist NAMES minus anything already shown under "Also a member of".
+# Compared with the matcher's `_norm`, so a spelling difference between MB and
+# Last.fm ("The Mothers of Invention" / "Mothers of Invention") still counts as
+# the same act. Undef/empty in, undef/empty out; no bands = unchanged list.
+# See the section comment in _buildList for WHY this is load-bearing rather
+# than cosmetic (Material keys app rows by title).
+sub _dropBandDupes {
+    my ($similar, $bands) = @_;
+    return $similar unless ref $similar eq 'ARRAY' && @$similar
+                        && ref $bands   eq 'ARRAY' && @$bands;
+    my %isBand = map { (Plugins::Discography::Sources::_norm($_->{name} // '') => 1) }
+                 grep { ref $_ eq 'HASH' } @$bands;
+    delete $isBand{''};
+    return $similar unless keys %isBand;
+    my @sim = grep {
+        my $k = Plugins::Discography::Sources::_norm($_ // '');
+        $k eq '' || !$isBand{$k};
+    } @$similar;
+    _dbg('similar: dropped ' . (scalar(@$similar) - scalar(@sim))
+         . ' name(s) already shown under "Also a member of"')
+        if @sim < @$similar;
+    return \@sim;
 }
 
 # One "Similar artists" row: the SAME drill-in as a band link, but entered by
@@ -2782,9 +3068,13 @@ sub _searchResultRow {
         # but has none (`_noart`) — NOT MAI's online guess of the prominent act,
         # which is the "bootleg shows the UK band" bug. Ordinary rows still use
         # the MAI proxy, which resolves a unique name correctly.
+        # A STREAMING-ONLY row prefers the photo its own search response
+        # carried (0.51.0): it is free, it is the picture that service shows
+        # for this exact entity, and it needs no name lookup to find.
         image       => $hit->{_img}
                        || ($hit->{_noart} ? IMG_BASE . 'dsc-bio_MTL_icon_person.png'
-                                          : _artistImg($name, $hit->{artist_id})),
+                                          : ($hit->{artist_id} ? undef : $hit->{img}))
+                       || _artistImg($name, $hit->{artist_id}),
         line2       => join(" \x{00B7} ", @{ $hit->{sources} || [] }),
         # Self-identifying go (stale-view fix): fresh top-level entry.
         itemActions => { items => { command => ['discography', 'items'],
@@ -3029,7 +3319,7 @@ sub _fetchAlbumReview {
     my ($client, $artist, $album, $rgMbid, $sections, $cb) = @_;
 
     my $key = 'dsc:rev:1:' . $rgMbid;
-    if (defined(my $c = $cache->get($key))) {
+    if (defined(my $c = _cacheGetText($key))) {
         $cb->(length $c ? $c : undef);   # '' = confirmed none
         return;
     }
@@ -3041,7 +3331,7 @@ sub _fetchAlbumReview {
             last if $desc;
         }
         $desc = _stripHtml($desc) if defined $desc;
-        eval { $cache->set($key, $desc // '', (defined $desc && length $desc) ? REVIEW_FOUND_TTL : REVIEW_EMPTY_TTL); 1 };
+        _cacheSetText($key, $desc, (defined $desc && length $desc) ? REVIEW_FOUND_TTL : REVIEW_EMPTY_TTL);
         $cb->( (defined $desc && length $desc) ? $desc : undef );
     };
 
@@ -3071,7 +3361,7 @@ sub _fetchAlbumReview {
             }
             if (defined $text && length $text) {
                 _dbg("review '$album': MAI len=" . length $text);
-                eval { $cache->set($key, $text, REVIEW_FOUND_TTL); 1 };
+                _cacheSetText($key, $text, REVIEW_FOUND_TTL);
                 $cb->($text);
             }
             else {
@@ -3350,7 +3640,8 @@ sub _releaseDetail {
 
     Plugins::Discography::Sources->getCandidates($client, $artist, 0, sub {
         my $bySvc = shift;
-        my $local = Plugins::Discography::Sources->localAlbums($pass->{artist_id}, $artist);
+        my $local = Plugins::Discography::Sources->localAlbums(
+            $pass->{artist_id}, $artist, $pass->{mbid});
         # Lazy owned-track pool, so the drill agrees with the tile for a release
         # owned only as a compilation track (same suppression as $local).
         my $ltCache;

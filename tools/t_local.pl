@@ -34,6 +34,7 @@ use FindBin;
 
 our @QUERIES;    # every search: string the code asked LMS for, in order
 our %LIBRARY;    # search string -> rows LMS would return
+our %CONTRIB;    # lc MusicBrainz artist mbid -> library contributors carrying it
 
 BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
@@ -51,14 +52,20 @@ BEGIN {
     *{'Plugins::Discography::Plugin::dbg'} = sub { };
     *{'JSON::XS::VersionOneAndTwo::to_json'}   = sub { '' };
     *{'JSON::XS::VersionOneAndTwo::from_json'} = sub { {} };
-    # Stubbed LMS: records what was asked, answers from %LIBRARY.
+    # Stubbed LMS: records what was asked, answers from %LIBRARY. A request
+    # with no `search:` (the albums query the mbid path goes straight to) is
+    # answered empty -- what matters there is that no SEARCH was needed.
     *{'Slim::Control::Request::executeRequest'} = sub {
         my (undef, $args) = @_;
         my ($search) = grep { /^search:/ } @$args;
+        return bless { rows => [] }, 'T::Req' unless defined $search;
         $search =~ s/^search://;
         push @QUERIES, $search;
         return bless { rows => $LIBRARY{$search} || [] }, 'T::Req';
     };
+    # The library's own MusicBrainz artist tag, the column getArtistMbid
+    # already trusts ahead of any MB search (Contributor.musicbrainz_id).
+    *{'Slim::Schema::rs'} = sub { bless {}, 'T::RS' };
     for my $p (qw(Slim::Utils::Log Slim::Utils::Prefs JSON::XS::VersionOneAndTwo)) {
         push @{"${p}::ISA"}, 'Exporter';
     }
@@ -70,6 +77,21 @@ BEGIN {
 package T::Null;  our $AUTOLOAD; sub AUTOLOAD { return } sub DESTROY { }
 package T::Prefs; sub get { 1 } sub set { 1 } sub init { 1 } sub setChange { 1 }
 package T::Req;   sub getResult { return $_[0]->{rows} }
+# Contributor resultset: the search is `musicbrainz_id => { -in => [...] }`,
+# and the column is compared EXACTLY -- so the stub matches exactly too, and
+# the code's own case ladder is what has to do the work.
+package T::RS;
+sub search {
+    my (undef, $where) = @_;
+    my @try = @{ $where->{musicbrainz_id}{-in} || [] };
+    my @hit = map  { @{ $main::CONTRIB{$_} || [] } } @try;
+    return bless { rows => \@hit }, 'T::RS';
+}
+sub all { @{ $_[0]{rows} || [] } }
+package T::Contrib;
+sub new  { my ($c, %a) = @_; bless {%a}, $c }
+sub id   { $_[0]{id} }
+sub name { $_[0]{name} }
 
 package main;
 
@@ -103,6 +125,15 @@ my $key  = \&Plugins::Discography::Sources::_normKey;
 my $BJORK  = "Bj\xc3\xb6rk";
 my $SIGUR  = "Sigur R\xc3\xb3s";
 
+# ...AND THE LIBRARY MATCHES CHARACTERS, NEVER OCTETS (0.51.2, measured live
+# against Simon's server: `search:Björk` as characters -> 1 hit, the identical
+# string as UTF-8 octets -> 0, same for Sigur Rós / Röyksopp / ꉺლ). LMS's query
+# ends up in a DBI handle with unicode on, so it encodes what it is given and
+# octets are encoded twice. %LIBRARY is therefore keyed by the CHARACTER form:
+# a fixture keyed by octets would assert the very bug this file now guards.
+sub chars { my $s = shift; utf8::decode($s); $s }
+my $BJORK_C = chars($BJORK);
+
 # ---------------------------------------------------------------------------
 # 1. THE FIELD CASE: a single-word accented name. LMS holds "Björk" and its
 #    index folds accents, so the ASCII-folded spelling is the step that works.
@@ -111,17 +142,25 @@ my $SIGUR  = "Sigur R\xc3\xb3s";
 @QUERIES = (); %LIBRARY = ('Bjork' => [{ id => 7, artist => $BJORK }]);
 my $r = $rows->($BJORK);
 ok(scalar(@$r) == 1 && $r->[0]{artist_id} == 7, 'Björk is found via the ASCII-folded spelling');
-ok($QUERIES[0] eq $BJORK, '... after trying the exact spelling FIRST');
+ok($QUERIES[0] eq $BJORK_C, '... after trying the exact spelling FIRST');
+ok(scalar(utf8::is_utf8($QUERIES[0])),
+   '... handed to LMS as CHARACTERS - octets match no non-ASCII name at all');
 ok((grep { $_ eq 'Bjork' } @QUERIES), '... and the folded spelling was actually tried');
 
 # ---------------------------------------------------------------------------
 # 2. The exact spelling must WIN when it works -- no wasted queries, and no
 #    chance of a folded spelling adopting a different artist.
 # ---------------------------------------------------------------------------
-@QUERIES = (); %LIBRARY = ($BJORK => [{ id => 7, artist => $BJORK }]);
+@QUERIES = (); %LIBRARY = ($BJORK_C => [{ id => 7, artist => $BJORK }]);
 $r = $rows->($BJORK);
 ok(scalar(@$r) == 1, 'an exact hit is returned');
 ok(scalar(@QUERIES) == 1, '... on the FIRST query, with no fallback work');
+# The SAME call with the name already decoded must behave identically: both
+# shapes reach the plugin (a CLI param vs a name out of from_json).
+@QUERIES = ();
+$r = $rows->($BJORK_C);
+ok(scalar(@$r) == 1 && scalar(@QUERIES) == 1,
+   'a name that arrives ALREADY decoded takes the identical single query');
 
 # ---------------------------------------------------------------------------
 # 3. The &/and variant, which previously existed only on the search path.
@@ -194,20 +233,84 @@ ok($key->('Bush') ne $key->('Kate Bush'), 'distinct artists keep distinct keys')
 #    nothing and the owned album resolved to a streaming service instead of
 #    Local. RED against the pre-fix floor (grep length >= 4). Octet fixtures per
 #    the shape convention above.
+#
+#    0.51.2 — AND THE PROBE STILL FOUND NOTHING IN THE FIELD, because the token
+#    was handed to LMS as OCTETS (see the %LIBRARY note at the top). This is the
+#    same artist, still unresolved eight days later: the fix above was correct
+#    and unreachable. The library key here is the CHARACTER form, so this case
+#    now asserts BOTH halves — the right token, in the shape that can match.
 # ---------------------------------------------------------------------------
 my $TOK   = "\xea\x89\xba\xe1\x83\x9a";                 # ꉺლ  (U+A27A U+10DA)
 my $ZALGO = "\xe2\xa3\x8e" . $TOK . " )( " . $TOK;      # ⣎ꉺლ )( ꉺლ  (braille + token)
-@QUERIES = (); %LIBRARY = ($TOK => [{ id => 88, artist => $ZALGO }]);
+my $TOK_C = chars($TOK);
+@QUERIES = (); %LIBRARY = ($TOK_C => [{ id => 88, artist => $ZALGO }]);
 $r = $rows->($ZALGO);
 ok(scalar(@$r) == 1 && $r->[0]{artist_id} == 88, 'a short non-ASCII token is probed and locates the artist');
-ok(scalar(grep { $_ eq $TOK } @QUERIES), '... the 2-char token was actually tried');
-ok($QUERIES[0] eq $ZALGO, '... after the exact spelling was tried FIRST');
+ok(scalar(grep { $_ eq $TOK_C } @QUERIES), '... the 2-char token was actually tried');
+ok(scalar(grep { utf8::is_utf8($_) } @QUERIES) == scalar(@QUERIES),
+   '... and EVERY query for this name was characters, not octets');
+ok($QUERIES[0] eq chars($ZALGO), '... after the exact spelling was tried FIRST');
 # A short ASCII token must STILL be skipped -- the floor is only lifted for
 # non-ASCII, so this proves the change is surgical, not a blanket lowering. Both
 # tokens of "Xy Zq" are 2-char ASCII, so no single-token probe may ever run.
 @QUERIES = (); %LIBRARY = ();
 $rows->('Xy Zq');
 ok(!(grep { $_ eq 'Xy' || $_ eq 'Zq' } @QUERIES), 'a short ASCII token is NOT admitted as a probe term');
+
+# ---------------------------------------------------------------------------
+# 9. IDENTITY BEFORE SPELLING (0.51.3). Everything above is a SPELLING ladder,
+#    and for this artist there is no spelling that works: his 2-char token is
+#    the only handle LMS indexes, and 0.51.2 was the second fix aimed at it.
+#    His library DOES carry the MusicBrainz artist tag (verified live:
+#    2d9745dd-5dc6-4145-9453-fec582cfa9b8), so ask the identity question first.
+#
+#    RED against 0.51.2, which had no mbid parameter at all.
+# ---------------------------------------------------------------------------
+my $MB = '2d9745dd-5dc6-4145-9453-fec582cfa9b8';
+%CONTRIB = ($MB => [ T::Contrib->new(id => 88810, name => $ZALGO) ]);
+
+my $ids = [ Plugins::Discography::Sources::localArtistIdsByMbid($MB) ];
+ok(scalar(@$ids) == 1 && $ids->[0] == 88810, 'the library artist is found by MusicBrainz tag');
+ok(scalar(@{ Plugins::Discography::Sources::localArtistsByMbid(uc $MB) }) == 1,
+   '... whatever case the tagger wrote it in');
+ok($ids->[0] == Plugins::Discography::Sources::localArtistsByMbid($MB)->[0]{artist_id},
+   '... and the id/rows forms agree');
+
+# A DUPLICATE CONTRIBUTOR is a real artefact in this library (two "The La's",
+# one holding the albums), so every tagged contributor counts -- returning the
+# first would reintroduce the empty-artist trap 0.48.2 fixed for the name path.
+%CONTRIB = ($MB => [ T::Contrib->new(id => 1, name => 'A'),
+                     T::Contrib->new(id => 2, name => 'A') ]);
+ok(scalar(() = Plugins::Discography::Sources::localArtistIdsByMbid($MB)) == 2,
+   'ALL contributors carrying the tag are returned, not just the first');
+
+# A malformed / absent mbid must never reach the database.
+%CONTRIB = ();
+ok(scalar(() = Plugins::Discography::Sources::localArtistIdsByMbid('not-an-mbid')) == 0,
+   'a malformed mbid resolves nothing');
+ok(scalar(() = Plugins::Discography::Sources::localArtistIdsByMbid(undef)) == 0,
+   'an absent mbid resolves nothing');
+
+# localAlbums: the tag is consulted BEFORE the name ladder, so a name nothing
+# can spell costs no search at all.
+%CONTRIB = ($MB => [ T::Contrib->new(id => 88810, name => $ZALGO) ]);
+@QUERIES = (); %LIBRARY = ();
+Plugins::Discography::Sources->localAlbums(undef, $ZALGO, $MB);
+ok(scalar(@QUERIES) == 0, 'localAlbums resolves by tag with NO name search');
+
+# ...and an UNTAGGED library still falls through to the ladder unchanged --
+# the whole point is that nothing existing behaves differently.
+%CONTRIB = ();
+@QUERIES = (); %LIBRARY = ('Bjork' => [{ id => 7, artist => $BJORK }]);
+Plugins::Discography::Sources->localAlbums(undef, $BJORK, $MB);
+ok(scalar(grep { $_ eq 'Bjork' } @QUERIES) == 1,
+   'an untagged library falls through to the name ladder exactly as before');
+
+# An explicit artist_id is the user pointing at a contributor and still wins.
+%CONTRIB = ($MB => [ T::Contrib->new(id => 88810, name => $ZALGO) ]);
+@QUERIES = ();
+Plugins::Discography::Sources->localAlbums(4242, $BJORK, $MB);
+ok(scalar(@QUERIES) == 0, 'an explicit artist_id outranks the tag (and the name)');
 
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

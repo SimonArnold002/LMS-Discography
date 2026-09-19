@@ -21,6 +21,7 @@ BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
                   Slim::Utils::PluginManager Slim::Utils::Timers Slim::Utils::Strings
                   Slim::Control::Request Slim::Schema Slim::Web::HTTP
+                  Slim::Networking::SimpleAsyncHTTP Slim::Utils::Misc
                   Plugins::Discography::Plugin Plugins::Discography::API
                   Plugins::Discography::Sources)) {
         (my $p = $m) =~ s{::}{/}g; $INC{"$p.pm"} = 1;

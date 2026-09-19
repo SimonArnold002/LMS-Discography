@@ -73,6 +73,16 @@ unshift @INC, "$tmp";
 require Plugins::Discography::Browse;
 my $img = \&Plugins::Discography::Browse::_artistImg;
 
+# Streaming adapters are a runtime fact (are the plugins installed?), so the
+# gate is stubbed here — AFTER the real Sources.pm has loaded, or its own
+# definition would win.
+our $SVC_ON = 0;
+{
+    no strict 'refs'; no warnings 'redefine';
+    *{'Plugins::Discography::Sources::orderedAdapters'}
+        = sub { $main::SVC_ON ? ({ name => 'Deezer', priority => 1 }) : () };
+}
+
 my ($pass, $fail) = (0, 0);
 sub ok {
     my ($c, $n) = @_;
@@ -93,12 +103,15 @@ ok(scalar($img->("The La\x{2019}s", 57545) !~ /\x{2019}|%E2%80%99/),
    '... so no typographic punctuation reaches the proxy URL');
 
 # ---------------------------------------------------------------------------
-# 2. NO ID -> the NAME route is unchanged. Streaming-only rows, similar
-#    artists and MB candidates all still land here.
+# 2. NO ID -> OUR OWN name route (0.51.0). Streaming-only rows, similar artists
+#    and MB candidates land on `imageproxy/dsc/artist/<name>`, where the
+#    resolver can tell a placeholder from a photograph — MAI's route ends at
+#    one snapshot of Deezer and serves its placeholder when that goes stale
+#    (The Mothers of Invention / Pink Floyd / B52's, all measured 2026-07-29).
 # ---------------------------------------------------------------------------
-ok(scalar($img->('Radiohead') eq 'imageproxy/mai/artist/Radiohead/image.png'),
-   'no id: the name route is unchanged');
-ok(scalar($img->('Sigur R\x{f3}s') =~ m{^imageproxy/mai/artist/.+/image\.png$}),
+ok(scalar($img->('Radiohead') eq 'imageproxy/dsc/artist/Radiohead/image.png'),
+   'no id: the name route is OURS');
+ok(scalar($img->('Sigur R\x{f3}s') =~ m{^imageproxy/dsc/artist/.+/image\.png$}),
    '... and an accented name is still escaped into the URL');
 ok(scalar($img->('AC/DC') !~ m{artist/AC/DC/}),
    '... with a slash in the name escaped, not left to split the path');
@@ -109,24 +122,117 @@ ok(scalar($img->('AC/DC') !~ m{artist/AC/DC/}),
 # ---------------------------------------------------------------------------
 for my $bad ('', 'abc', '12x', undef) {
     my $got = $img->('Radiohead', $bad);
-    ok(scalar($got eq 'imageproxy/mai/artist/Radiohead/image.png'),
+    ok(scalar($got eq 'imageproxy/dsc/artist/Radiohead/image.png'),
        'a non-numeric id (' . (defined $bad ? "'$bad'" : 'undef')
        . ') falls back to the name');
 }
 
 # ---------------------------------------------------------------------------
-# 4. THE MAI GATE still comes first, and an id alone is enough to ask.
+# 4. THE MAI GATE guards the ID route only. Without MAI there is no contributor
+#    photo to serve, but a NAME can still be resolved from the services — the
+#    whole point of owning the route — so MAI-off must not mean icon-only.
 # ---------------------------------------------------------------------------
 {
     local $main::MAI_ON = 0;
+    local $main::SVC_ON = 0;
     ok(scalar($img->('Radiohead', 57545) =~ /person\.png$/),
-       'MAI disabled -> the person icon, id or not');
+       'no MAI and no services -> the person icon, id or not');
+    local $main::SVC_ON = 1;
+    ok(scalar($img->('Radiohead', 57545) eq 'imageproxy/dsc/artist/Radiohead/image.png'),
+       'no MAI but a service enabled -> our name route still resolves it');
 }
 ok(scalar($img->(undef, 57545) eq 'imageproxy/mai/artist/57545/image.png'),
    'an id with NO name is still enough to build a URL');
 ok(scalar($img->(undef, undef) =~ /person\.png$/),
    'neither name nor id -> the person icon');
 ok(scalar($img->('') =~ /person\.png$/), 'an empty name -> the person icon');
+
+# ---------------------------------------------------------------------------
+# 5. PLACEHOLDER DETECTION — the signal the whole 0.51.0 fix turns on.
+#    A picture-less Deezer entity answers with (or 302s to) the md5 of the
+#    EMPTY STRING. Nothing else about the URL distinguishes it from a photo,
+#    which is why 0.46.5 could only diagnose this and not fix it.
+# ---------------------------------------------------------------------------
+my $ph = \&Plugins::Discography::Sources::isPlaceholderImage;
+ok(scalar($ph->('https://cdn-images.dzcdn.net/images/artist/'
+    . 'd41d8cd98f00b204e9800998ecf8427e/1000x1000-000000-80-0-0.jpg')),
+   'the empty-md5 Deezer entity is recognised as a placeholder');
+ok(scalar($ph->('/images/artist/d41d8cd98f00b204e9800998ecf8427e/1000x1000.jpg')),
+   '... including as a bare 302 Location header');
+ok(scalar(!$ph->('https://cdn-images.dzcdn.net/images/artist/'
+    . '32cfa44648e2605d89c843b5371fbb53/1000x1000-000000-80-0-0.jpg')),
+   'The Mothers of Invention\'s LIVE Deezer picture is not a placeholder');
+ok(scalar(!$ph->(undef)) && scalar(!$ph->('')),
+   'undef/empty are not placeholders (nothing to serve is not a false photo)');
+
+# ---------------------------------------------------------------------------
+# 6. SERVICE ARTIST PHOTOS come from each plugin's OWN url builder, and a
+#    placeholder handed back by a service is dropped like any other.
+# ---------------------------------------------------------------------------
+my $svcImg = \&Plugins::Discography::Sources::_svcArtistImage;
+{
+    no strict 'refs';
+    $INC{'Plugins/Deezer/API.pm'} = 1;
+    $INC{'Plugins/TIDAL/API.pm'}  = 1;
+    $INC{'Plugins/Qobuz/API/Common.pm'} = 1;
+    # Both service builders read the hash and write {cover} back into it.
+    *{'Plugins::Deezer::API::getImageUrl'} = sub { $_[1]->{picture_xl} };
+    *{'Plugins::TIDAL::API::getImageUrl'}  = sub {
+        my $c = $_[1]->{picture} or return undef;
+        $c =~ s/-/\//g;
+        return "http://resources.tidal.com/images/$c/750x750.jpg";
+    };
+    *{'Plugins::Qobuz::API::Common::getImageFromImagesHash'} = sub {
+        my $i = $_[1]; ref $i ? ($i->{mega} || $i->{large}) : $i };
+}
+my $live = 'https://cdn-images.dzcdn.net/images/artist/'
+         . '32cfa44648e2605d89c843b5371fbb53/500x500-000000-80-0-0.jpg';
+ok(scalar(($svcImg->('Deezer', { name => 'The Mothers of Invention',
+                                 picture_xl => $live }) // '') eq $live),
+   'Deezer: the live picture is taken through the plugin\'s own builder');
+ok(scalar(!defined $svcImg->('Deezer', { name => 'Nobody', picture_xl =>
+    'https://cdn-images.dzcdn.net/images/artist/'
+    . 'd41d8cd98f00b204e9800998ecf8427e/500x500-000000-80-0-0.jpg' })),
+   '... and its placeholder is dropped, not shown');
+ok(scalar(($svcImg->('Tidal', { name => 'X', picture => 'aa-bb-cc' }) // '')
+    eq 'http://resources.tidal.com/images/aa/bb/cc/750x750.jpg'),
+   'TIDAL: the picture uuid is expanded by the plugin, not by us');
+ok(scalar(($svcImg->('Qobuz', { name => 'X',
+        image => { large => 'https://static.qobuz.com/a.jpg' } }) // '')
+    eq 'https://static.qobuz.com/a.jpg'),
+   'Qobuz: the size hash resolves through API::Common');
+ok(scalar(!defined $svcImg->('Qobuz', { name => 'X', picture => 'html/images/artists.png' })),
+   '... and a relative plugin asset is not a photo (only http(s) counts)');
+ok(scalar(!defined $svcImg->('Nope', { name => 'X', picture => 'http://x/y.jpg' })),
+   'an unknown service yields nothing rather than a guessed URL');
+
+# ---------------------------------------------------------------------------
+# 7. THE PROXY HANDLER: parses its own escaped name back out, honours the async
+#    contract (returns undef, answers via $cb), and falls THROUGH a dead MAI
+#    answer to the services.
+# ---------------------------------------------------------------------------
+{
+    no strict 'refs';
+    my $asked;
+    *{'Plugins::Discography::Sources::artistImage'} = sub {
+        (undef, undef, my $name, my $cb) = @_;
+        $asked = $name;
+        $cb->('https://svc.example/photo.jpg');
+    };
+    local $main::MAI_ON = 0;            # no MAI -> tiers 1 and 2 are empty
+    my $got;
+    my $ret = Plugins::Discography::Browse::artistImageProxy(
+        'dsc/artist/Sigur%20R%C3%B3s', '_96x96_o', sub { $got = shift });
+    ok(scalar(!defined $ret), 'the handler returns undef (it answered via $cb)');
+    ok(scalar($got && $got eq 'https://svc.example/photo.jpg'),
+       'a service photo is what the proxy serves when MAI has nothing');
+    ok(scalar(defined $asked && $asked eq "Sigur R\x{f3}s"),
+       '... and the escaped name came back as CHARACTERS, not octets (a byte '
+       . 'string would be re-encoded by MAI into "Sigur RÃ³s")');
+    my $bad = Plugins::Discography::Browse::artistImageProxy('dsc/artist/', '', sub {});
+    ok(scalar(!$bad || $bad !~ /^https?:/),
+       'a nameless proxy URL never turns into a remote fetch');
+}
 
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

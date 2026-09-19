@@ -154,6 +154,21 @@ sub initPlugin {
         weight => 10,
     );
 
+    # Our own artist-thumbnail route (0.51.0): `imageproxy/dsc/artist/<name>`.
+    # MAI's equivalent ends at one snapshot of Deezer and serves that snapshot's
+    # placeholder when it has gone stale; ours runs the same lookup and then
+    # falls through to the user's services rather than showing a silhouette.
+    # See Browse::artistImageProxy. Registration is guarded: an LMS without the
+    # image proxy simply keeps the person icon (_artistImg's own fallback).
+    eval {
+        require Slim::Web::ImageProxy;
+        Slim::Web::ImageProxy->registerHandler(
+            match => qr/dsc\/artist\/.+/,
+            func  => \&Plugins::Discography::Browse::artistImageProxy,
+        );
+        1;
+    } or $log->warn("could not register the artist image handler: $@");
+
     # HTTP-triggerable cache clear — bust an artist's cached MusicBrainz data
     # (resolution mbid + '' miss sentinel, release groups, bootleg map, band
     # members, bio, streaming candidates) WITHOUT the Material UI. This is the

@@ -50,7 +50,7 @@ my $prefs = preferences('plugin.discography');
 # instance for a namespace and ignores later args). tools/syntax_check.sh
 # asserts all three agree and match install.xml.
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.50.5';
+use constant CACHE_VERSION => '0.51.5';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 # MB's canonical artist name, remembered in-process as well as cached — the
@@ -702,8 +702,7 @@ sub _artistMbidByName {
                     # strict error. That is the 0.44.18 shadowing trap exactly.
                     if ($mbid && $canonName ne '') {
                         $mbNameMem{ lc $mbid } = $canonName;
-                        eval { $cache->set(_mbNameKey($mbid), $canonName, ALIAS_TTL); 1 }
-                            or $log->warn("artist-name cache set failed: $@");
+                        _setMbName($mbid, $canonName);
                     }
                     # TTL named from the constant, not a literal: this said "1d" for
                     # months after 0.23.1 shortened it to 1h, and a diagnostic that
@@ -1077,7 +1076,24 @@ sub filterRowsWithContent {
 
                 # Survivor: prefer a row with a library artist_id - that id is
                 # what makes the user's OWN albums match on the page.
-                my ($keepIdx) = grep { $slot[$_]{artist_id} } @idx;
+                #
+                # SEVERAL library rows in one group: the id that matches the
+                # user's albums is the one OWNING them, not the first by rank.
+                # Field (Simon, 2026-09-19): "James Yorkston and friends" (3
+                # owned albums) folded as a joint credit into "James Yorkston"
+                # (one VA track), which ranked first on its extra Qobuz source;
+                # the survivor kept the bare contributor's id and the page read
+                # 0 matched / 0 local, against 6 / 6 for the owning id. Most
+                # albums wins, rank order breaking ties — so a group with ONE
+                # library row, or with equal counts, behaves exactly as before,
+                # and the count queries run only when two library rows collide.
+                my @owned = grep { $slot[$_]{artist_id} } @idx;
+                my ($keepIdx) = @owned;
+                if (@owned > 1) {
+                    my %n = map { $_ => Plugins::Discography::Sources::_albumCountFor(
+                                      $slot[$_]{artist_id}) } @owned;
+                    ($keepIdx) = sort { $n{$b} <=> $n{$a} || $a <=> $b } @owned;
+                }
                 $keepIdx = $idx[0] unless defined $keepIdx;
 
                 my $didFold = 0;
@@ -1283,6 +1299,45 @@ sub filterRowsWithContent {
                 }
             }
 
+            # ATTACH THE USER'S OWN LIBRARY ARTIST BY MUSICBRAINZ TAG (0.51.3).
+            #
+            # Every attach above this line is spelled: the fold's alias pass
+            # asks the library for a NAME, so it can only rescue a row whose
+            # artist LMS can find by some spelling. For Simon's braille/Yi/
+            # Georgian act there is no such spelling — LMS's index holds one
+            # 2-char token of a name that normalises to almost nothing — and
+            # his library carries that artist's MB tag all the same. So the row
+            # said Qobuz/Deezer for an artist he owns, and only the DRILL-IN
+            # (which resolves through the tag) knew better.
+            #
+            # This asks the identity question instead: which contributors carry
+            # this row's resolved mbid? Exact, spelling-free, and the SAME read
+            # `getArtistMbid` already trusts ahead of any MB search — one
+            # direction of it was never wired to the search rows.
+            #
+            # RUNS AFTER THE FOLD, deliberately: the fold's survivor choice
+            # prefers a row that ALREADY has an artist_id, so attaching ids
+            # first would change which row survives and which spelling it wears.
+            # Here it can only add Local to rows the fold has finished with.
+            #
+            # Only rows with NO artist_id — a row the Local leg or the alias
+            # attach already claimed is left exactly as it was, including its
+            # name.
+            for my $i (@kept) {
+                next if $folded{$i};
+                next if $slot[$i]{artist_id};
+                next unless $mbof[$i];
+                my ($hit) = @{ Plugins::Discography::Sources::localArtistsByMbid($mbof[$i]) };
+                next unless $hit;
+                $slot[$i]{artist_id} = $hit->{artist_id};
+                my %have = map { $_ => 1 } @{ $slot[$i]{sources} || [] };
+                unshift @{ $slot[$i]{sources} }, 'Local' unless $have{Local};
+                _dbg("search rows: attached library artist " . $hit->{artist_id}
+                    . " ('" . ($hit->{name} // '?') . "') to '"
+                    . ($slot[$i]{name} // '?') . "' by MusicBrainz tag "
+                    . $mbof[$i]);
+            }
+
             my @out = map { $slot[$_] } grep { !$folded{$_} } @kept;
             _dbg('search rows: ' . scalar(@out) . ' of ' . scalar(@$rows)
                 . ' lead somewhere');
@@ -1391,6 +1446,35 @@ sub _aliasKey { 'dsc:alias:2:' . lc($_[0] // '') }
 # warmArtistAliases, so it costs no extra request.
 sub _mbNameKey { 'dsc:mbname:1:' . lc($_[0] // '') }
 
+# THE CAUSE OF THE MISSING NAME, FOUND 2026-07-31 (see peekArtistName below,
+# which has carried "the CAUSE is not established" since 0.46.x).
+#
+# `Slim::Utils::DbCache` DIES on a character string — the live log, caught by
+# the eval that was hiding it:
+#
+#     artist-name cache set failed: Wide character in subroutine entry
+#         at /usr/share/perl5/Slim/Utils/DbCache.pm
+#
+# MB names arrive from `from_json` as CHARACTERS, so every NON-ASCII canonical
+# name silently failed to cache while ASCII ones wrote fine — exactly the split
+# that was measured and could not be explained (the B-52s canonical is
+# "The B\x{2010}52s", non-ASCII by one hyphen). The alias LIST written by the
+# same response survived because an arrayref goes through Storable, which
+# handles wide characters perfectly well.
+#
+# So the value is stored as OCTETS and decoded on read. NB this is the mirror
+# image of the rule for LMS's own queries, which match CHARACTERS and nothing
+# else (Sources::_cliChars). Both are load-bearing; neither is a preference.
+sub _setMbName {
+    my ($mbid, $name) = @_;
+    return unless $mbid && defined $name && !ref $name && $name ne '';
+    my $enc = $name;
+    utf8::encode($enc) if utf8::is_utf8($enc);
+    eval { $cache->set(_mbNameKey($mbid), $enc, ALIAS_TTL); 1 }
+        or $log->warn("artist-name cache set failed: $@");
+    return;
+}
+
 # IN-PROCESS FALLBACK, and it exists because the cached name went MISSING while
 # the alias list written by the SAME response survived.
 #
@@ -1415,7 +1499,12 @@ sub peekArtistName {
     my ($class, $mbid) = @_;
     return undef unless $mbid;
     my $n = $cache->get(_mbNameKey($mbid));
-    return $n if defined $n && length $n;
+    if (defined $n && length $n) {
+        # Stored as octets (_setMbName); every caller compares it with names
+        # that came out of from_json as CHARACTERS, so hand back characters.
+        utf8::decode($n) unless utf8::is_utf8($n);
+        return $n;
+    }
     $n = $mbNameMem{ lc $mbid };
     return (defined $n && length $n) ? $n : undef;
 }
@@ -1517,8 +1606,7 @@ sub warmArtistAliases {
             # treats its absence as "no canonical name exists".
             if (ref $d eq 'HASH' && defined $d->{name} && length $d->{name}) {
                 $mbNameMem{ lc $mbid } = $d->{name};
-                eval { $cache->set(_mbNameKey($mbid), $d->{name}, ALIAS_TTL); 1 }
-                    or $log->warn("artist-name cache set failed: $@");
+                _setMbName($mbid, $d->{name});
             }
             $cb->(\@names);
         },
@@ -2078,8 +2166,7 @@ sub warmBandMembers {
             # candidate warm) -- the same contract bands and emblems already
             # have. A name-resolved artist gets it immediately from the
             # resolver instead.
-            eval { $cache->set(_mbNameKey($artistMbid), $data->{name}, ALIAS_TTL); 1 }
-                if ($data->{name} // '') ne '';
+            _setMbName($artistMbid, $data->{name});
             _dbg("band-members: $artistMbid -> " . scalar(@bands) . ' band(s): '
                  . join(', ', map { $_->{name} } @bands));
             delete $bandsInFlight{$artistMbid};

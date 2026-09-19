@@ -31,6 +31,8 @@ use FindBin;
 my %CACHE;
 my $DATA;
 my @URLS;
+our %TAGGED;   # library contributors keyed by the MusicBrainz artist tag
+our %ALBUMS;   # owned-album count per library artist_id (the survivor choice)
 
 BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
@@ -54,7 +56,19 @@ BEGIN {
     };
     # The Local search leg is not exercised here — rows are handed in directly,
     # exactly as mergeArtistHits produces them.
-    *{'Slim::Control::Request::executeRequest'} = sub { undef };
+    # The one query answered is the owned-album COUNT the survivor choice
+    # reads (Sources::_albumCountFor); an unlisted id reads as undef -> 0.
+    *{'Slim::Control::Request::executeRequest'} = sub {
+        my (undef, $args) = @_;
+        return undef unless ($args->[0] // '') eq 'albums';
+        my ($aid) = map { /^artist_id:(\d+)/ ? $1 : () } @$args;
+        return undef unless defined $aid && exists $main::ALBUMS{$aid};
+        return bless { count => $main::ALBUMS{$aid} }, 'T::Req';
+    };
+    # The library's own MusicBrainz artist tag (Contributor.musicbrainz_id),
+    # for the 0.51.3 identity attach. Empty %TAGGED = an untagged library, so
+    # every assertion written before it behaves exactly as it always did.
+    *{'Slim::Schema::rs'} = sub { bless {}, 'T::RS' };
     for my $p (qw(Slim::Utils::Log Slim::Utils::Prefs JSON::XS::VersionOneAndTwo)) {
         push @{"${p}::ISA"}, 'Exporter';
     }
@@ -64,6 +78,21 @@ BEGIN {
 }
 
 package T::Null;  our $AUTOLOAD; sub AUTOLOAD { return } sub DESTROY { }
+# Contributor resultset for the tag attach: exact column compare, so the
+# stub matches exactly and the code's own case ladder does the work.
+package T::RS;
+sub search {
+    my (undef, $where) = @_;
+    my @try = @{ $where->{musicbrainz_id}{-in} || [] };
+    return bless { rows => [ map { @{ $main::TAGGED{$_} || [] } } @try ] }, 'T::RS';
+}
+sub all { @{ $_[0]{rows} || [] } }
+package T::Req;
+sub getResult { $_[1] && $_[1] eq 'count' ? $_[0]{count} : undef }
+package T::Contrib;
+sub new  { my ($c, %a) = @_; bless {%a}, $c }
+sub id   { $_[0]{id} }
+sub name { $_[0]{name} }
 package T::Cache;
 sub get { return $CACHE{ $_[1] } }
 sub set { $CACHE{ $_[1] } = $_[2]; return 1 }
@@ -384,6 +413,110 @@ ok($API->peekArtistEmpty($MBID), 'the verdict is set');
 ok($API->clearArtistEmpty($MBID), '... a render with content clears it');
 ok(!$API->peekArtistEmpty($MBID), '... and it is genuinely gone');
 ok(!$API->clearArtistEmpty(undef), 'no mbid clears nothing');
+
+# ---------------------------------------------------------------------------
+# IDENTITY BEFORE SPELLING, ON THE SEARCH ROW (0.51.3).
+#
+# Field (Simon): the hieroglyph/zalgo artist "doesnt seem to recgnoise my local
+# album". Every attach above this point is SPELLED — the fold's alias pass asks
+# the library for a NAME — and for this artist no spelling works: LMS indexes a
+# single 2-char token of a name that normalises to nearly nothing. His library
+# carries the artist's MusicBrainz tag all the same, so the row can be claimed
+# by IDENTITY. RED against 0.51.2, which had no such pass.
+# ---------------------------------------------------------------------------
+%TAGGED = ($MBID => [ T::Contrib->new(id => 88810, name => 'The Owned Artist') ]);
+
+$out = fold({ name => "B52's", sources => ['Qobuz', 'Deezer'] });
+ok(scalar(@$out) == 1 && ($out->[0]{artist_id} // 0) == 88810,
+   'a lone row is claimed by the library MusicBrainz tag');
+ok(($out->[0]{sources}[0] // '') eq 'Local', '... and leads with Local');
+ok(scalar(@{ $out->[0]{sources} }) == 3, '... keeping every streaming source it had');
+ok(($out->[0]{name} // '') eq "B52's",
+   '... while its NAME is left alone (the fold already decided that)');
+
+# A row that already carries an artist_id is untouched — the Local leg or the
+# alias attach reached it first, including its chosen spelling.
+$out = fold({ name => 'The B-52s', sources => ['Local'], artist_id => 62125 });
+ok(($out->[0]{artist_id} // 0) == 62125, 'a row that already has an artist_id is left as it is');
+ok(scalar(@{ $out->[0]{sources} }) == 1, '... and gains no duplicate Local');
+
+# THE ORDER MATTERS: this runs AFTER the fold, so the survivor choice — which
+# prefers a row that already has an artist_id — is decided exactly as before.
+%TAGGED = ($MBID => [ T::Contrib->new(id => 88810, name => 'The Owned Artist') ]);
+$out = fold(
+    { name => "B52's",     sources => ['Qobuz'] },
+    { name => 'The B-52s', sources => ['Local'], artist_id => 62125 },
+);
+ok(scalar(@$out) == 1 && ($out->[0]{artist_id} // 0) == 62125,
+   'the fold still picks the library row as survivor (the attach cannot pre-empt it)');
+ok(($out->[0]{name} // '') eq 'The B-52s', '... with the library spelling intact');
+
+# An UNTAGGED library changes nothing — the whole point is that no existing
+# behaviour moves.
+%TAGGED = ();
+$out = fold({ name => "B52's", sources => ['Qobuz'] });
+ok(!$out->[0]{artist_id}, 'an untagged library attaches nothing');
+ok(scalar(@{ $out->[0]{sources} }) == 1, '... and invents no Local source');
+
+# A DROPPED row must never be attached to: it is not in the result at all.
+%TAGGED = ($MBID => [ T::Contrib->new(id => 88810, name => 'The Owned Artist') ]);
+%CACHE = (); @URLS = ();
+$CACHE{ 'dsc:empty:1:' . $MBID } = 1;
+$out = undef;
+$API->filterRowsWithContent([{ name => "B52's", sources => ['Qobuz'] }],
+                            sub { $out = $_[0] });
+ok(ref $out eq 'ARRAY' && !@$out, 'a row proven empty is still dropped, not attached to');
+%TAGGED = ();
+
+# ---------------------------------------------------------------------------
+# JAMES YORKSTON (field, 2026-09-19): TWO library rows in one group. The row
+# ranked first ("James Yorkston", one VA track) must not win over the one that
+# OWNS the albums ("James Yorkston and friends", folded as a joint credit) —
+# live, the first-ranked id drilled 0 matched / 0 local, the owning id 6 / 6.
+# ---------------------------------------------------------------------------
+{
+    local %ALBUMS = (135829 => 1, 135826 => 3);
+    my @rows = (
+        { name => 'James Yorkston',             sources => ['Local','Qobuz'], artist_id => 135829 },
+        { name => 'James Yorkston and friends', sources => ['Local'],         artist_id => 135826 },
+    );
+    my $o = foldAs('James Yorkston', [], @rows);
+    ok(scalar(@$o) == 1, 'two library rows, one MB artist, joint credit -> ONE row');
+    ok(($o->[0]{artist_id} // 0) == 135826,
+       '... keeping the artist_id that OWNS the albums, not the first-ranked one');
+    ok(($o->[0]{name} // '') eq 'James Yorkston and friends',
+       '... wearing that library artist\'s own spelling (0.46.5)');
+    ok(scalar(grep { $_ eq 'Qobuz' } @{ $o->[0]{sources} }),
+       '... and still speaking for Qobuz, which only the other row carried');
+
+    # Rank order breaks a tie, so equal counts behave exactly as before.
+    local %ALBUMS = (135829 => 2, 135826 => 2);
+    $o = foldAs('James Yorkston', [], @rows);
+    ok(($o->[0]{artist_id} // 0) == 135829, 'equal album counts -> the first-ranked row survives, as before');
+
+    # Order-independent: the owner wins from either position.
+    local %ALBUMS = (135829 => 1, 135826 => 3);
+    $o = foldAs('James Yorkston', [], reverse @rows);
+    ok(($o->[0]{artist_id} // 0) == 135826, '... and the owner wins when listed first too');
+}
+
+# ---------------------------------------------------------------------------
+# LIGHTNING SEEDS (field, 2026-09-19): the same survivor bug via an ALIAS fold,
+# not a joint credit. "The Lightning Seeds" (1 owned album, + Qobuz) outranks
+# "Lightning Seeds" (6); both resolve to one MB artist. Live, the first-ranked
+# id drilled 14 matched / 6 local, the owning id 22 / 17.
+# ---------------------------------------------------------------------------
+{
+    local %ALBUMS = (136309 => 1, 136301 => 6);
+    my $o = foldAs('The Lightning Seeds', ['Lightning Seeds'],
+        { name => 'The Lightning Seeds', sources => ['Local','Qobuz'], artist_id => 136309 },
+        { name => 'Lightning Seeds',     sources => ['Local'],         artist_id => 136301 },
+    );
+    ok(scalar(@$o) == 1, 'Lightning Seeds: the article variant folds by MB alias');
+    ok(($o->[0]{artist_id} // 0) == 136301,
+       '... keeping the artist_id that OWNS the albums (6), not the first-ranked (1)');
+    ok(scalar(grep { $_ eq 'Qobuz' } @{ $o->[0]{sources} }), '... still speaking for Qobuz');
+}
 
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

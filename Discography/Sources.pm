@@ -32,7 +32,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.50.5';
+use constant CACHE_VERSION => '0.51.5';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
@@ -193,6 +193,42 @@ sub _normKey {
 # Rows from the recovery steps are norm-verified by the CALLER, so widening the
 # net here cannot adopt a wrong artist.
 # ---------------------------------------------------------------------------
+# LMS'S OWN QUERIES MATCH CHARACTER STRINGS, NEVER OCTETS (0.51.2)
+#
+# Every `search:` we hand to `executeRequest` ends up in a DBI query whose
+# handle has unicode ON, so DBI encodes what it is given: a CHARACTER string
+# matches, and a UTF-8 OCTET string is encoded a second time and matches
+# nothing. Measured live against Simon's library, same query both ways:
+#
+#     search string          as CHARACTERS   as OCTETS
+#     ---------------------------------------------------------
+#     Bjork/Björk                  1               0
+#     Sigur Rós                    1               0
+#     Röyksopp                     1               0
+#     \x{a27a}\x{10da}             1               0
+#
+# So the ladder below was ENCODING ITS WAY OUT OF EVERY NON-ASCII MATCH, and
+# the "the ASCII fold rescued Björk/Röyksopp/ROSALÍA" result recorded in
+# 0.45.1 was that bug wearing a disguise: the fold only ever won because it
+# produces pure ASCII, where octets and characters are the same bytes. For an
+# artist whose name has NO ASCII to fold to (Simon's braille/Yi/Georgian act,
+# field 2026-07-31) nothing in the ladder could ever match, the search row got
+# no Local source, and the album he owns resolved to a streaming service.
+#
+# NB the OPPOSITE rule applies to `$cache` (Slim::Utils::DbCache): it dies
+# "Wide character in subroutine entry" on a character string, so cache KEYS and
+# raw string VALUES are encoded — see `_candKey` and API::_mbNameKey. Two
+# neighbouring LMS APIs, two opposite requirements; neither is negotiable.
+sub _cliChars {
+    my ($s) = @_;
+    return $s unless defined $s && !utf8::is_utf8($s);
+    my $d = $s;
+    # Octets that are not valid UTF-8 are left exactly as they are: a failed
+    # decode must not mangle a name that might still match as-is.
+    return utf8::decode($d) ? $d : $s;
+}
+
+# ---------------------------------------------------------------------------
 # $opt->{no_probe} skips the TERM PROBES only (the spelling ladder still runs).
 # The probes are the widest net and exist to rescue a MANGLED USER-TYPED string
 # ("b52s"); when the caller already holds a canonical artist name — as
@@ -205,8 +241,7 @@ sub _localArtistRows {
     $opt ||= {};
     return [] unless defined $text && length $text;
 
-    my $enc = $text;
-    utf8::encode($enc) if utf8::is_utf8($enc);
+    my $enc = _cliChars($text);
 
     my @tries = ($enc);
     my $alt   = $enc;
@@ -273,9 +308,7 @@ sub _localArtistRows {
                 grep { length($_) >= PUNCT_PROBE_MIN_LEN || /[^\x00-\x7f]/ }
                 split /[^\p{Alnum}]+/, $dec;
     for my $term (grep { defined } @terms[0 .. PUNCT_PROBE_MAX - 1]) {
-        my $tEnc = $term;
-        utf8::encode($tEnc) if utf8::is_utf8($tEnc);
-        my @hits = $run->($tEnc);
+        my @hits = $run->(_cliChars($term));
         if (@hits) {
             _dbg("Local lookup '$text': matched " . scalar(@hits) . " via term probe '$term'");
             return \@hits;
@@ -383,15 +416,30 @@ sub _localArtistIds {
 }
 
 sub localAlbums {
-    my ($class, $artistId, $artist) = @_;
+    my ($class, $artistId, $artist, $mbid) = @_;
     return [] unless ($prefs->get('svc_priority_local') // 1) > 0;
 
     my @ids      = $artistId ? ($artistId) : ();
     my $intersect = 0;
 
+    # IDENTITY FIRST (0.51.3): the MusicBrainz artist we are browsing, matched
+    # against the library's own contributor tag. Exact, spelling-proof, one
+    # local DB read, and it runs BEFORE the name ladder — which stays exactly
+    # as it was for every untagged library, and still runs whenever this finds
+    # nothing. An explicit artist_id (an Artists row, a search row that already
+    # attached) still outranks it: that is the user pointing at a contributor.
+    if (!@ids && $mbid) {
+        my @byMbid = localArtistIdsByMbid($mbid);
+        if (@byMbid) {
+            @ids = @byMbid;
+            _dbg("localAlbums: mbid $mbid -> artist_id " . join('+', @ids)
+                 . ' (library MusicBrainz tag, no name matching)');
+        }
+    }
+
     # No artist_id (non-library entry surface): resolve by name, norm-verified
     # so a fuzzy `artists search:` can't adopt the wrong artist.
-    if (!$artistId && defined $artist && length $artist) {
+    if (!@ids && defined $artist && length $artist) {
         my ($found, $needAll) = _localArtistIds($artist);
         @ids       = @$found;
         $intersect = $needAll;
@@ -539,22 +587,57 @@ sub localTracks {
     return \@out;
 }
 
+# ---------------------------------------------------------------------------
+# IDENTITY BEFORE SPELLING (0.51.3)
+#
+# The library contributors carrying this MusicBrainz artist tag — an EXACT
+# identity match that never touches the name, so it works for a name no index
+# can hold (Simon's braille/Yi/Georgian act, whose whole name normalises away)
+# and for every typographic variant that has cost this plugin releases:
+# "The La’s" vs "The La's", "The B‐52s" vs "The B-52s", "B52's".
+#
+# ALL matching contributors, not the first: a duplicate contributor is a real
+# tagging artefact in Simon's library (two "The La's", one holding the albums),
+# and _localArtistIds already unions them for the name path. Returning one id
+# here would reintroduce the empty-artist trap that fix exists for.
+#
+# This is the SAME read `getArtistMbid` trusts ahead of any MB search
+# (API.pm:286) — one direction of it was simply never wired to the name paths.
+# Untagged library / schema change -> empty list, and every caller falls
+# through to the name ladder exactly as before.
+sub localArtistsByMbid {
+    my ($mbid) = @_;
+    return [] unless defined $mbid && $mbid =~ /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+    # Case-insensitively: MB hands us lowercase, but the tag in the file is
+    # whatever the tagger wrote, and the column is compared exactly.
+    my %seen;
+    my @try = grep { !$seen{$_}++ } ($mbid, lc $mbid, uc $mbid);
+    my $rows = eval {
+        require Slim::Schema;
+        [ map { { artist_id => $_->id, name => $_->name } }
+          Slim::Schema->rs('Contributor')->search({ musicbrainz_id => { -in => \@try } })->all ];
+    };
+    return ref $rows eq 'ARRAY' ? $rows : [];
+}
+
+# Ids alone — the shape the album/band lookups want.
+sub localArtistIdsByMbid {
+    my ($mbid) = @_;
+    return map { $_->{artist_id} } @{ localArtistsByMbid($mbid) };
+}
+
 # Resolve a MusicBrainz band to a library Contributor id: MB id (exact) first,
 # then a normalised name match (same discipline as localAlbums' name path — a
 # fuzzy `artists search:` must not adopt the wrong contributor).
 sub _bandContributorId {
     my ($mbid, $name) = @_;
     if ($mbid) {
-        my $c = eval {
-            require Slim::Schema;
-            Slim::Schema->rs('Contributor')->search({ musicbrainz_id => $mbid })->first;
-        };
-        return $c->id if $c;
+        my ($id) = localArtistIdsByMbid($mbid);
+        return $id if $id;
     }
     return undef unless defined $name && length $name;
     my $an  = _norm($name);
-    my $enc = $name;
-    utf8::encode($enc) if utf8::is_utf8($enc);
+    my $enc = _cliChars($name);      # CHARACTERS - see _cliChars
     my $req = eval { Slim::Control::Request::executeRequest(undef, ['artists', 0, 20, "search:$enc"]) };
     if ($req) {
         for my $e (@{ $req->getResult('artists_loop') || [] }) {
@@ -969,16 +1052,20 @@ sub randomAlbumCovers {
     return [ map { "/music/$_/cover_300x300_f.jpg" } @ids ];
 }
 
-# Normalise a service's artist list to [{name}], capped. All three services
-# carry the display name in {name} (the same field _pickArtist reads).
+# Normalise a service's artist list to [{name, img}], capped. All three
+# services carry the display name in {name} (the same field _pickArtist reads);
+# `img` is the service's OWN artist photo, kept since 0.51.0 (it arrives in the
+# same response, so it costs nothing, and it is what fills the artwork gaps the
+# name-keyed MAI route leaves behind — see artistImage).
 sub _artistHits {
-    my ($list) = @_;
+    my ($list, $svc) = @_;
     return undef unless ref $list eq 'ARRAY';
     my @out;
     for my $a (@$list) {
         next unless ref $a eq 'HASH'
             && defined $a->{name} && !ref $a->{name} && length $a->{name};
-        push @out, { name => $a->{name} };
+        my $img = _svcArtistImage($svc, $a);
+        push @out, { name => $a->{name}, ($img ? (img => $img) : ()) };
         last if @out >= SEARCH_MAX;
     }
     return \@out;
@@ -995,7 +1082,7 @@ sub _artistsQobuz {
         my $res = shift;
         $collect->(_artistHits(
             ref $res eq 'HASH' && ref $res->{artists} eq 'HASH'
-                ? $res->{artists}{items} : undef));
+                ? $res->{artists}{items} : undef, $svc));
     }, lc($query), 'artists');
 }
 
@@ -1004,7 +1091,7 @@ sub _artistsTidal {
     my $api = Plugins::TIDAL::Plugin::getAPIHandler($client);
     unless ($api) { $collect->(undef); return }
     $api->search(sub {
-        $collect->(_artistHits(shift));
+        $collect->(_artistHits(shift, $svc));
     }, { type => 'artists', search => $query, limit => SEARCH_MAX });
 }
 
@@ -1013,8 +1100,162 @@ sub _artistsDeezer {
     my $api = Plugins::Deezer::Plugin::getAPIHandler($client);
     unless ($api) { $collect->(undef); return }
     $api->search(sub {
-        $collect->(_artistHits(shift));
+        $collect->(_artistHits(shift, $svc));
     }, { search => $query, type => 'artist', strict => 'off', limit => SEARCH_MAX });
+}
+
+# ---------------------------------------------------------------------------
+# ARTIST ARTWORK FROM THE SERVICES (0.51.0)
+#
+# The name-keyed MAI route (imageproxy/mai/artist/<name>) is one hop over
+# api.lms-community.org's `/artist/<name>/picture`, which answers with a Deezer
+# CDN URL out of a PERIODIC SNAPSHOT. When Deezer's own picture hash has moved
+# on, that URL is dead and the row shows a silhouette — measured live
+# 2026-07-29, all three still reproducing:
+#
+#   The Mothers of Invention  snapshot e9cce9d1... -> 302 -> live 32cfa446... OK
+#   Pink Floyd                snapshot 6d6d4e14... -> 302 -> live d62a818a... OK
+#   B52's                     snapshot 8101b740... -> 302 -> live 35dceb20... OK
+#
+# 0.46.5 traced this to source and (correctly, then) called it upstream data.
+# What is new is that the failure is DETECTABLE without downloading anything:
+# a picture-less Deezer entity 302s to the md5 of the EMPTY STRING, and the
+# services we already query hold a live photo for the same act. So the gap can
+# be filled instead of merely explained — Browse::_resolveArtistImage runs the
+# tiers, this end supplies the service one.
+# ---------------------------------------------------------------------------
+
+# Deezer's "no picture" sentinel: md5(''). It shows up BOTH as the target of a
+# 302 from a stale hash and, sometimes, directly in a live `picture_*` field.
+use constant DEEZER_NO_PIC => 'd41d8cd98f00b204e9800998ecf8427e';
+
+use constant ARTIMG_FOUND_TTL => 30 * 86400;
+use constant ARTIMG_EMPTY_TTL =>  1 * 86400;
+use constant ARTIMG_TIMEOUT   => 15;    # per-service watchdog for the lookup
+
+# Is this URL a service placeholder rather than a photograph?
+sub isPlaceholderImage {
+    my ($url) = @_;
+    return 0 unless defined $url && !ref $url && length $url;
+    return index($url, DEEZER_NO_PIC) >= 0 ? 1 : 0;
+}
+
+# The artist photo carried by a service's own search hit, via THAT plugin's URL
+# builder (never a hand-rolled CDN path — those drift silently):
+#   Qobuz   {picture} or the {image} size hash  (API::Common->getImageFromImagesHash)
+#   TIDAL   {picture} uuid                      (API->getImageUrl, 'artist' -> 750x750)
+#   Deezer  {picture_*}                         (API->getImageUrl, returns the URL as-is)
+# The hash is COPIED before it is handed over: both getImageUrl implementations
+# write a {cover} key back into it, and these hits go on to be cached.
+sub _svcArtistImage {
+    my ($svc, $a) = @_;
+    return undef unless ref $a eq 'HASH' && defined $svc;
+    my $u;
+    if ($svc eq 'Qobuz') {
+        $u = $a->{picture} if defined $a->{picture} && !ref $a->{picture};
+        $u ||= eval {
+            Plugins::Qobuz::API::Common->can('getImageFromImagesHash')
+                ? Plugins::Qobuz::API::Common->getImageFromImagesHash($a->{image})
+                : undef;
+        };
+    }
+    elsif ($svc eq 'Tidal') {
+        $u = eval {
+            Plugins::TIDAL::API->can('getImageUrl')
+                ? Plugins::TIDAL::API->getImageUrl({ %$a }, undef, 'artist') : undef;
+        };
+    }
+    elsif ($svc eq 'Deezer') {
+        $u = eval {
+            Plugins::Deezer::API->can('getImageUrl')
+                ? Plugins::Deezer::API->getImageUrl({ %$a }, undef, 'artist') : undef;
+        };
+    }
+    return undef unless defined $u && !ref $u && $u =~ m{^https?://}i;
+    return undef if isPlaceholderImage($u);
+    return $u;
+}
+
+sub _artImgKey {
+    my ($name) = @_;
+    my $key = 'dsc:svcartimg:v1:' . _norm($name // '');
+    utf8::encode($key) if utf8::is_utf8($key);   # octet key (see _candKey)
+    return $key;
+}
+
+# A live artist photo from the user's own services, in svc_priority order.
+# $cb->($url | undef). Services are asked ONE AT A TIME and the first photo
+# wins: this runs behind a thumbnail the browser has already asked for, so the
+# cheapest answer that fills the row is the right one — a fan-out would triple
+# the traffic to improve nothing the user can see.
+#
+# The name gate is the matcher's own: an exact `_norm` match, else
+# `_artistMatch` (token subset, so "Mothers of Invention" accepts "The Mothers
+# of Invention"). A service's relevance tail is full of neighbours — an
+# ungated first hit would confidently show the wrong band's face.
+sub artistImage {
+    my ($class, $client, $name, $cb) = @_;
+    $cb ||= sub {};
+    return $cb->(undef) unless defined $name && length $name;
+
+    my $key = _artImgKey($name);
+    if (defined(my $c = $cache->get($key))) { return $cb->($c || undef) }
+
+    my @adapters = orderedAdapters();
+    return $cb->(undef) unless @adapters;
+
+    my $want  = _norm($name);
+    my $qChars = $name; utf8::decode($qChars) unless utf8::is_utf8($qChars);
+    my $qBytes = $name; utf8::encode($qBytes) if     utf8::is_utf8($qBytes);
+
+    my $done = sub {
+        my ($url) = @_;
+        eval { $cache->set($key, $url // '',
+            $url ? ARTIMG_FOUND_TTL : ARTIMG_EMPTY_TTL); 1 };
+        $cb->($url);
+    };
+
+    my $next;
+    $next = sub {
+        my $a = shift @adapters;
+        return $done->(undef) unless $a;
+
+        my $svc     = $a->{name};
+        my $settled = 0;
+        my $timer;
+        my $settle = sub {
+            my ($hits) = @_;
+            return if $settled++;
+            Slim::Utils::Timers::killSpecific($timer) if $timer;
+            # EXACT spelling first, across the whole result list, before any
+            # token-subset hit is considered: the services rank by relevance,
+            # not by identity, so "The Mothers" can outrank "The Mothers of
+            # Invention" for a query the second one answers exactly.
+            my @cands = grep { ref $_ eq 'HASH' && $_->{img}
+                               && _norm($_->{name} // '') ne '' }
+                        @{ ref $hits eq 'ARRAY' ? $hits : [] };
+            for my $test (sub { _norm($_[0]) eq $want },
+                          sub { _artistMatch($want, _norm($_[0])) }) {
+                for my $h (@cands) {
+                    next unless $test->($h->{name});
+                    _dbg("artist image '$name': $svc -> $h->{img}");
+                    return $done->($h->{img});
+                }
+            }
+            $next->();
+        };
+        $timer = Slim::Utils::Timers::setTimer(undef, time() + ARTIMG_TIMEOUT, sub {
+            return if $settled;
+            _dbg("artist image '$name': $svc timed out");
+            $settle->(undef);
+        });
+        my $q = ($a->{query_enc} || 'bytes') eq 'chars' ? $qChars : $qBytes;
+        eval { $a->{artists}->($client, $q, $svc, $settle); 1 } or do {
+            _dbg("artist image '$name': $svc failed: $@");
+            $settle->(undef);
+        };
+    };
+    $next->();
 }
 
 # Merge per-source artist hits into ONE deduped, deterministically ordered
@@ -1212,8 +1453,7 @@ sub _albumCountFor {
 sub _artistMenuIcons {
     my ($name) = @_;
     return {} unless defined $name && length $name;
-    my $enc = $name;
-    utf8::encode($enc) if utf8::is_utf8($enc);
+    my $enc = _cliChars($name);      # CHARACTERS - see _cliChars
     my $r = eval { Slim::Control::Request::executeRequest(undef,
         ['browselibrary', 'items', 0, 50, 'mode:artists', "search:$enc", 'menu:1']) };
     return {} unless $r;
@@ -1410,8 +1650,13 @@ sub splitOwnedByIdentity {
             next;
         }
 
-        # SEVERAL identities -> one Local row per act. Emit in a deterministic
-        # order (by representative contributor id) so the item_id walk is stable.
+        # SEVERAL identities -> one Local row per act. Emit the act holding the
+        # most albums FIRST, contributor id breaking ties so the item_id walk
+        # stays stable. Field (Simon, Saint Etienne, 2026-09-19): a Various
+        # Artists compilation tagged with the curator as a track artist minted
+        # ~20 empty same-name contributors, all with LOWER ids than the real
+        # act; ordering by id alone put an empty one at the top of the search,
+        # and it drilled to a stranger's blank page.
         _dbg("search rows: '$name' is " . scalar(@order)
              . ' distinct owned acts (by MB identity) - splitting into rows');
         # LMS's own per-act artist icons (one browselibrary query), so same-name
@@ -1425,9 +1670,11 @@ sub splitOwnedByIdentity {
             my ($rep) = sort { _albumCountFor($b->{artist_id})
                                    <=> _albumCountFor($a->{artist_id}) }
                         @{ $grp{$key} };
-            push @reps, [ $rep, ($key =~ /^id:/ ? undef : $key) ];
+            push @reps, [ $rep, ($key =~ /^id:/ ? undef : $key),
+                          _albumCountFor($rep->{artist_id}) ];
         }
-        for my $pair (sort { $a->[0]{artist_id} <=> $b->[0]{artist_id} } @reps) {
+        for my $pair (sort { $b->[2] <=> $a->[2]
+                             || $a->[0]{artist_id} <=> $b->[0]{artist_id} } @reps) {
             my ($rep, $identMbid) = @$pair;
             # LMS's ARTIST icon for this act: a URL when it has artist art (use
             # it), '' when LMS knows the act but has none (show a neutral icon,
@@ -1575,6 +1822,11 @@ sub mergeArtistHits {
             push @{ $b->{sources} }, $svc
                 unless grep { $_ eq $svc } @{ $b->{sources} };
             $b->{artist_id} //= $h->{artist_id} if $h->{artist_id};
+            # The first source IN PRIORITY ORDER to carry a photo lends it to
+            # the row (0.51.0) — it rode in on the search response, so a search
+            # result costs nothing extra to illustrate. Local rows have no
+            # `img`; they keep going through the LMS/MAI id route above it.
+            $b->{img} //= $h->{img} if $h->{img};
         }
     }
     # Rank BEFORE the cap, or an owned row sitting past SEARCH_MERGED_MAX would
@@ -2673,6 +2925,26 @@ sub _albumMatches {
                 && ($ta eq $aa || index($ta, "$aa ") == 0);
     }
 
+    # COMPOUND-WORD / WORD-BOUNDARY variant: the two titles are identical once
+    # every space is removed -- e.g. MB "England's Newest Hit Makers" (the
+    # Rolling Stones' 1964 debut) vs the streaming spelling "England's Newest
+    # Hitmakers" ('hit makers' <-> 'hitmakers'). The services and MusicBrainz
+    # routinely disagree on whether a compound is one word or two, and no fold
+    # above sees a space as optional. EXACT space-collapsed equality ONLY -- no
+    # prefix rule here, because collapsing the spaces also destroys the word
+    # boundary that makes the prefix tiers safe (a prefix match on
+    # "hitmakers..." could then swallow an unrelated title). Length-gated so a
+    # short collapsed key can't collide by accident. Field: 2026-07-24.
+    #
+    # DELIBERATE DSC-ONLY DIVERGENCE from the fleet-synced matcher (held here to
+    # prove in the field before porting to LBF/PFR/LL) -- so matcher_sync_check
+    # reports drift on _albumMatches BY DESIGN until this is ported.
+    if (!$ok) {
+        (my $as = $albumNorm) =~ s/\s+//g;
+        (my $ts = $t)         =~ s/\s+//g;
+        $ok = 1 if length($as) >= 6 && $ts eq $as;
+    }
+
     # Titles carrying the ARTIST NAME as a prefix on ONE side only — e.g. the
     # release "Belle and Sebastian Write About Love" vs the MB release-group
     # "Write About Love" (found via Simon's library 2026-07-09; also fixes the
@@ -2731,16 +3003,27 @@ sub _asciiNorm {
 # so a release group only tests candidates that COULD match it. Testing every
 # streaming candidate (pools run to hundreds) against every release group was the
 # render's R x C matcher cost. NOT part of the shared matcher — it only decides
-# which candidates reach the unchanged _albumMatches, so it can never change a
-# result as long as it's a proper superset. Every _albumMatches positive path
+# which candidates reach the unchanged _albumMatches, so it changes a result only
+# where it is NOT a proper superset - see the compound-word caveat below. Every
+# _albumMatches positive path
 # leaves the two normalised titles sharing a first token in AT LEAST ONE form:
 #   - the norm itself       (exact / trailing-extra prefix / _stripFmt: _stripFmt
 #                            only trims a trailing "ep"/"lp", so the front is kept)
 #   - _asciiNorm(norm)      (an accented FIRST token spelled differently per side)
 #   - artist-prefix stripped ("<artist> <album>" present on one side only)
 # so indexing candidates under all three and looking a release group up under all
-# three cannot miss a real match. Short (<2 char) normalised titles match via the
-# raw-punctuation branch instead and are full-scanned at the call site.
+# three carries those paths across. It is a NARROWING, not a guarantee, and the
+# distinction matters: the COMPOUND-WORD tier matches two titles that differ only
+# in where the spaces fall, and when that difference lands in the FIRST word
+# ("Sun Flower" / "Sunflower") the two sides bucket apart and the candidate never
+# reaches _albumMatches at all. Left as is, deliberately: the field cases run
+# mid-title ("England's Newest Hit Makers"), where the first token is shared.
+# DO NOT restate this as "cannot miss a real match" - it said exactly that until
+# 2026-09-11. No claim of that shape is worth making about a matcher working
+# across services that each spell an album their own way; the tiers are here to
+# guard the cases we have actually seen, and new ones get handled as they turn up.
+# Short (<2 char) normalised titles match via the raw-punctuation branch instead
+# and are full-scanned at the call site.
 sub _titleKeys {
     my ($norm, $artistNorm) = @_;
     return () unless defined $norm && length $norm;

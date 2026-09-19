@@ -7,6 +7,165 @@ Long-term context: this is **Phase 1** of a bigger idea — an integrated Materi
 
 **Maintain this file.** Update it with every code change: keep the File Structure annotations, mechanics notes, and the Development Log current as part of each build. Bug-fix detail goes in the Development Log; scope changes go in Phase-1 Scope.
 
+## Review Ledger — READ THIS BEFORE REPORTING ANY FINDING
+
+**Why this exists.** Reviews kept re-reporting things that had already been
+decided — deliberate conventions read as defects, and verdicts that lived only in
+a chat transcript. Review and fix happen in separate sessions, so nothing carries
+a decision forward. Everything below has already been settled; re-raising it costs
+a round trip and teaches the next review nothing.
+
+*Measured 2026-08-26, and worth recording because the obvious explanation is
+WRONG: this is not caused by the uncommitted baseline. Pitchfork Reviews ran five
+review rounds against a single uncommitted tree of 13,227 insertions, with a
+baseline frozen for 13 days, and converged 4 → 4 → 4 → 2 → 1 → clean on one
+commit. Diff size and commit cadence are not the variable. An undecided verdict
+with nowhere to live is.*
+
+**If you are reviewing:** read sections A and B first, and report an item from
+them only if you have genuinely NEW information — a case the recorded reasoning
+does not cover. Say which ledger entry you are challenging and what changed.
+
+### DECLINED / SETTLED INDEX — GREP THIS FIRST
+
+**One grep before reporting any finding.** Search this table for the symbol or subject the
+finding is about, then grep the phrase in the last column to jump to the entry. A hit means it
+is already decided: read the entry and either drop the finding, or answer its stated reason
+with new evidence. Do not re-report it as new. Phrases are used instead of line numbers
+because line numbers rot on the next edit.
+
+| already decided | § | find it with |
+|---|---|---|
+| THE FLEET FOLD ROLLOUT IS CLOSED — 2026-09-10. NO WORK IS OUTSTANDING IN THIS REPO | A2 | `THE FLEET FOLD ROLLOUT IS CLOSED —` |
+| The zip is not rebuilt and `repo.xml <sha>` is not recomputed in the working | A2 | `The zip is not rebuilt and `repo.xml <sha>`` |
+| `CHANGELOG.md` and `README` are written at the MERGE TO MAIN, not on dev | A2 | ``CHANGELOG.md` and `README` are written at` |
+| The large uncommitted working tree is deliberate | A2 | `The large uncommitted working tree is` |
+| `matcher_sync_check.py` reports `_albumMatches` drift BY DESIGN | A2 | ``matcher_sync_check.py` reports` |
+| `_norm` / `%FOLD` carry pre-existing deliberate drift | A2 | ``_norm` / `%FOLD` carry pre-existing` |
+| `localArtistsByMbid` and the attach pass are DSC-only call-site logic | A2 | ``localArtistsByMbid` and the attach pass are` |
+| "Also a member of" is deliberately FORWARD-only | A2 | `"Also a member of" is deliberately` |
+| Duplicate streaming artist entities are NOT folded by name similarity | A2 | `Duplicate streaming artist entities are NOT` |
+| Classical composer/performer credit conflation is PARKED deliberately | A2 | `Classical composer/performer credit` |
+| The full `_discographyView` rebuild on every list-control tap is deliberately | A2 | `The full `_discographyView` rebuild on every` |
+| The officialness pass is deliberately NOT parallel with the release-group | A2 | `The officialness pass is deliberately NOT` |
+| The proxy name is deliberately NOT lowercased | A2 | `The proxy name is deliberately NOT lowercased` |
+
+**Two standing rules that kill most repeat findings:**
+
+1. **Name the WRITER, not just the branch.** A hand-built input proves the branch, never the
+   population. If nothing upstream can reach a guarded branch, say so in the finding instead
+   of reporting it as live.
+2. **A comment is not the contract.** Where a comment claims an invariant the code does not
+   enforce, the comment is the defect. Fix the prose and pin the behaviour in a suite.
+
+### HOW TO LOG A VERDICT so the next round finds it
+
+Every new decision goes in §A2 (declined), §B (accepted/open) or §C (closed) as a bullet whose
+FIRST LINE names the **symbols** a future review would grep for, then the verdict, then the
+date and who decided. Add a row to the index above in the same edit. State the reason as a
+fact that can be DISPROVEN ("no service returns X"), never as "unlikely" — a rarity claim
+invites the next round to find one counter-example and reopen the whole entry.
+
+**CLOSING A ROUND IS NOT A SUPPRESSION** (Simon, 2026-09-14). A §C entry records that a defect,
+as described, was fixed. Never head it "Do not re-report" — that wording is for a DECISION Simon
+asked for (declined, by design, a stated residual, null behaviour that keeps being mis-reported),
+always with its reason, and those stay suppressed. The code a fix added is new and open to review.
+
+### A. NOT FINDINGS — deliberate, fleet-wide
+
+- **THE FLEET FOLD ROLLOUT IS CLOSED — 2026-09-10. NO WORK IS OUTSTANDING IN THIS REPO.**
+  Listen to Later 0.1.143 fixed a fold that ERASED non-Latin names, and the obvious next step
+  looked like porting it here. **It was not.** THIS REPO WAS ALREADY CORRECT — measured by
+  extracting the shipped `_norm` and running it: 米津玄師, 아이유 and Кино all survive, and two
+  different CJK artists correctly fail to match. LL was the only repo with the defect, and the
+  fix brought LL UP to this repo rather than the reverse. The plan and every measurement behind
+  it are in LL's `docs/fleet-fold-rollout.md`, now a RECORD rather than a work order.
+  - **`_asciiNorm`'s `s/[^a-z0-9]+/ /g` is NOT that bug and must not be "fixed".** Being
+    ASCII-only is its job. The real `_norm` uses `\p{Alnum}` on a DECODED string. A grep for
+    the old pattern hits `_asciiNorm` in every repo and produced exactly this false finding
+    once already.
+  - **LL's matcher came INTO line at 0.1.145 and the old divergence note here is withdrawn.**
+    It took the stylised-letter fold (`P!nk` → `pink`) and `_punctNorm` verbatim, so nothing is
+    behind any more. Two differences remain and BOTH are deliberate: LL keeps an all-marks
+    fallback this repo does not have (see the next bullet, where LL is the better one), and
+    LL's dedupe KEY carries none of these rules at all, which is a DECLINED scope decision in
+    that repo and not a gap. **Do not report either, in either direction, as drift.**
+  - **The `†††` residue is DECLINED, not open — 2026-09-10, and the reason is MEASURED rather
+    than "nobody has complained".** An all-symbol name with no fold mapping (`†††`, Crosses)
+    normalises to `''` here, because `!!!` and `+/-` survive only through their leetspeak
+    mappings. Porting LL's all-marks fallback into `_norm` was prototyped against shipped code:
+    on the normaliser it is a clean split — 67 names byte-identical, 10 rescued from empty, 0
+    moved, suites green — **but through `_albumMatches` it flips four cases and only one flip
+    is wanted.** It moves an all-marks artist OUT of the lenient empty-artist branch and INTO
+    the strict artist gate, so a release MusicBrainz credits to `†††` that Qobuz spells
+    "Crosses" goes MATCH → **reject**. The port makes matching WORSE here.
+  - **"LL has the fallback, so this repo should" IS NOT EVIDENCE — the gates run opposite
+    ways, and an earlier draft of this very entry made that mistake.** LL's `_artistMatch`
+    returns 1 when either side is empty, so an erased name there is a total free pass and the
+    fallback can only tighten it. This repo's returns 0, and its empty-artist branch already
+    demands an exact title. LL also replays a SAVED item back to the same source, so both
+    spellings agree by construction, where this plugin exists to match a MusicBrainz or
+    Pitchfork credit against a differently-spelled service catalogue. Same code, opposite effect.
+  - **Do not generalise "a MISS, not a wrong answer" either.** It holds for the ALBUM path,
+    which is all this repo has. It was measured FALSE on LBF's TRACK path, where the refusal
+    answered `undef`, read as INCONCLUSIVE, and burned a retry schedule without a single
+    request. LBF fixed that with `_punctNorm` in single-copy subs — **no fleet obligation, and
+    nothing to port here**, since this repo has no `_trackMatches` at all.
+  - **Re-raise ONLY with a real artist that actually failed**, naming it — not with the `†††`
+    example, which is this entry.
+  - **THIS REPO IS ON HOLD** (2026-09-10): no development until the rest of the fleet's
+    outstanding work is complete. Nothing is waiting on it — it is already correct for
+    non-Latin — so being unchanged is the decision, not an oversight.
+
+- **The zip is not rebuilt and `repo.xml <sha>` is not recomputed in the working
+  tree.** Both happen at build time, together with the version bump.
+- **`CHANGELOG.md` and `README` are written at the MERGE TO MAIN, not on dev
+  builds.** A CHANGELOG behind `install.xml` is CORRECT on `dev`.
+- **The large uncommitted working tree is deliberate.** It is the review diff.
+  Do not report it, and do not prompt to commit as a fix for anything.
+
+### A2. NOT FINDINGS — Discography-specific
+
+- **`matcher_sync_check.py` reports `_albumMatches` drift BY DESIGN.** The MB
+  release-group ALIAS pass is a DELIBERATE DSC-ONLY DIVERGENCE, held to prove in
+  the field before porting (Simon's call). `_albumMatches` itself stays in the
+  sync rule; the port to LBF/PFR/LL is owned, outstanding work.
+- **`_norm` / `%FOLD` carry pre-existing deliberate drift** (0.44.26). Same hold.
+- **`localArtistsByMbid` and the attach pass are DSC-only call-site logic**, NOT a
+  matcher change. Do not port them, and do not report them as unsynced.
+- **"Also a member of" is deliberately FORWARD-only.** A reverse "Members"
+  section was proposed and DECLINED.
+- **Duplicate streaming artist entities are NOT folded by name similarity.**
+  DECLINED: any merge must be discography-verified, never name-guessed.
+- **Classical composer/performer credit conflation is PARKED deliberately.** Do
+  NOT keep patching the same-name/resolver machinery for classical cases — it
+  needs bespoke work/recording relationships, which is a separate project.
+- **The full `_discographyView` rebuild on every list-control tap is deliberately
+  NOT changed** (efficiency finding, already reviewed with Simon). The rebuild IS
+  the durability mechanism — the cheap ctx-walk it replaced caused the
+  empty-page-on-back-nav bug. The cost is the accepted price of correct
+  back-navigation.
+- **The officialness pass is deliberately NOT parallel with the release-group
+  fetch.** Two concurrent MB chains would exceed MusicBrainz's 1 req/s etiquette.
+- **The proxy name is deliberately NOT lowercased**, and the band row resolves its
+  contributor id LAZILY on click by design (0.26.1).
+
+### B. KNOWN-OPEN AND ACCEPTED — do not re-report as new
+
+- The alias-pass port to LBF/PFR/LL (see A2). Owned, outstanding, not a defect.
+
+### C. CLOSED FINDINGS
+
+Use the committed `tools/` triage chain (`gap_recompute` → `spine_fetch` →
+`spine_match`, plus `mb_identity_probe`) rather than scratch scripts when
+verifying a matching claim.
+
+### D. ADDING TO THIS LEDGER
+
+When a finding is declined, or accepted-but-deferred, add it here in the same
+session — one line, with the reason. A decision that lives only in a chat
+transcript will be rediscovered as a finding within days.
+
 ## Phase-1 Scope (locked decisions)
 - **Services: Qobuz / Tidal / Deezer only.** No Bandcamp (cookie-dependent search + event-loop-blocking parsing in its plugin — excluded on purpose). Spotify deferred (Spotty has no `getAPIHandler`; its adapter is real work, not a free port).
 - **Spine = MusicBrainz release-groups** browsed by artist MBID (`release-group?artist=<mbid>&limit=100&offset=N`, serial pagination at MB's 1 req/s). `first-release-date` drives the date sort; primary type (Album/EP/Single/Compilation) + secondary types (Live/Remix — excluded by default) drive filtering. Art: CAA release-group front.
@@ -49,10 +208,10 @@ curl -s http://plex:9000/jsonrpc.js -d '{"id":1,"method":"slim.request","params"
 ## File Structure
 ```
 Discography/
-├── Plugin.pm       # OPMLBased entry point (tag 'discography', is_app); prefs; canonical `dbg` (API/Browse/Sources delegate); Material custom-action merge-write/clear; Settings under WEBUI
-├── Browse.pm       # topLevel ($VAR guard, %lastCtx stash+expand flags+page counts+visibility snapshot); app-root view (_rootView: _coverCollageRow responsive random-album-cover banner, About prose, search section, "Works best with" live plugin-status badge rows w/ badgeSrc imageproxy normaliser); global artist search (_searchRow type=search item in the app root + Options section, go action overridden w/ search:__TAGGEDINPUT__ fixedParams -> topLevel search-param dispatch GATED on item_id being absent, so a positional walk still reaches the row's own coderef; _artistSearchView w/ 10-min merged cache, only written when every source settled OK, _searchResultRow name-drills); grouped list (bio header, Options/type/library-extras sections, sort+Refresh, _pageSection 30-at-a-time Show more/less, "Also a member of" band links + "Similar artists" name-drill links w/ MAI artist-photo thumbnails, both second-load); release detail (review w/ inline expand, version rows w/ Show-other-versions toggle, MB links); _proseRow avatar-column indent
-├── API.pm          # Async MusicBrainz (base = mb_base_url pref, mirror-aware _mbBase/_mbGap): artist MBID (library tag first, MB search score>=90), paginated release-group browse, url-rels links; peekOfficial/warmOfficial/clearOfficial + _isOfficial (bootleg filter: artist-wide status pass -> {rg=>official?} + {release=>rg} maps, fail-open); peekLocalReleaseMap/warmLocalReleases (targeted release->rg for library albums); peekBands/warmBandMembers (member-of-band); CAA image URLs; caching
-├── Sources.pm      # Source engine: Q/T/D adapters (artist-FIRST candidate fetch, per-adapter query_enc, shared _renderAlbums + _albumArray envelope unwrap), Local pseudo-source (sync albums query, db:album.id play), matcher (fleet-synced), matchesFor/peekPool+peekMatches/claimedLocalIds, LL favurl handshake; global artist search (searchArtists parallel per-service artist-type legs + Local CLI leg, cb(\%bySvc, \%failed) — the 2nd arg names services that ERRORED/TIMED OUT, since a failure settles as an empty list and callers must not persist an incomplete set; mergeArtistHits pure norm-keyed dedupe/rank + relevance gate vs the typed query); serviceStatus takes an OPTIONAL pre-built adapters list (omitted = probe); randomAlbumCovers (app-root banner, sort:random — measured ~20ms/2900 albums, cheap)
+├── Plugin.pm       # OPMLBased entry point (tag 'discography', is_app); prefs; canonical `dbg` (API/Browse/Sources delegate); Material custom-action merge-write/clear; Settings under WEBUI; registers the `imageproxy/dsc/artist/<name>` artwork handler
+├── Browse.pm       # topLevel ($VAR guard, %lastCtx stash+expand flags+page counts+visibility snapshot); app-root view (_rootView: _coverCollageRow responsive random-album-cover banner, About prose, search section, "Works best with" live plugin-status badge rows w/ badgeSrc imageproxy normaliser); global artist search (_searchRow type=search item in the app root + Options section, go action overridden w/ search:__TAGGEDINPUT__ fixedParams -> topLevel search-param dispatch GATED on item_id being absent, so a positional walk still reaches the row's own coderef; _artistSearchView w/ 10-min merged cache, only written when every source settled OK, _searchResultRow name-drills); grouped list (bio header, Options/type/library-extras sections, sort+Refresh, _pageSection 30-at-a-time Show more/less, "Also a member of" band links + "Similar artists" name-drill links w/ artist-photo thumbnails, both second-load, similar deduped against bands by _dropBandDupes — Material keys app rows by TITLE, so a repeated name loses a row); artist artwork resolver (artistImageProxy handler for `imageproxy/dsc/artist/<name>`: MAI local files -> MAI online picture w/ Deezer placeholder HEAD probe -> live service photo -> person icon, verdict cached 30d); release detail (review w/ inline expand, version rows w/ Show-other-versions toggle, MB links); _proseRow avatar-column indent
+├── API.pm          # Async MusicBrainz (base = mb_base_url pref, mirror-aware _mbBase/_mbGap): artist MBID (library tag first, MB search score>=90), paginated release-group browse, url-rels links; filterRowsWithContent (dead-end/empty-verdict row filter + alias fold, then the 0.51.3 tag attach: a kept row with no artist_id is claimed by its resolved mbid — AFTER the fold, so survivor choice is unchanged); peekOfficial/warmOfficial/clearOfficial + _isOfficial (bootleg filter: artist-wide status pass -> {rg=>official?} + {release=>rg} maps, fail-open); peekLocalReleaseMap/warmLocalReleases (targeted release->rg for library albums); peekBands/warmBandMembers (member-of-band); CAA image URLs; caching
+├── Sources.pm      # Source engine: Q/T/D adapters (artist-FIRST candidate fetch, per-adapter query_enc, shared _renderAlbums + _albumArray envelope unwrap), Local pseudo-source (sync albums query, db:album.id play; localAlbums resolves IDENTITY FIRST — localArtistsByMbid/localArtistIdsByMbid read the library's own Contributor.musicbrainz_id tag, ALL matching contributors, before the name ladder; an explicit artist_id still outranks both), matcher (fleet-synced), matchesFor/peekPool+peekMatches/claimedLocalIds, LL favurl handshake; global artist search (searchArtists parallel per-service artist-type legs + Local CLI leg, cb(\%bySvc, \%failed) — the 2nd arg names services that ERRORED/TIMED OUT, since a failure settles as an empty list and callers must not persist an incomplete set; mergeArtistHits pure norm-keyed dedupe/rank + relevance gate vs the typed query, rows carry the service's own artist photo); artistImage/_svcArtistImage/isPlaceholderImage (live per-service artist photo via each plugin's OWN url builder, priority order, first exact-name hit wins, 30d cache); serviceStatus takes an OPTIONAL pre-built adapters list (omitted = probe); randomAlbumCovers (app-root banner, sort:random — measured ~20ms/2900 albums, cheap)
 ├── Settings.pm     # Web settings: source priorities (detection), view options (type checkboxes->CSV), release page, integration
 ├── install.xml     # <extension> + <optionsURL>; version lives here (no repo.xml yet — pre-release)
 ├── strings.txt     # PLUGIN_DISCOGRAPHY_* UI strings
@@ -584,11 +743,16 @@ streaming resolution.
 RG spine (1–6) + artist candidates (**2 today**, 1 after fix #4) + aliases (1 if ambiguous) +
 local releases (1 per owned album) + band members (1) + officialness (2–33). Jamie Cullum ≈ 9
 requests ≈ 10s; Radiohead ≈ 21 ≈ 23s. Fixes #2/#4/#5 take Radiohead to roughly 13 requests with
-the 1.1s Last.fm leg off the chain entirely. The parked LMS-community hosted API (see the fleet
-memory note) is the structural answer beyond that — it is un-throttled — but it is blocked on
-the dev adding type/secondaryTypes/date to `/discography`.
+the 1.1s Last.fm leg off the chain entirely. The LMS-community hosted API (`mai-api`) is the
+structural answer beyond that — un-throttled, and as of 2026-08-01 **UNBLOCKED**: the dev inlined
+`primary_type`/`secondary_types`/`release_date` into `/discography` and added `status` via
+`?withReleases=1`, so the whole RG spine collapses to ONE cached call. Full migration scope + the
+field mapping + the two hard rules (mandatory `X-LMS-Plugin-ID` header, one request helper) are in
+**`docs/hosted-lms-community-api.md`**. Not started.
 
 ## Service Plugin APIs — VERIFIED SIGNATURES (2026-07-10, from upstream source)
+
+**ADDING A NEW SERVICE — READ `LMS-ListenBrainz-New-Releases/docs/streaming-adapter-spec.md` FIRST** (the adapter contract: what a service's own plugin must expose (R1-R8), the leg semantics (`undef` = inconclusive vs `[]` = a real miss, and the TTL each picks), the item fields to stamp, and the acceptance tests). **The spec covers the RELEASED plugins only — this repo is not listed in it, so its own out-of-table sites are recorded here: `_svcArtistImage` (`Sources.pm:1154`) and `_playUrl` (`Browse.pm:3123`) both branch per service, and want `artist_image` / `play_url` fields on the adapter entry. `adapters` (`Sources.pm:92`) also carries an `artists` leg the spec doesn't describe.** Add this repo to the spec at release.
 Don't guess these; the adapters break silently when they drift. Sources fetched from GitHub
 (the installed server copies are the same code):
 
@@ -651,6 +815,369 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   likewise deliberately LBF-only and outside the shared engine.
 
 ## Development Log
+
+### 0.51.5 (2026-09-19) — search: the library row OWNING the albums wins (same-name split order + fold survivor)
+- **The overnight search soak (2026-07-31, `sweep/search-soak/`) finished: 1,103/1,112 ok, 9 misses.**
+  Re-run live 2026-09-19 (after a rescan, so artist_ids had moved): 4 classical (Hallé, LSO,
+  Berliner, Debussy SQ — PARKED, `Classical composer/performer credit`), 2 unidentified on MB by
+  BOTH paths (Debussy SQ, HouseCurve — not a search-path miss), 1 `ranked_low` (All India Radio
+  & Josh Roydhouse, exact row 2nd — minor), and three real: **Saint Etienne** (fixed here), **James
+  Yorkston and friends** (fixed below), **Lightning Seeds** (fixed below — same survivor bug). Caveat: every soak row carried `artist_id`
+  (all tested artists are owned), so the name-only drill path was NEVER exercised.
+- **Saint Etienne, the writer:** a Various Artists compilation *curated by* Saint Etienne was
+  tagged with them as track artist, minting ~20 extra same-name contributors (different MB tags,
+  lower ids, no albums). Simon retagged it — but `splitOwnedByIdentity` emitted split rows by
+  **representative contributor id**, so any such mistag puts an EMPTY act at the top of search
+  and the drill opens a blank stranger (soak: drill mbid 276eb2d3…, 0 releases, vs 50/31).
+- **FIX (Sources.pm, `splitOwnedByIdentity`):** split rows sort by `_albumCountFor` DESC, contributor
+  id breaking ties — still deterministic, which is all the id order was for. The count is the one
+  already computed for the representative; no new query. All split rows keep the original `_seq`, so
+  `rankArtistHits` (ties on owned/exact/sources/seq) preserves the order. Search path only — the
+  browse path never builds these rows. No cache bump: the split pass is never cached.
+- **`tools/t_bees.pl` 23 -> 29 assertions:** the Bees now assert emission ORDER (18, 7, 1 albums),
+  a Saint Etienne case (three empty low-id acts + the real act at a higher id; real act first,
+  also after `rankArtistHits`), and an equal-count tie -> lower id. **Control-asserted:** against
+  the old id sort 4 of these FAIL. `syntax_check.sh` is a **zsh** script (`${0:h:h}`) — run it with
+  zsh, bash fails every module with a bogus path. Its CACHE_VERSION 0.51.3 != 0.51.4 mismatch
+  predates this change (build-time bump).
+- **James Yorkston and friends — NOT an alias miss; the joint-credit fold kept the wrong library
+  id.** Two library contributors resolve to MB 6a9e9e71: "James Yorkston" (only *Covers of
+  Covers*, a VA track, + a composer credit) and "James Yorkston and friends" (3 owned albums). The
+  0.48.5 joint-credit fold in `filterRowsWithContent` merges them, and the survivor was the FIRST
+  row with an `artist_id` — the bare one, ranked first by its extra Qobuz source. The owning id was
+  dropped (`||=` never overwrites). **Verified live after Simon's rescan, before coding:** the row
+  as shipped (135829) drills 0 matched / 0 local; the owning id (135826) drills 6 / 6.
+- **FIX (API.pm, `filterRowsWithContent` survivor):** among several library rows in one group, the
+  one owning the most albums (`Sources::_albumCountFor`) survives, rank order breaking ties. One
+  library row, or equal counts -> unchanged. Count queries run only when two library rows collide.
+  Visible effect: the row reads "James Yorkston and friends" (0.46.5 library spelling) even for a
+  "James Yorkston" search; the page is the same MB discography.
+- **`tools/t_fold.pl` 50 -> 56:** the harness now answers the `albums` count query (`%ALBUMS`;
+  unlisted ids -> undef, so all 50 prior assertions run as before). Owner wins from either position,
+  keeps its spelling, unions the other row's Qobuz; tie -> first-ranked. **Control-asserted:** with
+  the new branch disabled 2 FAIL. t_lone 30/30, t_bees 29/29 unaffected.
+- **Lightning Seeds — the SAME survivor bug, reached by an MB ALIAS instead of a joint credit;
+  the fix above covers it, no further code.** Library: "Lightning Seeds" (136301, 4 albums + 2 VA
+  comps) and "The Lightning Seeds" (136309, only *Pure*). `_norm` keeps the article, so they are two
+  merge buckets; both resolve to MB 1ba601a0 (canonical "The Lightning Seeds", aliases
+  `Lightening Seeds`, `Lightning Seeds` — checked on the mirror) and fold by alias. "The…" ranked
+  first on its extra Qobuz, so its id survived. Live: 136309 drills 14 matched / 6 local, 136301
+  drills 22 / 17 — the soak's exact gap. `t_fold.pl` 56 -> 59 with this case (alias route, owner
+  second in rank); control: 3 FAIL with the new branch disabled.
+- **OBSERVED, NOT FIXED (one at a time):** (a) the 10-minute search cache (`dsc:asearch:11`) holds
+  merged rows WITH `artist_id`s, so for up to 10 min after a rescan that renumbers contributors a
+  search row carries a dead id and drills empty (seen: 126866 -> 0 albums); self-heals. (b) James
+  Yorkston's page matches NOTHING on streaming on any path (all 6 matches are Local), though the
+  search row lists Qobuz — the 2026-07-31 soak's reference render had 28 matched. Unexplained.
+### (2026-07-31, tooling — no version bump) — SEARCH-PATH SOAK harness + the artist-in-title list
+- **`tools/search_soak.py` (new).** Simon: *"run via the search engine, and not using mbids to see what
+  misses we get ... another round of artists that might fail to match via search but matched via rows.
+  Make sure each is running in parallel."* The 2026-07-21/22 sweep drove the BROWSE path only (entry by
+  `artist_id`, identity from the library tag) — the easy path, and the one that hides every defect the
+  "DSC two entry paths" rule exists for.
+- **Each artist is measured TWICE and compared**: the reference render (`artist_id:` + `artist:`) against
+  the typed search (`search:<name>`) followed by a DRILL through the resulting row **using that row's own
+  `go` params, verbatim**. No mbid is ever injected — and `entry_keys` records what the row actually
+  hands over (artist_id / mbid / name only), which is the measurement Simon asked for: a name-only row
+  resolves by spelling, and that is where the misses will be.
+- **THE ORACLE IS THE PLUGIN'S OWN OUTPUT, never a name compare.** The last sweep filed three "search
+  failures" that were correct alias folds (British Sea Power -> Sea Power) because it compared row names
+  literally. A row is the right artist here when the page it opens resolves to the SAME mbid as the
+  reference render; `name_folded` marks a legitimately different label.
+- **Verdicts, worst first:** `no_rows` · `drill_error` (couldn't identify) · `wrong_artist` (different
+  mbid) · `drill_empty` (rows path plays, search path does not) · `fewer_matches` · `lost_local` (owned
+  copy only found via the row) · `row_no_local` (owned artist whose row does not say Local) ·
+  `ranked_low` · `found_by_fold` · `ok`.
+- **PARALLELISM IS PER PLAYER, not per thread.** `%lastCtx` is stashed per player id, so two workers
+  sharing a player would overwrite each other's stashed artist mid-run. Each worker owns one player and
+  workers are capped at the connected-player count (4 on this box). Browsing only — no play/add ever, so
+  a playing player is undisturbed.
+- **Both measurement traps from the last sweep are carried over, and one was found in my own first cut:**
+  the settle loop compared against the BEST render rather than the PREVIOUS one, so it stopped the moment
+  a render improved — exactly the case needing another look. Verified after fixing: Count Basie 29 -> 37
+  matched on the second render.
+- **PREFLIGHT NOW CHECKS THE PREFS RATHER THAN PRINTING A REMINDER, and it caught the trap immediately:**
+  `hide_unmatched` was **1**, which hides precisely what the run is looking for — every artist scored a
+  perfect `matched == releases` (13th Floor Elevators 43/43) and the sweep measured nothing. With it 0 the
+  same artist reads 13/43. `run` refuses to start unless `hide_unmatched=0` and `show_library_extras=1`
+  (`--force` overrides), and preflight prints the exact curl for each. **Prefs were restored to Simon's
+  own settings after testing** (hide_unmatched 1, debug_log 0).
+- `--log-slices` is REFUSED unless `--workers 1`: workers interleave in one log, so per-artist slices
+  cannot be attributed. In parallel the returned JSON is the evidence.
+- Resumable (`--resume`, JSONL keyed by artist_id), `--only <substring>` for reproducing one reported
+  case, `report` aggregates verdicts + an entry-params histogram and writes `search_misses.csv`.
+  Output under `sweep/search-soak/` (gitignored). Measured cost: ~6-14s per artist, 4 workers ->
+  roughly 1-1.5h for 1111 album artists.
+- **`tools/artist_in_title.py` + `tools/artist_in_title.csv` (new).** The sweep's "21 albums carry an
+  artist/surname prefix" finding kept no file, so this recomputes it live from the library using
+  `mb_identity_probe.py`'s own `variants()`/`strip_prefix()`. 23 prefix rows (the +2 over the sweep: one
+  new album, and Gil Scott‐Heron, whose ARTIST tag carries U+2010 while the title uses an ASCII hyphen —
+  the dash fold that CLAUDE.md lists as a known cheap gain, done here). Classical excluded by artist;
+  composers reached under their own name are flagged rather than dropped. `Talking Heads: 77` carries
+  `tagged_form_is_real_title` — it is MB's real title and must not be retagged; every other row is
+  UNVERIFIED against MB (blank column, not "no").
+
+### 0.51.3 (2026-07-31) — IDENTITY BEFORE SPELLING: the library's own MusicBrainz tag resolves the artist
+- **Simon, after 0.51.2 still did not attach his local copy: *"I thought we had built in looking at MBIDS
+  for local music if they ahd them"* — then *"yes dont change behaviour we already have. Fix this."***
+  He was right that the read exists, and right that it was only wired one way.
+- **THE GAP.** `getArtistMbid` has always trusted `Contributor.musicbrainz_id` AHEAD of any MB search
+  (API.pm:286) — library tag → mbid. **The reverse direction was never wired**: mbid → contributor. So
+  every local lookup on the page (`localAlbums`' fallback, the search row's Local leg, the fold's alias
+  attach) asked the library for a **NAME**, and a name is exactly what this artist does not have:
+  `⣎⡇ꉺლ༽இ•̛)ྀ◞ ༎ຶ ༽ৣৢ؞ৢ؞ؖ ꉺლ` normalises to nearly nothing and LMS indexes ONE 2-char token of it.
+  Two prior releases (0.50.5's non-ASCII probe, 0.51.2's chars-not-octets) each fixed a real half of the
+  spelling ladder and neither could reach the finish, because **the ladder itself is the wrong question**
+  for this artist. Verified in his library: the contributor DOES carry
+  `2d9745dd-5dc6-4145-9453-fec582cfa9b8`.
+- **FIX — `Sources::localArtistsByMbid($mbid)`** (+ the ids-only `localArtistIdsByMbid`): the
+  contributors carrying that MB artist tag, matched case-insensitively (MB hands us lowercase; the tag in
+  the file is whatever the tagger wrote, and the column compares exactly). **ALL of them, not the first**
+  — a duplicate contributor is a real artefact here (two "The La's", one holding the albums), and
+  returning one id would rebuild the empty-artist trap 0.48.2 fixed for the name path.
+- **Wired at the two ends that were spelling-bound, and NOWHERE ELSE:**
+  1. **`localAlbums($artistId, $artist, $mbid)`** — the mbid is consulted BEFORE the name ladder, which
+     is otherwise untouched and still runs whenever the tag finds nothing. An explicit `artist_id` (an
+     Artists row, an already-attached search row) still outranks both: that is the user pointing at a
+     contributor. Three call sites pass it (`_discographyView`, `_buildList`, the release-detail path).
+  2. **`API::filterRowsWithContent`** — kept rows with no `artist_id` are claimed by their resolved
+     mbid, gaining `artist_id` + a leading **Local** source, so the row says Local BEFORE you click it
+     rather than only after.
+- **THE ORDERING IS LOAD BEARING, same lesson as 0.44.20's relabel.** The attach runs **after the fold**:
+  the fold's survivor choice prefers a row that already carries an `artist_id`, so attaching ids first
+  would change which row survives and which spelling it wears. Placed after, it can only add Local to
+  rows the fold has finished with. Asserted in both directions.
+- **The row's NAME is deliberately left alone** — unlike the alias attach (0.46.2), which adopts the
+  library spelling because that spelling is the one known to RESOLVE. Here nothing resolves by name, so
+  relabelling would buy nothing and would move a row's label for reasons the user cannot see.
+- **`_bandContributorId` now delegates** to the same sub — same behaviour, one implementation, so the
+  identity read cannot drift the way the role filter did in 0.44.18.
+- **NOT a matcher change.** `localArtistsByMbid` and the attach pass are DSC-only call-site logic
+  (sibling of 0.24.0); do NOT port to LBF/PFR/LL. `matcher_sync_check.py` reports only the pre-existing
+  deliberate drift (0.44.26 `_norm`/`%FOLD`, 0.50.6 `_albumMatches`).
+- **`tools/t_local.pl` 25 → 34** (tag lookup incl. case + duplicates + malformed/absent mbid; `localAlbums`
+  resolving by tag with ZERO name searches; an UNTAGGED library falling through to the ladder unchanged;
+  an explicit artist_id still winning) and **`tools/t_fold.pl` 39 → 50** (the row attach, Local leading,
+  streaming sources kept, name untouched, an already-attached row not double-claimed, the fold's survivor
+  choice unmoved, an untagged library inventing nothing, a dropped row never attached to). **Both verified
+  by MUTATION**: disabling the `localAlbums` mbid block turns exactly 1 red, disabling the attach loop
+  turns exactly 3 red, every control green in both states.
+- Gates: `syntax_check.sh` 5/5 + CACHE_VERSION 0.51.3 == install.xml + PROBE_MBID OK; all 27 suites green.
+- **LIVE VERIFY AFTER INSTALL:** search the hieroglyph artist — the row must read **Local** alongside
+  Qobuz/Deezer, and its 2026 album must show the owned copy (album 29030) rather than resolving to Deezer.
+  Log should read `localAlbums: mbid 2d9745dd… -> artist_id 88810 (library MusicBrainz tag, no name
+  matching)` and `search rows: attached library artist 88810 … by MusicBrainz tag`. Controls: Björk /
+  Sigur Rós / The Bees / Radiohead unchanged, and an artist entered from the Artists row still resolves by
+  its `artist_id`.
+
+### 0.51.2 (2026-07-31) — LMS matches CHARACTERS, DbCache demands OCTETS: we had both backwards
+- **Simon: the hieroglyph/zalgo artist is found on streaming now, *"but it doesnt seem to recgnoise my
+  local album"*** (album 29030, artist 88810, 2026). Diagnosed live with `debug_log` + `log.txt`, and
+  0.50.5's fix for this same artist turns out to have been **correct and unreachable**.
+- **THE MEASUREMENT (Simon's own library, one query each way):**
+  ```
+  search string            as CHARACTERS   as OCTETS
+  Björk                          1             0
+  Sigur Rós                      1             0
+  Röyksopp                       1             0
+  \x{a27a}\x{10da}  (ꉺლ)         1             0
+  ```
+  Every `search:` we hand to `executeRequest` lands in a DBI handle with unicode ON: it ENCODES what it
+  is given, so a UTF-8 octet string is encoded twice and matches nothing. `_localArtistRows` had been
+  encoding to octets since it was written.
+- **So the 0.45.1 conclusion "the ASCII fold is what recovers Björk/Röyksopp/ROSALÍA" was this bug in
+  disguise** — the fold only ever won because it produces pure ASCII, where the two shapes are the same
+  bytes. And an artist with NO ASCII to fold to could never be found by name at all: exact spelling
+  miss, fold miss, term probe (0.50.5's fix) miss, `Local=0` in the merge, no `artist_id` on the search
+  row, drill-in resolves by name → **the owned album shows as Deezer**. Log, verbatim:
+  `Local lookup 'ꉺლ༽': no library artist found (tried 1 spelling(s) + term probes)` — while
+  `artists search:ꉺლ` run directly returns contributor 88810.
+- **FIX — `Sources::_cliChars`**, applied to all three name-keyed CLI queries: `_localArtistRows` (the
+  spelling ladder AND the term probes), `_bandContributorId`, `_artistMenuIcons`. Octets that are not
+  valid UTF-8 are passed through untouched rather than mangled.
+- **THE MIRROR-IMAGE BUG, found in the same log and fixed here too.** `Slim::Utils::DbCache` DIES on a
+  character string:
+  `artist-name cache set failed: Wide character in subroutine entry at .../DbCache.pm`
+  MB names arrive from `from_json` as characters, so **every non-ASCII canonical name silently failed
+  to cache** while ASCII ones wrote fine — inside an `eval` that swallowed it. That is the exact
+  "cause not established" mystery `peekArtistName` has carried since 0.46.x (the B-52s canonical is
+  `The B‐52s`, non-ASCII by one hyphen; the alias LIST beside it survived because an arrayref goes
+  through Storable, which handles wide characters). Now `API::_setMbName` encodes on write and
+  `peekArtistName` decodes on read, and the comment records the cause instead of the puzzle.
+- **Same class, same sweep: BIOS AND REVIEWS never cached either** (`Browse::_cacheSetText` /
+  `_cacheGetText`). Any accented bio — i.e. most of them — hit the same die and was re-fetched from MAI
+  on every render. Cache writes of REFS were never affected, only raw strings.
+- **THE RULE, both halves, because they point opposite ways and both are load-bearing:**
+  **LMS queries take CHARACTERS. DbCache takes OCTETS.** Keys were already encoded (`_candKey`); it is
+  the VALUES and the SEARCH TERMS that were wrong.
+- **`tools/t_local.pl` 22 → 25**, and the fixtures themselves were the bug's last hiding place: `%LIBRARY`
+  was keyed by OCTETS, asserting the behaviour that does not exist. It is now keyed by the character
+  form (as measured), with new assertions that the query is `utf8::is_utf8`, that every query for the
+  zalgo name is characters, and that an already-decoded name takes the identical single query. Six
+  assertions were RED against the pre-fix module.
+- **FLEET EXPOSURE — Search Hub has the same defect, NOT fixed here** (separate repo/version):
+  `Search.pm::_localLeg` passes `$qBytes` to `titles/albums/artists search:`, and `Browse.pm:444`
+  encodes before an `albums search:` — so SH's whole Local leg misses every non-ASCII query. LBF's
+  `_titlesSearch` is FINE (its terms come from `from_json` as characters); PFR and LL run no name-keyed
+  CLI search. Worth its own pass.
+- **PROCESS SLIP (mine): I patched Browse.pm with a Python script** for five mechanical cache-call
+  replacements, against this repo's own "never script-patch a .pm" rule (0.44.6/0.48.6/0.50.5). It was
+  verified intact immediately (`git diff` line-for-line + syntax gate), but the rule exists because the
+  failure mode is silent and total. Use the Edit tool.
+- Gates: `syntax_check.sh` 5/5 + CACHE_VERSION 0.51.2 == install.xml + PROBE_MBID OK; all 27 suites
+  green (t_local 25). Matcher untouched.
+- **LIVE VERIFY AFTER INSTALL:** search the hieroglyph artist — the row must carry **Local** alongside
+  Qobuz/Deezer, and the 2026 album must show the owned copy rather than Deezer. Log should read
+  `Local lookup '…': matched 1 …`. Controls: Björk/Sigur Rós browsed BY NAME must now match on the
+  EXACT spelling (one query, no fold), and an ASCII artist is unchanged.
+
+### 0.51.1 (2026-07-29) — the missing Zappa band row: MATERIAL keys app rows by TITLE
+- **Simon, with a screenshot: *"still not seeing The Mothers of Invention in the also member of list."***
+  0.51.0 said this was not reproducible. **It was reproducible — just not over the CLI**, and the
+  screenshot is what showed where to look: MOI absent from "Also a member of", present two rows later
+  under "Similar artists". One name, two sections, one of them rendered.
+- **THE FEED WAS NEVER WRONG.** The live SlimBrowse response (`menu:1`, `features:hi`) carries all four
+  band rows including MOI, cold or warm. The row is dropped **client-side, in Material, and only on the
+  My Apps entry path**:
+  - `browse-resp.js` sets `isApps` from the parent's `section`, and **every descendant inherits it**, so
+    the whole app path takes the Apps id ladder:
+    `params.item_id` -> `presetParams.favorites_url` -> `actions.go.params.item_id` -> **`parent.id + "." + i.title`**.
+  - Our navigation rows carry NONE of the first three. Verified in the LMS source: `XMLBrowser.pm`
+    emits `params` (which is where `item_id` lives) only when `$isPlayable || $touchToPlay`, a favurl
+    likewise only for playable items — and our self-identifying `go` (the stale-view fix) deliberately
+    sends `artist`/`mbid` INSTEAD of an `item_id`. **So the id IS the title.**
+  - The list is rendered `:key="item.id"`. Two rows, one Vue key, one tile — and the LATER section wins,
+    which is exactly the screenshot.
+  - **Album tiles are immune**: they are playable, so they do carry `params.item_id` (checked live —
+    Zappa's two different "Mystery Disc" release-groups come back as `item_id:64` and `item_id:70` and
+    both render). Only the non-playable navigation rows can collide, i.e. these two sections.
+- **FIX — `_dropBandDupes`: a name shown under "Also a member of" is removed from "Similar artists".**
+  Compared with the matcher's `_norm`, a deliberate SUPERSET of the exact-title collision (folds case
+  and punctuation). A leading-article variant is NOT folded and must not be — different title, different
+  Vue key, both rows render, so dropping it would delete a row for nothing.
+- **Why the band row wins:** membership is asserted MusicBrainz data, "similar" is a Last.fm suggestion,
+  the drill-in is byte-identical either way — and a band the artist is actually IN is a strange thing to
+  file under "similar" to begin with. Material is not ours to patch (Simon's no-patch constraint).
+- **Upstream-ask candidate** (add to the Material list): the Apps id fallback should key on the item's
+  INDEX, not its title — `parent.id + "." + resp.items.length` is what the non-Apps branch already does
+  a few lines below, and it cannot collide.
+- **`tools/t_dupes.pl` (new, 12 assertions)** with the real MB/Last.fm spellings: the field case, order
+  preserved, case/punctuation folded, article variant and near-miss names KEPT, and the degenerate
+  inputs (no bands / undef / empty / a band name that normalises to nothing) leaving the list alone.
+- **METHOD NOTE, for next time:** the CLI query that "proved" the row was fine only proved the SERVER
+  was fine. When a row is visible in one client and not another, the client is a suspect and its
+  response shape matters — `menu:1` (SlimBrowse) and the plain feed are parsed by completely different
+  code paths in Material, and the plugin's own entry paths (My Apps vs the artist custom action) land
+  in different id ladders. Reproduce on the path the user actually used.
+- Gates: `syntax_check.sh` 5/5 + CACHE_VERSION 0.51.1 == install.xml; all suites green (t_dupes 12,
+  t_artimg 29). Matcher untouched.
+
+### 0.51.0 (2026-07-29) — we own the artist-thumbnail route: a placeholder is now DETECTED and filled
+- **Simon: *"Mothers of Invention show in similar acts which is fine but they show no artwork ... we
+  really need to not have gaps for any regardless and fetch from MAI or another service if available."***
+- **THE PICTURE IS NOT MISSING — IT IS STALE, AND THE STALENESS IS DETECTABLE.** MAI's name route ends
+  at `api.lms-community.org/music/artist/<name>/picture`, a PERIODIC SNAPSHOT of Deezer. Measured live
+  2026-07-29 (HEAD, browser UA), all three of the reported cases reproducing the same way:
+  ```
+  The Mothers of Invention  snapshot e9cce9d1… -> 302 -> d41d8cd9…  live Deezer 32cfa446…  a photo
+  Pink Floyd                snapshot 6d6d4e14… -> 302 -> d41d8cd9…  live Deezer d62a818a…  a photo
+  B52's                     snapshot 8101b740… -> 302 -> d41d8cd9…  live Deezer 35dceb20…  a photo
+  The B-52s                 snapshot 35dceb20… -> 200                                      a photo
+  ```
+  `d41d8cd98f00b204e9800998ecf8427e` is **md5 of the EMPTY STRING** — Deezer's structural "this entity
+  has no picture" sentinel. So a dead picture is distinguishable from a real one WITHOUT downloading a
+  byte, and the services we already query hold a live photo for the same act.
+- **THIS SUPERSEDES 0.46.5's "not ours" VERDICT, and only because of that signal.** That entry was right
+  on the evidence it had (MAI faithfully serves the picture it is given; the entity's picture was
+  wrong) and its user-side fix — drop a file in the artist-image folder — still works and is still
+  tier 1. What it lacked was a way to TELL, at which point "upstream is wrong" stops being an
+  explanation and becomes something we can route around.
+- **`imageproxy/dsc/artist/<name>` (new, `Browse::artistImageProxy`)**, registered in `initPlugin`.
+  Same lazy in-view load as before — the browser asks only for thumbnails it paints — with a resolver
+  behind it. Tiers, first answer wins, verdict cached 30d / 1d for a miss (`dsc:artimg:v1:<lc name>`):
+  1. **MAI local artwork** (`LocalArtwork->getArtistPhoto`, rawUrl) — the user's own files outrank
+     everything online, unconditionally.
+  2. **MAI's online picture** (`MusicArtistInfo::API->getArtistPhoto`) — kept AHEAD of the services on
+     purpose: it is the picture the rest of LMS shows for that artist (0.46.2's principle). Accepted as
+     is, EXCEPT a `dzcdn.net/images/artist/` url, which gets one **HEAD with `maxRedirect => 0`**
+     (honoured by `Async::HTTP`, so the 302 arrives in the error callback with its `Location` intact).
+     Placeholder target -> tier 3. Any other probe outcome (timeout, 4xx, DNS) is INCONCLUSIVE and
+     KEEPS MAI's url — a network hiccup must not demote a good photo.
+  3. **The user's own services**, `Sources->artistImage`: Qobuz/Tidal/Deezer in `svc_priority` order,
+     one at a time, first photo wins. Exact `_norm` name match across the whole result list FIRST, then
+     `_artistMatch` token-subset — services rank by relevance, not identity, so "The Mothers" can
+     outrank "The Mothers of Invention" for a query the second answers exactly.
+  4. **The person icon** (as a `file://` url — the proxy only accepts file/http(s)).
+- **The service photo rides in FREE on a search we already make.** `_artistHits` now keeps `img`,
+  built by each plugin's OWN url builder — Qobuz `API::Common->getImageFromImagesHash`, TIDAL/Deezer
+  `API->getImageUrl($a, undef, 'artist')` (hash COPIED first: both write `{cover}` back into it) —
+  never a hand-rolled CDN path. `mergeArtistHits` carries the first one in priority order onto the row,
+  so **streaming-only search results are now illustrated at zero extra cost**; library rows keep the
+  LMS/MAI contributor-id route, which is already correct.
+- **The contributor-id route is untouched** (`imageproxy/mai/artist/<id>`): it serves the artwork the
+  rest of LMS shows and remains the answer for anything the library knows. What changed is only the
+  NAME route — similar artists, band links, streaming-only rows — which is where the gaps live.
+  Corollary: with MAI disabled but a service enabled, a name now resolves for the first time (it used
+  to be icon-only), and with neither, `_artistImg` short-circuits to the icon rather than routing a
+  request through a proxy that could only answer with it.
+- **`tools/t_artimg.pl` extended 14 -> 29 assertions**: the route flip, MAI-off-with-services, the
+  placeholder signal (incl. as a bare `Location` header, and the LIVE Mothers hash NOT flagged),
+  per-service photo extraction w/ stubbed plugin builders (placeholder dropped, relative asset
+  rejected, unknown service yields nothing), and the handler end-to-end — async contract (returns
+  undef, answers via `$cb`), name unescaped before lookup, fall-through to the service tier, and a
+  nameless url never becoming a remote fetch. `t_localonly`/`t_svcname` gained the two new stub
+  modules Browse.pm now loads; `syntax_check.sh` gained `Slim::Utils::Misc` + `Slim::Web::ImageProxy`.
+- **"Also a member of" for Frank Zappa — CHECKED, NOT REPRODUCIBLE, no code change.** MB has the rel
+  (`member of band` forward, attrs `original`/guitar/lead vocals, **plus** a `founder` rel), and the
+  live feed returns all four bands with The Mothers of Invention among them — including on a COLD
+  first render immediately after `discography clearcache artist:Frank Zappa` (5.2s). The plausible
+  reading of what Simon saw is a render that beat the band-members warm, which sits at the END of the
+  serial MB chain behind the `official_wait` deadline while Similar artists warms in PARALLEL — the
+  exact asymmetry reported (MOI present under Similar, absent under Bands). If it recurs, the next
+  question is which mbid the view entered with, not whether MB knows.
+- Gates: `syntax_check.sh` 5/5 + CACHE_VERSION 0.51.0 == install.xml + PROBE_MBID OK; all suites green
+  (t_artimg 29). `matcher_sync_check.py` drift is UNCHANGED and pre-existing (0.44.26 `_norm`/`%FOLD`,
+  0.50.6 `_albumMatches`) — nothing here touches the matcher. Candidate SHAPE changed (`img` on artist
+  hits), covered by the CACHE_VERSION bump clearing the namespace.
+- **LIVE VERIFY AFTER INSTALL:** Frank Zappa -> Similar artists / Also a member of: **The Mothers of
+  Invention must show a photo**, not the grey silhouette. Same for **Pink Floyd** and **B52's** rows.
+  Control: Radiohead unchanged, and a library artist's own row still comes from the id route.
+
+### 0.50.6 (2026-07-24) — compound-word matcher gap: "Hit Makers" ↔ "Hitmakers" (Rolling Stones debut) — DSC-ONLY, provisional
+- **Simon: the Rolling Stones' 1964 debut *England's Newest Hitmakers* is missing from the discography
+  though it is on streaming.** Diagnosed LIVE over HTTP (debug_log on, jsonrpc feed + log.txt), and it
+  is a MATCHER miss, not a missing release group:
+  - MB carries it in the spine — release-group `919b8534…`, primary-type Album, titled
+    **`England's Newest Hit Makers`** (two words, curly apostrophe).
+  - The services title it **`England's Newest Hitmakers`** (ONE word — verified on Deezer's public API,
+    album `912315`). Candidate pools were HEALTHY (`Qobuz=184, Tidal=214, Deezer=126`) but the log read
+    `match 'England's Newest Hit Makers' [The Rolling Stones]: NO MATCH`, so `hide_unmatched` hid the tile.
+  - Through the REAL `_albumMatches`: `spine 'englands newest hit makers'` vs `cand 'englands newest
+    hitmakers'` -> **0**. The two norms are identical EXCEPT the space between `hit` and `makers`, and no
+    tier (exact / trailing-prefix / `_stripFmt` / `_asciiNorm` / artist-prefix) treats a space as optional.
+- **FIX — a COMPOUND-WORD / WORD-BOUNDARY tier in `_albumMatches`:** the two titles match when they are
+  identical after removing ALL whitespace. **EXACT space-collapsed equality ONLY — no prefix rule**,
+  because collapsing spaces destroys the word boundary the prefix tiers rely on (a prefix on
+  `hitmakers…` could then swallow an unrelated title). Length-gated (collapsed key >= 6 chars) so a short
+  key can't collide. The mandatory artist gate still applies. Closes the whole one-word-vs-two-word class
+  (services and MB routinely disagree on compounds).
+- **DELIBERATE DSC-ONLY DIVERGENCE, held to prove in the field before porting** (Simon's call: DSC-only,
+  provisional). `_albumMatches` is fleet-synced, so **`matcher_sync_check.py` now reports drift on
+  `_albumMatches` BY DESIGN** (alongside the pre-existing 0.44.26 `_norm`/`%FOLD` drift) until this is
+  ported to LBF/PFR/LL. The change is one self-contained `if (!$ok)` block, so the port is one isolated
+  copy. When ported: bump each repo + its match/decision caches, re-run until the check is back to only
+  the `_norm`/`%FOLD` deviation.
+- **`tools/t_hitmakers.pl` (new, 8 assertions)**, fixtures = the real field spellings (curly + straight
+  apostrophe): the field case matches, the exact two-word spelling still matches, wrong artist still
+  rejected, an unrelated album does not match, the tier is EXACT not a prefix (no "…Hitmakers Live"
+  swallow), a <6-char collapsed key does NOT match, and the symmetric MB-one-word/service-two-words case.
+  Assertions 1/2/8 were **RED against the pre-fix module** (verified before shipping).
+- Gates: `syntax_check.sh` 5/5 + CACHE_VERSION 0.50.6 == install.xml + PROBE_MBID OK; **all 26 suites
+  green**. No candidate-shape change (matching runs live); CACHE_VERSION bump clears the namespace.
+- **LIVE VERIFY AFTER INSTALL:** open **The Rolling Stones** — *England's Newest Hit Makers* (1964) must
+  now show as a matched Album tile (Qobuz/Tidal/Deezer) instead of being hidden. Control: Radiohead
+  unchanged.
+
 ### 0.50.5 (2026-07-23) — a short NON-ASCII token is a whole word, not a stopword (the hieroglyph/zalgo album)
 - **Simon: a 2026 album with a hieroglyph/zalgo title resolves to DEEZER, not his local copy — "it works
   searching via lms own search and finds my local instance ... The plugin finds it in Deezer not my local
