@@ -175,6 +175,10 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   errors"*). An edition title attaches an owned album to the group MB files that edition under,
   even where that grouping looks odd — All India Radio *Fall Remixes* -> *Fall*, Dylan *The Best of
   the Cutting Edge* -> *The Cutting Edge*. That is MB data, not a matcher gap.
+  - **Same rule for the RELATIONS** the Collaborations section reads (0.51.13): MB records Phil
+    Spector's PRODUCTION work on The Crystals and The Ronettes as `collaboration`, so both pass the
+    filter and appear on his page. The relation type is MB's editorial call, not ours to second-guess;
+    the only filter is the ensemble-size one (`The collaborations cut-off is 5`).
 - **The collaborations cut-off is 5** (`API::COLLAB_MAX_MEMBERS`, `_vetCollabs`; Simon,
   2026-09-19). A collaboration target with more than 5 collaborators is treated as a charity or
   all-star ensemble and not listed. It knowingly drops three real-ish projects in Simon's library —
@@ -212,7 +216,7 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 |---|---|---|
 | `_probeArtistImage` reads `Location` off the wrong argument, so the Deezer placeholder probe can never fire | **WRONG** (raised 2026-09-19, and once before) | `Slim::Networking::SimpleAsyncHTTP` invokes **the error callback's third argument** as the response: `$self->ecb->( $self, $error, $http->response )` (read in the 9.0 source). `my (undef, $error, $res) = @_` is therefore correct, and `$res->header('Location')` is an `HTTP::Response` method. The 302-in-the-error-callback behaviour under `maxRedirect => 0` was measured live in 0.51.0 on the real Mothers/Pink Floyd/B52's urls. |
 | `_idGroup` (0.51.12) could keep a release group from matching a copy whose id names THAT group | **WRONG** | `_idGroup cannot block a group` from its own copy: it is only consulted INSIDE the `unless (_mbidMatch(...))` branch, i.e. only after the id has already failed to name this group. Symmetric by construction, and pinned by the "control: its own group still takes it by id" assertion in `t_size.pl` §5. |
-| Deezer's artist-albums payload carries no track count, so a Deezer copy has no size and the single gate cannot act on it | **WRONG** | `/artist/<id>/albums` omits `nb_tracks` but **Deezer states `record_type`** on every row, which `_candSize` reads when there are no counts; `/search/album` carries BOTH (`nb_tracks` + `record_type`, verified live 2026-09-19). Pinned in `t_size.pl` §1. |
+| Deezer's artist-albums payload carries no track count, so a Deezer copy has no size and the single gate cannot act on it | **WRONG** | `/artist/<id>/albums` omits `nb_tracks` but **Deezer states record_type** on every row, which `_candSize` reads when there are no counts; `/search/album` carries BOTH (`nb_tracks` + `record_type`, verified live 2026-09-19). Pinned in `t_size.pl` §1. |
 | `length $e->[0] >= 2` in `_editionTitles`/`matchesFor` parses as `length($e->[0] >= 2)` | **WRONG** | In Perl **a named unary binds tighter** than a comparison operator, so it is `length($e->[0]) >= 2`, which is the intent. Same shape appears in the alias pass and has been correct since 0.48.0. |
 
 ### B. KNOWN-OPEN AND ACCEPTED — do not re-report as new
