@@ -55,6 +55,10 @@ because line numbers rot on the next edit.
 | An id-tagged copy is held to its id's group, even when the tag is wrong | A2 | `A wrong MusicBrainz id tag holds the copy` |
 | Joint-credit pickup on an `artist_id` entry — DECLINED, measured; the name path's false pickups are known | A2 | `Joint pickup is not added to the id path` |
 | Collaborations cut-off at 5 collaborators (drops AfroCubism, Smokin' Mojo Filters, Atomic Orchestra) | A2 | `The collaborations cut-off is 5` |
+| `_probeArtistImage` reading the wrong error-callback argument | A3 | `the error callback's third argument` |
+| `_idGroup` could block a group from its own id-tagged copy | A3 | `_idGroup cannot block a group` |
+| Deezer's artist-albums payload has no track count, so no size | A3 | `Deezer states record_type` |
+| `length $e->[0] >= 2` parsing as `length($e->[0] >= 2)` | A3 | `a named unary binds tighter` |
 
 **Two standing rules that kill most repeat findings:**
 
@@ -65,6 +69,12 @@ because line numbers rot on the next edit.
    enforce, the comment is the defect. Fix the prose and pin the behaviour in a suite.
 
 ### HOW TO LOG A VERDICT so the next round finds it
+
+**A FINDING YOU CHECKED AND CLEARED IS A RESULT — WRITE IT IN §A3.** If reading the code
+reasonably suggests the defect and only a measurement (the live rig, an upstream source, a language
+rule) rules it out, that measurement belongs in the ledger with the belief it kills. Otherwise the
+next review pays for it again and may report it anyway. Do NOT log a finding that was merely wrong
+on its face, or §A3 becomes a diary.
 
 Every new decision goes in §A2 (declined), §B (accepted/open) or §C (closed) as a bullet whose
 FIRST LINE names the **symbols** a future review would grep for, then the verdict, then the
@@ -189,6 +199,21 @@ always with its reason, and those stay suppressed. The code a fix added is new a
     collaboration relation MB already had — no edit or mirror update needed.
   - **Known and left as-is:** those 7 false pickups already happen on the NAME path (a Similar-artists
     or name-only entry), since 0.48.6. Re-raise only with a stronger signal than the name.
+
+### A3. DISPROVEN — a review WILL re-derive these from the code; each was measured
+
+**Why this section exists (Simon, 2026-09-19).** A finding that a review "checked and cleared"
+leaves no trace, so the next review spends the same effort and often reports it anyway. These rows
+are beliefs about how the code or an upstream API behaves that READING the code plausibly suggests
+and that MEASUREMENT disproved. They are as load-bearing as the declined entries: the wrong belief
+is what a fresh reviewer re-derives. Re-raise only by disproving the evidence named here.
+
+| Belief | Verdict | The evidence |
+|---|---|---|
+| `_probeArtistImage` reads `Location` off the wrong argument, so the Deezer placeholder probe can never fire | **WRONG** (raised 2026-09-19, and once before) | `Slim::Networking::SimpleAsyncHTTP` invokes **the error callback's third argument** as the response: `$self->ecb->( $self, $error, $http->response )` (read in the 9.0 source). `my (undef, $error, $res) = @_` is therefore correct, and `$res->header('Location')` is an `HTTP::Response` method. The 302-in-the-error-callback behaviour under `maxRedirect => 0` was measured live in 0.51.0 on the real Mothers/Pink Floyd/B52's urls. |
+| `_idGroup` (0.51.12) could keep a release group from matching a copy whose id names THAT group | **WRONG** | `_idGroup cannot block a group` from its own copy: it is only consulted INSIDE the `unless (_mbidMatch(...))` branch, i.e. only after the id has already failed to name this group. Symmetric by construction, and pinned by the "control: its own group still takes it by id" assertion in `t_size.pl` §5. |
+| Deezer's artist-albums payload carries no track count, so a Deezer copy has no size and the single gate cannot act on it | **WRONG** | `/artist/<id>/albums` omits `nb_tracks` but **Deezer states `record_type`** on every row, which `_candSize` reads when there are no counts; `/search/album` carries BOTH (`nb_tracks` + `record_type`, verified live 2026-09-19). Pinned in `t_size.pl` §1. |
+| `length $e->[0] >= 2` in `_editionTitles`/`matchesFor` parses as `length($e->[0] >= 2)` | **WRONG** | In Perl **a named unary binds tighter** than a comparison operator, so it is `length($e->[0]) >= 2`, which is the intent. Same shape appears in the alias pass and has been correct since 0.48.0. |
 
 ### B. KNOWN-OPEN AND ACCEPTED — do not re-report as new
 
@@ -900,6 +925,26 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
     Qobuz search items carry `tracks_count`/`duration`, so the album-search fallback IS size-gated.
     Prose corrected (incl. Deezer's `type` being the entity type, always "album") and the behaviour
     pinned in `t_size.pl` §1 (38 total).
+- **Second review of this build, three more fixes (2026-09-19):**
+  - **The vetting must not gate the first render.** `warmBandMembers` sits in the serial MB chain
+    AHEAD of the bootleg pass, which the render waits on under `official_wait` (15s) — and after the
+    pacing fix, vetting 8 candidates is up to 17.6s on the public API, so the deadline would fire and
+    the page render with bootlegs unfiltered. The band lookup now only NOTES its candidates
+    (`dsc:collabcand:v1`, so no second artist-rels request) and calls back on its own one request;
+    new **`API::warmCollaborations`** vets them at the END of the chain, after `warmOfficial`.
+    Collaborations were always cache-only at render time, so nothing changes but when the work runs.
+    `t_collab.pl` §6 (30 total), red first.
+  - **A row the MB-tag attach makes Local is re-ranked.** `filterRowsWithContent`'s tag pass (0.51.3)
+    is the LAST thing that can make a search row owned, and it runs INSIDE the callback, after
+    `rankArtistHits` — so such a row kept its streaming-only position under unowned rows, against
+    0.48.4's "Local trumps". `_withMbCandidates` ranks once more after the filter (a no-op when
+    nothing was attached — same comparator, same `_seq` tiebreak). `tools/t_searchrank.pl`
+    (new, 4; 2 red first, the control green in both states).
+  - **`artistImageProxy`'s nameless-URL exit returned undef** when the bundled icon is missing, and
+    undef is ImageProxy's "I already called `$cb`" signal — a hung image request. `|| ''` as at the
+    sub's other two exits. No WRITER: it needs an empty name AND a broken install. `t_artimg.pl` (41).
+  - **Declined in the same round and logged in §A3:** `_probeArtistImage` reading the wrong
+    error-callback argument (the LMS source passes the response as the third argument).
 - **LIVE VERIFY AFTER INSTALL:** Holly Golightly (Artists row) shows "Collaborations: Holly
   Golightly and The Brokeoffs", and the drill shows *Medicine County* / *No Help Coming*. Brian Eno
   shows Fripp & Eno + Harmonia 76 and NOT "N.M.L. NO MORE LANDMINE" (22). Bob Dylan shows no

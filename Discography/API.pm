@@ -1967,7 +1967,8 @@ sub clearArtistCache {
         $cache->remove(_rgKey($mbid));       push @cleared, 'rg';
         $cache->remove(_officialKey($mbid)); push @cleared, 'official';
         $cache->remove(_bandsKey($mbid));    push @cleared, 'bands';
-        $cache->remove(_collabsKey($mbid));  push @cleared, 'collabs';
+        $cache->remove(_collabsKey($mbid));
+        $cache->remove(_collabCandKey($mbid)); push @cleared, 'collabs';
         $cache->remove(_rgCountKey($mbid));  push @cleared, 'rgcount';
         # The empty verdict MUST go with them: Refresh exists to say "look
         # again", and a stale "nothing here" would keep the artist's search row
@@ -2187,6 +2188,9 @@ use constant COLLAB_MAX_MEMBERS => 5;
 use constant COLLAB_CHECK_MAX   => 8;    # candidates vetted per artist, at most
 
 sub _collabsKey { 'dsc:collabs:v1:' . $_[0] }
+# The unvetted candidates the band lookup found, kept so the vetting needs no
+# second artist-rels request (see warmCollaborations).
+sub _collabCandKey { 'dsc:collabcand:v1:' . $_[0] }
 
 # Cache-only, sync: arrayref of { mbid, name } kept collaborations, or undef
 # until warmed. Empty arrayref = warmed, none.
@@ -2261,19 +2265,61 @@ sub _vetCollabs {
     return;
 }
 
+my %collabsInFlight;
+
+# Vet the candidates the band lookup stored, and cache the survivors. Called at
+# the END of the MB chain (after the bootleg pass), so it can never delay a
+# render: the Collaborations section is cache-only at render time and appears on
+# the next entry, the same second-load contract as the bands themselves.
+# $cb fires exactly once. Nothing is cached when a lookup failed, so a blip is
+# retried rather than pinned for 14 days.
+sub warmCollaborations {
+    my ($class, $artistMbid, $cb) = @_;
+    $cb ||= sub {};
+    return $cb->() unless $artistMbid;
+    return $cb->() if defined $cache->get(_collabsKey($artistMbid));
+    return $cb->() if $collabsInFlight{$artistMbid};
+
+    my $cands = $cache->get(_collabCandKey($artistMbid));
+    # No candidate list yet: the band lookup has not run (or failed), and it is
+    # what produces one. Nothing to do here.
+    return $cb->() unless ref $cands eq 'ARRAY';
+    unless (@$cands) {
+        eval { $cache->set(_collabsKey($artistMbid), [], BANDS_TTL); 1 };
+        return $cb->();
+    }
+
+    $collabsInFlight{$artistMbid} = 1;
+    $class->_vetCollabs($cands, sub {
+        my ($kept, $ok) = @_;
+        if ($ok) {
+            eval { $cache->set(_collabsKey($artistMbid), $kept, BANDS_TTL); 1 }
+                or $log->warn("collaborations cache set failed: $@");
+        }
+        _dbg("collaborations: $artistMbid -> " . scalar(@$kept) . ' of '
+             . scalar(@$cands) . ' kept' . ($ok ? '' : ' (lookup failed - not cached)')
+             . (@$kept ? ': ' . join(', ', map { $_->{name} } @$kept) : ''));
+        delete $collabsInFlight{$artistMbid};
+        $cb->();
+    });
+    return;
+}
+
 my %bandsInFlight;
 
-# Resolve the artist's "member of band" relationships once and cache them,
-# and (same response) its vetted collaborations.
+# Resolve the artist's "member of band" relationships once and cache them, and
+# (same response) note its collaboration candidates for warmCollaborations.
 # $cb fires exactly once (cache hit / done / failure / already in flight).
 sub warmBandMembers {
     my ($class, $artistMbid, $cb) = @_;
     $cb ||= sub {};
     return $cb->() unless $artistMbid;
-    # BOTH must be cached: a band list written before collaborations existed
-    # would otherwise keep them from ever being fetched.
+    # The band list alone is not enough: one written before collaborations
+    # existed would keep the candidates from ever being noted. Either a vetted
+    # list or a pending candidate list counts as "this artist has been read".
     return $cb->() if defined $cache->get(_bandsKey($artistMbid))
-                   && defined $cache->get(_collabsKey($artistMbid));
+                   && (defined $cache->get(_collabsKey($artistMbid))
+                       || defined $cache->get(_collabCandKey($artistMbid)));
     return $cb->() if $bandsInFlight{$artistMbid};
     $bandsInFlight{$artistMbid} = 1;
 
@@ -2326,18 +2372,21 @@ sub warmBandMembers {
                 push @cands, { mbid => $id, name => $t->{name} };
             }
             splice(@cands, COLLAB_CHECK_MAX) if @cands > COLLAB_CHECK_MAX;
-            $class->_vetCollabs(\@cands, sub {
-                my ($kept, $ok) = @_;
-                if ($ok) {
-                    eval { $cache->set(_collabsKey($artistMbid), $kept, BANDS_TTL); 1 }
-                        or $log->warn("collaborations cache set failed: $@");
-                }
-                _dbg("collaborations: $artistMbid -> " . scalar(@$kept) . ' of '
-                     . scalar(@cands) . ' kept' . ($ok ? '' : ' (lookup failed - not cached)')
-                     . (@$kept ? ': ' . join(', ', map { $_->{name} } @$kept) : ''));
-                delete $bandsInFlight{$artistMbid};
-                $cb->();
-            });
+            # STORED, NOT VETTED HERE. This sub sits in the serial MB chain
+            # AHEAD of the bootleg pass, and the first render waits on that pass
+            # under `official_wait` (15s): vetting 8 candidates is up to 17.6s
+            # against the public API, so the deadline would fire and the page
+            # would render with no official map — bootlegs unfiltered, for a
+            # section that is second-load anyway (review 2026-09-19). The
+            # vetting runs at the END of the chain instead; see
+            # warmCollaborations, which reads these candidates back.
+            eval { $cache->set(_collabCandKey($artistMbid), \@cands, BANDS_TTL); 1 }
+                or $log->warn("collaboration candidates cache set failed: $@");
+            _dbg("collaborations: $artistMbid -> " . scalar(@cands)
+                 . ' candidate(s) to vet'
+                 . (@cands ? ': ' . join(', ', map { $_->{name} } @cands) : ''));
+            delete $bandsInFlight{$artistMbid};
+            $cb->();
         },
         sub {
             _dbg("band-members: lookup failed for $artistMbid: " . (shift->error // 'HTTP error'));

@@ -973,16 +973,28 @@ sub _discographyView {
 
                     my $startBootleg = sub {
                         my ($await) = @_;
+                        # LAST in the chain, and deliberately so: vetting the
+                        # collaboration links costs up to 2 spaced MB requests
+                        # per candidate, which ahead of the bootleg pass would
+                        # blow the `official_wait` deadline on a public-API
+                        # install and render the page with bootlegs unfiltered.
+                        # The section is cache-only at render time anyway, so it
+                        # simply appears on the next entry (review 2026-09-19).
+                        my $then = sub {
+                            Plugins::Discography::API->warmCollaborations($mbid);
+                        };
                         if ($await) {
                             Plugins::Discography::API->warmOfficial($mbid, sub {
-                                return if $offDone;
-                                $offDone = 1;
-                                Slim::Utils::Timers::killTimers(undef, $await);
-                                $render->();
+                                unless ($offDone) {
+                                    $offDone = 1;
+                                    Slim::Utils::Timers::killTimers(undef, $await);
+                                    $render->();
+                                }
+                                $then->();
                             });
                         }
                         else {
-                            Plugins::Discography::API->warmOfficial($mbid);
+                            Plugins::Discography::API->warmOfficial($mbid, $then);
                         }
                     };
 
@@ -1395,7 +1407,10 @@ sub artistImageProxy {
     # ImageProxy hands us the path with the trailing /image* segment already
     # stripped (`imageproxy/(.*)/[^/]*`), so what is left is our escaped name.
     my ($enc) = ($url // '') =~ m{^dsc/artist/(.+)$};
-    return _personIconFile() unless defined $enc && length $enc;
+    # `|| ''` as at the other two exits: undef means "I called $cb", so
+    # returning it without doing so would hang the image request (a missing
+    # bundled icon is the only way _personIconFile answers undef).
+    return (_personIconFile() || '') unless defined $enc && length $enc;
     require URI::Escape;
     my $name = URI::Escape::uri_unescape($enc);
     # uri_unescape returns OCTETS; every consumer below wants CHARACTERS.
@@ -2960,6 +2975,15 @@ sub _withMbCandidates {
     Plugins::Discography::API->filterRowsWithContent($merged, sub {
     my ($kept) = @_;
     $merged = $kept;
+
+    # RANK ONCE MORE, for the same reason as after the attach above: that
+    # filter's own MB-tag pass (0.51.3) is the LAST thing that can make a row
+    # Local — it claims a kept row by its resolved mbid and gives it an
+    # artist_id + a Local source. Ranked before it, such a row kept the place it
+    # had as a streaming-only row, under unowned ones, which is exactly what
+    # 0.48.4's "Local trumps" rule exists to prevent (review 2026-09-19). A no-op
+    # when the filter attached nothing: same comparator, same `_seq` tiebreak.
+    $merged = Plugins::Discography::Sources->rankArtistHits($merged);
 
     my @rows = @{ _searchResultItems($client, $merged, $features) };
 

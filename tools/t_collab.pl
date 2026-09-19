@@ -147,10 +147,13 @@ sub response_for {
     return {};
 }
 
+# The MB chain: the band lookup (which gates the first render) and then, at the
+# END of the chain, the collaboration vetting.
 sub warm {
     my ($mbid) = @_;
     my $n = 0;
     $API->warmBandMembers($mbid, sub { $n++ });
+    $API->warmCollaborations($mbid) if $API->can('warmCollaborations');
     return $n;
 }
 my $names = sub { join ',', map { $_->{name} } @{ $_[0] || [] } };
@@ -242,6 +245,49 @@ ok(!defined $API->peekCollabs($HOLLY), 'clearArtistCache removes the collaborati
     %CACHE = (); @EV = ();
     warm($HOLLY);
     ok(scalar(!grep { $_ eq 'wait' } @EV), 'a mirror still waits for nothing');
+}
+
+# ---------------------------------------------------------------------------
+# 6. THE VETTING MUST NOT GATE THE FIRST RENDER (review 2026-09-19).
+#    warmBandMembers sits in the serial MB chain AHEAD of the bootleg pass, and
+#    the render waits on that pass under OFFICIAL_WAIT_DEFAULT (15s). Vetting 8
+#    candidates is up to 8 x 2 x 1.1s = 17.6s against the public API, i.e. the
+#    deadline fires and the page renders with no official map — bootlegs
+#    unfiltered. So the band lookup must call back on its OWN request, and the
+#    vetting runs at the END of the chain (warmCollaborations), after the pass.
+# ---------------------------------------------------------------------------
+{
+    local $BASE = 'https://musicbrainz.org/ws/2/';
+    %CACHE = (); @URLS = ();
+    my $n = 0;
+    $API->warmBandMembers($HOLLY, sub { $n++ });
+    ok($n == 1, 'the band lookup calls back');
+    ok(scalar(@URLS) == 1, '... after ONE request: the vetting does not gate the render');
+    ok($API->peekBands($HOLLY), '... with the bands cached');
+    ok(!defined $API->peekCollabs($HOLLY), '... and the collaborations not yet decided');
+
+    $API->warmCollaborations($HOLLY);
+    my $c = $API->peekCollabs($HOLLY);
+    # The same survivors as §1: the Brokeoffs and the 5-collaborator boundary
+    # case, with every filtered target still filtered.
+    ok(scalar($c && $names->($c) eq 'Holly Golightly and The Brokeoffs,The Quintet'),
+       'the end-of-chain warm vets them (same result as before)');
+    ok(scalar(@URLS) > 1, '... and that is where the extra requests happen');
+
+    # It must not re-fetch the relations to find the candidates again.
+    %CACHE = (); @URLS = ();
+    $API->warmBandMembers($HOLLY, sub {});
+    my $afterBands = scalar @URLS;
+    $API->warmCollaborations($HOLLY);
+    my $vetUrls = scalar(@URLS) - $afterBands;
+    ok(scalar(!grep { m{/artist/\Q$HOLLY\E\?} } @URLS[$afterBands .. $#URLS]),
+       'the vetting re-uses the candidates the band lookup already found');
+
+    # A second pass is a cache hit, and an artist whose vetting already ran
+    # never pays again.
+    @URLS = ();
+    $API->warmCollaborations($HOLLY);
+    ok(!@URLS, 'a vetted artist costs nothing on the next render');
 }
 
 print "\n$pass passed, $fail failed\n";

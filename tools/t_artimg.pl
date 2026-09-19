@@ -248,6 +248,21 @@ ok(scalar(!defined $svcImg->('Nope', { name => 'X', picture => 'http://x/y.jpg' 
     my $bad = Plugins::Discography::Browse::artistImageProxy('dsc/artist/', '', sub {});
     ok(scalar(!$bad || $bad !~ /^https?:/),
        'a nameless proxy URL never turns into a remote fetch');
+    # ... and it must still ANSWER. undef is ImageProxy's "I already called
+    # $cb" signal (ImageProxy.pm), so returning it without calling $cb leaves
+    # the image request hanging forever. The icon file is normally there, so
+    # the bare path only bites a broken install — but the other two exits guard
+    # with `|| ''` and this one did not (review 2026-09-19).
+    {
+        no warnings 'redefine'; no strict 'refs';
+        my $prev = \&Plugins::Discography::Browse::_personIconFile;
+        *{'Plugins::Discography::Browse::_personIconFile'} = sub { undef };  # icon missing
+        my $called = 0;
+        my $r = Plugins::Discography::Browse::artistImageProxy('dsc/artist/', '', sub { $called++ });
+        ok(scalar(defined $r || $called),
+           'a nameless URL is answered even when the bundled icon is missing (never a hung request)');
+        *{'Plugins::Discography::Browse::_personIconFile'} = $prev;
+    }
 }
 
 # ---------------------------------------------------------------------------
