@@ -32,7 +32,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.6';
+use constant CACHE_VERSION => '0.51.7';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
@@ -2975,9 +2975,18 @@ sub _albumMatches {
     # sides and re-compare; gated on a >=3 char remainder, and the artist
     # check below still applies. DELIBERATE DIVERGENCE from the LBF/PFR
     # matcher — candidate to port back upstream.
+    #
+    # NOT across a spaced slash: "The B‐52’s / Cosmic Thing" is TWO titles, the
+    # first of which merely equals the artist name. _norm erases the slash, so
+    # without this the two-album set claimed "Cosmic Thing" and a streaming
+    # two-fer would be claimed by the "Cosmic Thing" group (field, 2026-09-19).
+    # Only the side carrying the slash is refused, so the other side still
+    # gets its own prefix stripped.
     if (!$ok && length $artistNorm) {
-        my $ab = _stripArtistPrefix($albumNorm, $artistNorm);
-        my $tb = _stripArtistPrefix($t, $artistNorm);
+        my $ab = ($albumRaw  // '') =~ m{\s/\s} ? $albumNorm
+               : _stripArtistPrefix($albumNorm, $artistNorm);
+        my $tb = ($candTitle // '') =~ m{\s/\s} ? $t
+               : _stripArtistPrefix($t, $artistNorm);
         if (($ab ne $albumNorm || $tb ne $t) && length($ab) >= 3 && length($tb) >= 3) {
             $ok = 1 if $tb eq $ab || index($tb, "$ab ") == 0;
         }

@@ -111,6 +111,7 @@ sub ok {
 # U+00B7 MIDDLE DOT in "Die Mensch·Maschine": both are genuine MB data.
 # ---------------------------------------------------------------------------
 my $KRAFT = '5700dcd4-c139-4f31-aa3e-6382b9af9032';
+my $B52   = '127f591a-7e27-4435-92db-0780f219f3a1';
 my %SPINE = (
     $KRAFT => [
         { id => 'rg-radio', title => "Radio\x{2010}Aktivit\x{e4}t", 'first-release-date' => '1975',
@@ -129,6 +130,22 @@ my %SPINE = (
           'primary-type' => 'Album',
           aliases => [ { name => 'Tour de France Soundtracks' } ] },
     ],
+    # THE B-52's (field, 2026-09-19). MB aliases the 2003 box "3 Original CDs"
+    # as "The B‐52’s" — the title of one of its releases, and ALSO the
+    # canonical title of the band's own 1979 debut group. U+2010 and U+2019
+    # are genuine MB data.
+    $B52 => [
+        { id => 'rg-b52', title => "The B\x{2010}52\x{2019}s", 'first-release-date' => '1979',
+          'primary-type' => 'Album' },
+        { id => 'rg-3cd', title => '3 Original CDs', 'first-release-date' => '2003',
+          'primary-type' => 'Album', 'secondary-types' => ['Compilation'],
+          aliases => [ { name => "The B\x{2010}52\x{2019}s" }, { name => 'Three Original CDs' } ] },
+        { id => 'rg-2in1', title => "The B\x{2010}52\x{2019}s / Cosmic Thing",
+          'first-release-date' => '1997', 'primary-type' => 'Album',
+          'secondary-types' => ['Compilation'] },
+        { id => 'rg-cosmic', title => 'Cosmic Thing', 'first-release-date' => '1989',
+          'primary-type' => 'Album' },
+    ],
 );
 
 sub response_for {
@@ -140,9 +157,10 @@ sub response_for {
 }
 
 sub spine {
+    my ($mbid) = @_;
     %CACHE = (); @QUERIES = ();
     my $got;
-    $API->getReleaseGroups(mbid => $KRAFT, onDone => sub { $got = shift });
+    $API->getReleaseGroups(mbid => $mbid // $KRAFT, onDone => sub { $got = shift });
     return $got;
 }
 
@@ -283,6 +301,59 @@ ok(!matches($byId{'rg-mensch'}, 'The Man-Machine Recreated'),
                aliases => [ '', undef, '   ', 'Autobahn' ] };
     ok(!matches($rg, 'Computer World'), 'empty/undef aliases match nothing');
     ok(matches($rg, 'Autobahn'), '... and the real title still matches alongside them');
+}
+
+# ---------------------------------------------------------------------------
+# 8. AN ALIAS THAT IS ANOTHER GROUP'S TITLE (field, The B-52's, 2026-09-19).
+#    MB aliases the box "3 Original CDs" as "The B‐52’s" — which is ALSO the
+#    canonical title of the band's 1979 debut. The alias pass let the box claim
+#    the user's copy of the debut: "3 Original CDs · Local", drilling to the
+#    1979 album. That title already has an owner; an alias must not take it.
+# ---------------------------------------------------------------------------
+{
+    my $b = spine($B52);
+    my %rg = map { $_->{mbid} => $_ } @$b;
+    ok(!scalar(grep { Plugins::Discography::Sources::_norm($_) eq
+                      Plugins::Discography::Sources::_norm("The B\x{2010}52\x{2019}s") }
+               @{ $rg{'rg-3cd'}{aliases} || [] }),
+       'an alias equal to ANOTHER group\'s title is dropped from the spine');
+    ok(scalar(grep { $_ eq 'Three Original CDs' } @{ $rg{'rg-3cd'}{aliases} || [] }),
+       '... while the group\'s other aliases are kept (control)');
+
+    my $debut = { _candTitle => "The B\x{2010}52s", _candArtist => 'The B-52s', _albumid => 45730,
+                  name => "The B\x{2010}52s" };
+    my $sec = $SRC->matchesFor({}, 'The B-52s', $rg{'rg-3cd'}{title}, [ $debut ],
+        'rg-3cd', {}, undef, { sources => \@SOURCES, aliases => $rg{'rg-3cd'}{aliases} });
+    ok(!scalar(@{ $sec || [] }), 'the box no longer claims the owned debut as Local');
+    $sec = $SRC->matchesFor({}, 'The B-52s', $rg{'rg-b52'}{title}, [ $debut ],
+        'rg-b52', {}, undef, { sources => \@SOURCES, aliases => $rg{'rg-b52'}{aliases} });
+    ok(scalar(@{ $sec || [] }), '... and the debut\'s OWN group still does (control)');
+}
+
+# ---------------------------------------------------------------------------
+# 9. A TWO-ALBUM SET IS NOT AN ARTIST PREFIX (same field case). _norm drops the
+#    " / ", so "The B‐52’s / Cosmic Thing" reads as "the b 52s cosmic thing",
+#    and the artist-prefix rule stripped "the b 52s" and matched the owned
+#    "Cosmic Thing". A spaced slash means TWO TITLES, not a byline — in either
+#    direction (a streaming two-fer must not claim the single album either).
+# ---------------------------------------------------------------------------
+{
+    my $am  = \&Plugins::Discography::Sources::_albumMatches;
+    my $n   = \&Plugins::Discography::Sources::_norm;
+    my $an  = $n->('The B-52s');
+    my $set = "The B\x{2010}52\x{2019}s / Cosmic Thing";
+    ok(!$am->($an, $n->($set), 'The B-52s', 'Cosmic Thing', $set),
+       'the two-album RG does NOT match the single album "Cosmic Thing"');
+    ok(!$am->($an, $n->('Cosmic Thing'), 'The B-52s', "The B-52's / Cosmic Thing", 'Cosmic Thing'),
+       '... nor does a two-album CANDIDATE match the "Cosmic Thing" group');
+    ok($am->($an, $n->('Cosmic Thing'), 'The B-52s', 'Cosmic Thing', 'Cosmic Thing'),
+       '"Cosmic Thing" still matches its own group (control)');
+    ok($am->($n->('Belle and Sebastian'), $n->('Write About Love'), 'Belle and Sebastian',
+             'Belle and Sebastian Write About Love', 'Write About Love'),
+       'a real artist prefix still matches: Belle and Sebastian Write About Love (control)');
+    ok($am->($n->('Belle and Sebastian'), $n->('Belle and Sebastian Write About Love'),
+             'Belle and Sebastian', 'Write About Love', 'Belle and Sebastian Write About Love'),
+       '... in the other direction too (control)');
 }
 
 print "\n$pass passed, $fail failed\n";

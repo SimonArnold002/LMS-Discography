@@ -50,7 +50,7 @@ my $prefs = preferences('plugin.discography');
 # instance for a namespace and ignores later args). tools/syntax_check.sh
 # asserts all three agree and match install.xml.
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.6';
+use constant CACHE_VERSION => '0.51.7';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 # MB's canonical artist name, remembered in-process as well as cached — the
@@ -1856,6 +1856,28 @@ sub getReleaseGroups {
 
                 $log->warn("release-group list truncated at " . scalar(@all) . " of $total for $mbid")
                     if $offset + RG_PAGE_SIZE < $total;
+
+                # An alias that is ANOTHER group's canonical title already has
+                # an owner, so drop it. MB aliases The B-52's box "3 Original
+                # CDs" as "The B‐52’s", the title of one of its releases and of
+                # the 1979 debut group. Through the alias pass the box claimed
+                # the user's copy of the debut (field, 2026-09-19). Done here,
+                # once, so every reader of {aliases} (the list, the detail
+                # page, claimedLocalIds, the index keys) sees the same spine.
+                my %owners;
+                push @{ $owners{ Plugins::Discography::Sources::_norm($_->{title}) } }, $_->{mbid}
+                    for @all;
+                for my $rg (grep { $_->{aliases} } @all) {
+                    my @keep = grep {
+                        my $own = $owners{ Plugins::Discography::Sources::_norm($_) } || [];
+                        !grep { $_ ne $rg->{mbid} } @$own;
+                    } @{ $rg->{aliases} };
+                    if (@keep < @{ $rg->{aliases} }) {
+                        _dbg("aliases of '$rg->{title}': dropped "
+                            . (@{ $rg->{aliases} } - @keep) . " that another group owns");
+                    }
+                    if (@keep) { $rg->{aliases} = \@keep } else { delete $rg->{aliases} }
+                }
 
                 eval { $cache->set($key, \@all, RG_TTL); 1 }
                     or $log->warn("release-group cache set failed: $@");
