@@ -331,8 +331,18 @@ ok(scalar(@QUERIES) == 0, 'an explicit artist_id outranks the tag (and the name)
 {
     my $MB52  = '127f591a-7e27-4435-92db-0780f219f3a1';
     my $DEBUT = { id => 45730, album => "The B\x{2010}52s", year => 1979, artist => 'The B-52s' };
-    my $TRACK = { id => 678355, title => 'Rock Lobster', album => "The B\x{2010}52s" };
-    local %OWNS = (137542 => { albums => [ $DEBUT ], titles => [ $TRACK ] });
+    # A Various Artists compilation track: the only kind track-linking uses.
+    my $TRACK = { id => 678355, title => 'Rock Lobster', album => 'Sounds of the Seventies',
+                  compilation => '1', albumartist_ids => '133736', artist_ids => '137542' };
+    # LMS's `titles` IGNORES role_id once any tag is asked for (measured live,
+    # 2026-09-19: role_id BAND / COMPOSER / 4 / none all return this row). So
+    # the composer-only contributor's query answers with the ONE track it wrote,
+    # and the role gate has to be applied to the per-role ids (`tags:S`).
+    my $WROTE = { id => 678343, title => 'Future Generation', album => 'Planet Claire',
+                  albumartist_ids => '137542', trackartist_ids => '137542',
+                  composer_ids => '137553' };
+    local %OWNS = (137542 => { albums => [ $DEBUT ], titles => [ $TRACK ] },
+                   137553 => { albums => [],         titles => [ $WROTE ] });
     my $ids = sub { join ',', sort map { $_->{_albumid} } @{ $_[0] || [] } };
     my $LA  = sub { Plugins::Discography::Sources->localAlbums(@_) };
     my $LT  = sub { Plugins::Discography::Sources->localTracks(@_) };
@@ -367,7 +377,18 @@ ok(scalar(@QUERIES) == 0, 'an explicit artist_id outranks the tag (and the name)
     my $t = $LT->(137553, "The B-52's", { fallback => 'name', mbid => $MB52 });
     ok(scalar(@{ $t || [] }) == 1 && $t->[0]{_trackid} == 678355,
        'localTracks falls back the same way (the linked singles come back too)');
-    ok(!@{ $LT->(137553, "The B-52's") }, '... and only when asked (control)');
+    ok(!@{ $LT->(137553, "The B-52's") },
+       'a track the id only WROTE is not an owned performance (the role gate holds)');
+
+    # The role gate itself, for any artist: a covers track he only wrote must
+    # not enter the track-link pool, or a single tile links to someone else's
+    # recording. The band's own track stays (control).
+    local $OWNS{137542}{titles} = [ $TRACK,
+        { id => 1, title => 'Cover Of Theirs', album => 'Some VA Comp', compilation => '1',
+          albumartist_ids => '133736', artist_ids => '999', composer_ids => '137542' } ];
+    my $pool = $LT->(137542, 'The B-52s');
+    ok(scalar(@$pool) == 1 && $pool->[0]{_trackid} == 678355,
+       'a track the artist only COMPOSED stays out of the pool; his own recording stays in');
     %LIBRARY = ();
 }
 

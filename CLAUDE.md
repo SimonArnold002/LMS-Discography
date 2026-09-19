@@ -1318,6 +1318,20 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   the real safety is that only THIS artist's own tracks are ever considered (id-keyed, so a match is
   always this artist's song). **Runs ONLY on an unmatched release** — a streaming/album match is never
   overridden.
+- **CORRECTED 0.51.9 (2026-09-19): the PERFORMANCE-role gate on `localTracks` NEVER HELD.** LMS's
+  `titles` query IGNORES `role_id` once any tag is requested (measured live on 9.1: `role_id:BAND`,
+  `COMPOSER`, `4` and none all return the same rows; `albums` DOES honour it). So a composer-only
+  contributor ("The B-52's", one track's composer tag) got the track it wrote — which also kept the
+  0.51.8 empty-id fallback from firing — and any artist's pool carried other people's covers of songs
+  he only wrote. Now `tags:ulJS` and the gate is applied to the per-role ids (`artist_ids`,
+  `albumartist_ids`, `trackartist_ids`, `band_ids`); a row with no role ids at all is kept. `t_local.pl` §10.
+- **SCOPE CORRECTED 0.51.9 (Simon, 2026-09-19): *"it should only link on various artist compilations not
+  artist compilations."*** The code linked ANY owned track, so The B-52's page read nine singles as Local
+  (each off the same-titled track on the band's OWN albums) and the two-album set "The B‐52’s / Cosmic
+  Thing" off Cosmic Thing's title track. `localTracks` now keeps only tracks whose album carries LMS's
+  compilation flag (`tags:C`, `compilation eq '1'`). Verified live: the Bees' Nuggets / Pushin' Too Hard
+  tracks are `compilation=1` (album artist Various Artists 133736, the act in `artist_ids`); every B-52s
+  album is 0. `t_tracklink.pl` §4.
 - **The compilation stays under Appearances** (Simon's call): track-linking claims a TRACK, not the
   comp ALBUM, so *Nuggets* remains an orphan album -> Appearances, and its track ALSO becomes the
   playable source for the spine single. The track shows in both places, deliberately.

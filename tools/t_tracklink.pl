@@ -164,8 +164,10 @@ my $rgTitle = 'Voices Green and Purple / Trip to New Orleans';
 # ---------------------------------------------------------------------------
 {
     $TITLES{77854} = [
+        # The live shape (tags:ulJCS, 2026-09-19): a VA comp, the act as ARTIST.
         { id => 900, title => 'Forget Me Girl',
-          album => "Pushin' Too Hard", url => 'file:///a.flac', artwork_track_id => 55 },
+          album => "Pushin' Too Hard", url => 'file:///a.flac', artwork_track_id => 55,
+          compilation => '1', albumartist_ids => '133736', artist_ids => '77854' },
     ];
     @TITLE_QUERIES = ();
     my $out = $SRC->localTracks(77854, 'The Bees');
@@ -176,6 +178,41 @@ my $rgTitle = 'Voices Green and Purple / Trip to New Orleans';
     ok(scalar($out->[0]{_cover} eq '/music/55/cover'), '... and its artwork');
     ok(scalar(@TITLE_QUERIES == 1 && $TITLE_QUERIES[0] == 77854),
        '... via ONE titles query, id-keyed to that contributor');
+}
+
+# ---------------------------------------------------------------------------
+# 4. ONLY VARIOUS ARTISTS COMPILATIONS (Simon, 2026-09-19: "it should only link
+#    on various artist compilations not artist compilations"). The B-52's page
+#    showed nine singles as Local that he does not own — each linked to the
+#    same-titled track on one of the band's OWN albums (The B-52's, Planet
+#    Claire, Cosmic Thing; all compilation=0), and the two-album set "The B‐52’s
+#    / Cosmic Thing" linked to Cosmic Thing's title track. 0.50.2 was built for
+#    a single owned only on a VA comp (the Bees on Nuggets, compilation=1).
+# ---------------------------------------------------------------------------
+{
+    local $TITLES{137542} = [
+        { id => 1, title => 'Rock Lobster', album => "The B\x{2010}52s", compilation => '0',
+          albumartist_ids => '137542', trackartist_ids => '137542' },
+        { id => 2, title => 'Planet Claire', album => 'Planet Claire', compilation => '0',
+          albumartist_ids => '137542', trackartist_ids => '137542' },
+        { id => 3, title => 'Cosmic Thing', album => 'Cosmic Thing', compilation => '0',
+          albumartist_ids => '137542', trackartist_ids => '137542' },
+        { id => 4, title => 'Roam', album => 'Now 90s', compilation => '1',
+          albumartist_ids => '133736', artist_ids => '137542' },
+    ];
+    my $pool = $SRC->localTracks(137542, 'The B-52s');
+    ok(scalar(@$pool == 1 && $pool->[0]{_trackid} == 4),
+       'only the VA-compilation track enters the pool (album and artist-comp tracks do not)');
+
+    my $sec = $SRC->matchesFor({}, 'The B-52s', 'Rock Lobster', undef, 'rg-rl', {}, undef,
+        { sources => \@SOURCES, localTracks => $pool });
+    ok(!scalar(@{ $sec || [] }), 'the "Rock Lobster" single no longer reads Local off the album track');
+    $sec = $SRC->matchesFor({}, 'The B-52s', "The B\x{2010}52\x{2019}s / Cosmic Thing", undef,
+        'rg-2in1', {}, undef, { sources => \@SOURCES, localTracks => $pool });
+    ok(!scalar(@{ $sec || [] }), '... nor does the two-album set off Cosmic Thing\'s title track');
+    $sec = $SRC->matchesFor({}, 'The B-52s', 'Roam', undef, 'rg-roam', {}, undef,
+        { sources => \@SOURCES, localTracks => $pool });
+    ok(scalar(@{ $sec || [] }), 'a single owned on a VA compilation still links (control)');
 }
 
 print "\n$pass passed, $fail failed\n";

@@ -32,7 +32,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.8';
+use constant CACHE_VERSION => '0.51.9';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
@@ -564,7 +564,7 @@ sub localAlbums {
 }
 
 # Owned TRACKS for the artist — the track-level twin of localAlbums, for a
-# release the user owns only as a COMPILATION TRACK (Simon: an act's single that
+# release the user owns only as a VARIOUS ARTISTS COMPILATION TRACK (Simon: an act's single that
 # he owns only via a Nuggets/Pushin'-Too-Hard comp). Same PERFORMANCE-role gate
 # and same id-vs-name resolution as localAlbums. Each track carries a direct
 # `db:track.id` play string and the comp it lives on (for the row hint). Fetched
@@ -588,16 +588,35 @@ sub localTracks {
     }
     return [] unless @ids;
 
+    # `titles` IGNORES role_id once any tag is requested (measured live on LMS
+    # 9.1, 2026-09-19: BAND, COMPOSER, a number or no role_id at all return the
+    # same rows), so the gate never held here: a composer-only contributor got
+    # the tracks it WROTE, and any artist's pool carried other people's covers
+    # of his songs. The role_id stays (harmless, and right if LMS ever honours
+    # it); the gate is applied to the per-role ids `tags:S` returns. A row
+    # carrying no role ids at all cannot be judged and is kept, as before.
+    my @perfKeys = qw(artist_ids albumartist_ids trackartist_ids band_ids);
     my (@out, %seen);
     for my $id (@ids) {
         my $r = eval {
             Slim::Control::Request::executeRequest(undef,
                 ['titles', 0, LOCAL_TRACKS_MAX, "artist_id:$id",
-                 'role_id:' . PERFORMANCE_ROLES, 'sort:album', 'tags:ulJ']);
+                 'role_id:' . PERFORMANCE_ROLES, 'sort:album', 'tags:ulJCS']);
         };
         next unless $r;
         for my $e (@{ $r->getResult('titles_loop') || [] }) {
             next unless $e->{id} && defined $e->{title} && length $e->{title};
+            # VARIOUS ARTISTS COMPILATIONS ONLY (Simon, 2026-09-19). A track on
+            # the act's OWN album or own compilation linked every same-titled
+            # single ("Rock Lobster" off The B-52's) and a two-album set off a
+            # title track, reading Local for records he does not own. Those
+            # albums match their own release groups; only a VA comp (LMS's
+            # compilation flag, `tags:C`) holds a song nothing else can reach.
+            next unless ($e->{compilation} // '') eq '1';
+            if (grep { defined $e->{$_} } @perfKeys, 'composer_ids', 'conductor_ids') {
+                next unless grep { $_ eq $id }
+                            map  { split /,/, ($e->{$_} // '') } @perfKeys;
+            }
             next if $seen{ $e->{id} }++;
             my $img = $e->{artwork_track_id} ? "/music/$e->{artwork_track_id}/cover" : undef;
             push @out, {
