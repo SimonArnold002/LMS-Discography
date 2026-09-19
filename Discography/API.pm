@@ -50,7 +50,7 @@ my $prefs = preferences('plugin.discography');
 # instance for a namespace and ignores later args). tools/syntax_check.sh
 # asserts all three agree and match install.xml.
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.10';
+use constant CACHE_VERSION => '0.51.11';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 # MB's canonical artist name, remembered in-process as well as cached — the
@@ -1323,6 +1323,13 @@ sub filterRowsWithContent {
             # Only rows with NO artist_id — a row the Local leg or the alias
             # attach already claimed is left exactly as it was, including its
             # name.
+            # An id already on a kept row is not handed to a second one. The
+            # fold keeps rows apart when MB has no alias joining them, and the
+            # tag cannot overrule that: "Luxembourg Signal" (Qobuz) sat beside
+            # the library's "THE LUXEMBOURG SIGNAL" and gained its id, giving
+            # two Local rows that open one artist (review, live 2026-09-19).
+            my %carried = map { $slot[$_]{artist_id} => 1 }
+                          grep { !$folded{$_} && $slot[$_]{artist_id} } @kept;
             for my $i (@kept) {
                 next if $folded{$i};
                 next if $slot[$i]{artist_id};
@@ -1341,6 +1348,7 @@ sub filterRowsWithContent {
                     ($hit) = map { $hits[$_] }
                              sort { $n{$b} <=> $n{$a} || $a <=> $b } 0 .. $#hits;
                 }
+                next if $carried{ $hit->{artist_id} }++;
                 $slot[$i]{artist_id} = $hit->{artist_id};
                 my %have = map { $_ => 1 } @{ $slot[$i]{sources} || [] };
                 unshift @{ $slot[$i]{sources} }, 'Local' unless $have{Local};

@@ -491,6 +491,38 @@ ok(ref $out eq 'ARRAY' && !@$out, 'a row proven empty is still dropped, not atta
 }
 
 # ---------------------------------------------------------------------------
+# THE TAG ATTACH MUST NOT CLONE A ROW'S ID (review, live 2026-09-19). Searching
+# "Luxembourg Signal" returned TWO Local rows opening the same library artist
+# (141376): the Local leg's "THE LUXEMBOURG SIGNAL" and the Qobuz "Luxembourg
+# Signal". Both resolve to one MB artist, but MB has no alias joining the
+# spellings, so the fold rightly kept them apart — and the tag pass then gave
+# the Qobuz row the id the library row already carries.
+# ---------------------------------------------------------------------------
+{
+    local %TAGGED = ($MBID => [ T::Contrib->new(id => 141376, name => 'THE LUXEMBOURG SIGNAL') ]);
+    my $o = foldAs('The Luxembourg Signal', [],
+        { name => 'THE LUXEMBOURG SIGNAL', sources => ['Local','Qobuz'], artist_id => 141376 },
+        { name => 'Luxembourg Signal',     sources => ['Qobuz'] },
+    );
+    ok(scalar(@$o) == 2, 'Luxembourg Signal: no alias, so the fold keeps both rows (as before)');
+    ok(scalar(grep { ($_->{artist_id} // 0) == 141376 } @$o) == 1,
+       '... and only ONE row opens library artist 141376 (the tag pass does not clone it)');
+    ok(scalar(grep { $_ eq 'Local' } map { @{ $_->{sources} || [] } } @$o) == 1,
+       '... so only one row reads Local');
+
+    # Two UNATTACHED rows resolving to one tagged artist: only the first gains it.
+    $o = foldAs('The Luxembourg Signal', [],
+        { name => 'Luxembourg Signal', sources => ['Qobuz'] },
+        { name => 'Luxembourg Signal!', sources => ['Qobuz'] },
+    );
+    ok(scalar(grep { ($_->{artist_id} // 0) == 141376 } @$o) <= 1,
+       '... nor does it hand one id to two unattached rows');
+    # Control: a lone unattached row still gains the id (0.51.3 unchanged).
+    $o = foldAs('The Luxembourg Signal', [], { name => 'Luxembourg Signal', sources => ['Qobuz'] });
+    ok(($o->[0]{artist_id} // 0) == 141376, 'a lone streaming row is still attached by tag (control)');
+}
+
+# ---------------------------------------------------------------------------
 # JAMES YORKSTON (field, 2026-09-19): TWO library rows in one group. The row
 # ranked first ("James Yorkston", one VA track) must not win over the one that
 # OWNS the albums ("James Yorkston and friends", folded as a joint credit) —

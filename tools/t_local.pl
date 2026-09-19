@@ -83,7 +83,7 @@ BEGIN {
 
 package T::Null;  our $AUTOLOAD; sub AUTOLOAD { return } sub DESTROY { }
 package T::Prefs; sub get { 1 } sub set { 1 } sub init { 1 } sub setChange { 1 }
-package T::Req;   sub getResult { return $_[0]->{rows} }
+package T::Req;   sub getResult { return ($_[1] // '') eq 'count' ? scalar @{ $_[0]->{rows} || [] } : $_[0]->{rows} }
 # Contributor resultset: the search is `musicbrainz_id => { -in => [...] }`,
 # and the column is compared EXACTLY -- so the stub matches exactly too, and
 # the code's own case ladder is what has to do the work.
@@ -383,6 +383,26 @@ ok(scalar(@QUERIES) == 0, 'an explicit artist_id outranks the tag (and the name)
     # The role gate itself, for any artist: a covers track he only wrote must
     # not enter the track-link pool, or a single tile links to someone else's
     # recording. The band's own track stays (control).
+    # THE INTERACTION 0.51.9 BROKE (review, 2026-09-19). An id that OWNS
+    # albums must be used as-is by localTracks too (the 0.51.8 rule). Once the
+    # pool kept only VA-comp tracks, "no tracks" stopped meaning "performs on
+    # nothing": an artist whose tracks all sit on his own albums fell back BY
+    # NAME and borrowed another contributor's VA tracks (live: Suzanne Vega ->
+    # "Suzanne Vega & Joe Jackson", The Lightning Seeds -> "Lightning Seeds").
+    {
+        local $OWNS{137542}{titles} = [ { id => 5, title => 'Roam', album => 'Cosmic Thing',
+            compilation => '0', albumartist_ids => '137542', trackartist_ids => '137542' } ];
+        local $OWNS{777} = { albums => [], titles => [ { id => 6, title => 'Roam', album => 'Now 90s',
+            compilation => '1', albumartist_ids => '133736', artist_ids => '777' } ] };
+        local %CONTRIB = ();
+        local %LIBRARY = ('The B-52s' => [ { id => 137542, artist => 'The B-52s' },
+                                          { id => 777, artist => 'The B-52s' } ]);
+        @QUERIES = ();
+        my $p = $LT->(137542, 'The B-52s', { fallback => 'name', mbid => $MB52 });
+        ok(!@{ $p || [] }, 'an id that OWNS albums gets no borrowed tracks, even with no VA tracks of its own');
+        ok(!@QUERIES, '... and no name lookup is made for it');
+    }
+
     local $OWNS{137542}{titles} = [ $TRACK,
         { id => 1, title => 'Cover Of Theirs', album => 'Some VA Comp', compilation => '1',
           albumartist_ids => '133736', artist_ids => '999', composer_ids => '137542' } ];

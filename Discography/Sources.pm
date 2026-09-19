@@ -32,7 +32,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.10';
+use constant CACHE_VERSION => '0.51.11';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
@@ -635,8 +635,11 @@ sub localTracks {
         }
     }
     # Same fallback as localAlbums, so the linked singles come back with the
-    # albums rather than leaving the page half-restored.
-    if (!@out && $artistId && $opt->{fallback}) {
+    # albums rather than leaving the page half-restored. Gated on the id owning
+    # NO ALBUM, not on an empty pool: since the pool keeps only VA-comp tracks,
+    # "no tracks" is the normal state of an artist owned as albums, and falling
+    # back then borrowed other contributors' tracks by name (review, 0.51.10).
+    if (!@out && $artistId && $opt->{fallback} && !_albumCountFor($artistId)) {
         return $class->localTracks(undef,
             ($opt->{fallback} eq 'name' ? $artist : undef),
             { mbid => $opt->{mbid}, exclude => $artistId });

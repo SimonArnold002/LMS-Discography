@@ -49,6 +49,7 @@ because line numbers rot on the next edit.
 | The full `_discographyView` rebuild on every list-control tap is deliberately | A2 | `The full `_discographyView` rebuild on every` |
 | The officialness pass is deliberately NOT parallel with the release-group | A2 | `The officialness pass is deliberately NOT` |
 | The proxy name is deliberately NOT lowercased | A2 | `The proxy name is deliberately NOT lowercased` |
+| `localAlbums` trusting a TAGGED contributor that owns nothing (name path skipped) — UNPROVEN | B | `UNPROVEN in Simon's library` |
 
 **Two standing rules that kill most repeat findings:**
 
@@ -153,6 +154,13 @@ always with its reason, and those stay suppressed. The code a fix added is new a
 ### B. KNOWN-OPEN AND ACCEPTED — do not re-report as new
 
 - The alias-pass port to LBF/PFR/LL (see A2). Owned, outstanding, not a defect.
+- **`localAlbums`' identity-first read trusts a tagged contributor that owns NOTHING** (review of
+  0.51.10, 2026-09-19): with no explicit id, a tagged-but-empty contributor would win over an untagged
+  owner and the name ladder would never run. **UNPROVEN in Simon's library**: all 28 same-name
+  duplicate groups holding an empty member render the same Local rows by NAME as by the owning ID
+  (the two differences are MB's `[unknown]` and "Treeboundstory", which MB cannot identify at all).
+  The WRITER would be a tagged empty contributor beside an untagged owner; none exists. Re-raise only
+  with a named artist whose name-entered page loses albums its id-entered page shows.
 
 ### C. CLOSED FINDINGS
 
@@ -948,9 +956,17 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
      falls back by tag ONLY (`'mbid'`), never borrowing the other act's catalogue by name. Same for
      `localTracks`. An id owning even one album is untouched and pays nothing; callers that do not opt
      in (band links, disambiguation, joint credits) are unchanged. Pinned in `t_local.pl` §10.
+     **0.51.11 (review):** `localTracks`' fallback is gated on the id owning NO ALBUM (`_albumCountFor`),
+     not on an empty pool — once 0.51.9 kept only VA-comp tracks, an empty pool was the normal state
+     and the fallback fired for Suzanne Vega, The Lightning Seeds, LSO & co. (13 rows live, LSO's
+     three albums read Local off one borrowed "Piano Concerto" movement). The 0.51.8 test covered
+     `localAlbums` only; `t_local.pl` now pins `localTracks` to the same rule.
   2. **`API::filterRowsWithContent`** — kept rows with no `artist_id` are claimed by their resolved
      mbid, gaining `artist_id` + a leading **Local** source, so the row says Local BEFORE you click it
-     rather than only after.
+     rather than only after. **0.51.11 (review, live):** an id already carried by a kept row is NOT
+     handed to another — "Luxembourg Signal" (Qobuz) gained the id of the library's "THE LUXEMBOURG
+     SIGNAL" beside it (MB has no alias, so the fold kept them apart), giving two Local rows opening one
+     artist. The fold's alias rule is not overruled by the tag. `t_fold.pl`.
 - **THE ORDERING IS LOAD BEARING, same lesson as 0.44.20's relabel.** The attach runs **after the fold**:
   the fold's survivor choice prefers a row that already carries an `artist_id`, so attaching ids first
   would change which row survives and which spelling it wears. Placed after, it can only add Local to
