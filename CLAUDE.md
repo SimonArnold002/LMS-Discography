@@ -59,6 +59,7 @@ because line numbers rot on the next edit.
 | `_idGroup` could block a group from its own id-tagged copy | A3 | `_idGroup cannot block a group` |
 | Deezer's artist-albums payload has no track count, so no size | A3 | `Deezer states record_type` |
 | `length $e->[0] >= 2` parsing as `length($e->[0] >= 2)` | A3 | `a named unary binds tighter` |
+| Collaborations needing a second entry after the 0.51.15 reorder | A3 | `the Collaborations section is on the page at the FIRST entry` |
 
 **Two standing rules that kill most repeat findings:**
 
@@ -218,6 +219,7 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 | `_idGroup` (0.51.12) could keep a release group from matching a copy whose id names THAT group | **WRONG** | `_idGroup cannot block a group` from its own copy: it is only consulted INSIDE the `unless (_mbidMatch(...))` branch, i.e. only after the id has already failed to name this group. Symmetric by construction, and pinned by the "control: its own group still takes it by id" assertion in `t_size.pl` §5. |
 | Deezer's artist-albums payload carries no track count, so a Deezer copy has no size and the single gate cannot act on it | **WRONG** | `/artist/<id>/albums` omits `nb_tracks` but **Deezer states record_type** on every row, which `_candSize` reads when there are no counts; `/search/album` carries BOTH (`nb_tracks` + `record_type`, verified live 2026-09-19). Pinned in `t_size.pl` §1. |
 | `length $e->[0] >= 2` in `_editionTitles`/`matchesFor` parses as `length($e->[0] >= 2)` | **WRONG** | In Perl **a named unary binds tighter** than a comparison operator, so it is `length($e->[0]) >= 2`, which is the intent. Same shape appears in the alias pass and has been correct since 0.48.0. |
+| Moving the collaboration vetting off the render path (0.51.15) costs a visit: the section now needs a SECOND entry on a cold artist | **WRONG** | Measured live on 0.51.15 after `["discography","clearcache","mbid:4a00ec9d-…"]` wiped `rg,official,bands,collabs`: **the Collaborations section is on the page at the FIRST entry**, with the same two links as 0.51.13 (Fripp & Eno, Harmonia 76). `warmBandMembers` caches the candidate list on its own single request, so `peekCollabs` is already fed before `warmOfficial`'s deferred render fires; only the VETTING trails. Holly Golightly (→ the Brokeoffs, both owned albums) and Bob Dylan (no section) unchanged. |
 
 ### B. KNOWN-OPEN AND ACCEPTED — do not re-report as new
 
