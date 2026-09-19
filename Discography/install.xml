@@ -8,7 +8,7 @@
 
 <module>Plugins::Discography::Plugin</module>
 
-<version>0.51.11</version>
+<version>0.51.12</version>
 
 <icon>plugins/Discography/html/images/DiscographyIcon_svg.png</icon>
 

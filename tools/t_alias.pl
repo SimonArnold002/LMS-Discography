@@ -112,6 +112,7 @@ sub ok {
 # ---------------------------------------------------------------------------
 my $KRAFT = '5700dcd4-c139-4f31-aa3e-6382b9af9032';
 my $B52   = '127f591a-7e27-4435-92db-0780f219f3a1';
+my $KRAFTX = 'aaaaaaaa-0000-4000-8000-00000000cafe';   # a second Kraftwerk-shaped spine (finding 3)
 my %SPINE = (
     $KRAFT => [
         { id => 'rg-radio', title => "Radio\x{2010}Aktivit\x{e4}t", 'first-release-date' => '1975',
@@ -146,10 +147,35 @@ my %SPINE = (
         { id => 'rg-cosmic', title => 'Cosmic Thing', 'first-release-date' => '1989',
           'primary-type' => 'Album' },
     ],
+    # KRAFTWERK, the real cross-type collisions on the mirror (2026-09-19).
+    # The 2009 remaster of the 2003 album is SOLD as "Tour de France" (Simon
+    # owns it), and two SINGLES carry that title; a hidden Remix single carries
+    # a single's English alias; two SINGLES share "Trans Europe Express".
+    $KRAFTX => [
+        { id => 'rg-tdfs', title => 'Tour de France Soundtracks', 'first-release-date' => '2003',
+          'primary-type' => 'Album', aliases => [ { name => 'Tour de France' } ] },
+        { id => 'rg-tdf83', title => 'Tour de France', 'first-release-date' => '1983',
+          'primary-type' => 'Single' },
+        { id => 'rg-tdfe2', title => 'Tour de France (Etape 2) (edit)', 'first-release-date' => '2003',
+          'primary-type' => 'Single' },
+        { id => 'rg-radsg', title => "Radioaktivit\x{e4}t", 'first-release-date' => '1976',
+          'primary-type' => 'Single', aliases => [ { name => 'Radioactivity' } ] },
+        { id => 'rg-radrx', title => 'Radioactivity (1788-L / Remix)', 'first-release-date' => '2017',
+          'primary-type' => 'Single', 'secondary-types' => ['Remix'] },
+        { id => 'rg-tees', title => 'Trans Europa Express', 'first-release-date' => '1977',
+          'primary-type' => 'Single', aliases => [ { name => 'Trans Europe Express' } ] },
+        { id => 'rg-teeen', title => 'Trans Europe Express', 'first-release-date' => '1977',
+          'primary-type' => 'Single' },
+    ],
 );
 
+our %RELEASES;   # artist mbid -> release-browse items (release + its group)
 sub response_for {
     my ($url) = @_;
+    if ($url =~ m{/release\?artist=([^&]+)}) {
+        my $r = $RELEASES{$1} || [];
+        return { releases => $r, 'release-count' => scalar @$r };
+    }
     my ($mbid) = $url =~ m{release-group\?artist=([^&]+)};
     return { 'release-groups' => [], 'release-group-count' => 0 } unless $mbid;
     my $rgs = $SPINE{$mbid} || [];
@@ -354,6 +380,61 @@ ok(!matches($byId{'rg-mensch'}, 'The Man-Machine Recreated'),
     ok($am->($n->('Belle and Sebastian'), $n->('Belle and Sebastian Write About Love'),
              'Belle and Sebastian', 'Write About Love', 'Belle and Sebastian Write About Love'),
        '... in the other direction too (control)');
+}
+
+# ---------------------------------------------------------------------------
+# 10. THE PRUNE STAYS WIDE: ANY OTHER GROUP'S TITLE WINS (review 2026-09-19,
+#     finding 3 — DECLINED after measuring). The review proposed letting an
+#     alias survive an owner of lower rank (an album vs a single) or a hidden
+#     one (Remix). Replayed over all 1,100 library artists on the mirror, that
+#     keeps 104 aliases §8 drops, and most of them are OTHER releases in the
+#     group: "The Fame" -> "The Fame Monster" (an EP), live albums -> the
+#     singles on them ("Wow", "The Walk", "Let's Go Crazy"), "The Doors" ->
+#     "Light My Fire" (a dozen compilations), "Tanto tempo" -> its Remix album.
+#     Each would become a false match. The one real loss is Kraftwerk's "Tour
+#     de France Soundtracks" (sold as "Tour de France"); a narrower rule for it
+#     is tracked separately. Pinned so the widening is not re-proposed blind.
+# ---------------------------------------------------------------------------
+{
+    my $k = spine($KRAFTX);
+    my %rg = map { $_->{mbid} => $_ } @$k;
+    ok(!scalar(grep { $_ eq 'Tour de France' } @{ $rg{'rg-tdfs'}{aliases} || [] }),
+       'an alias another group carries is dropped even when that group is a lower-ranked SINGLE');
+    ok(!scalar(grep { $_ eq 'Radioactivity' } @{ $rg{'rg-radsg'}{aliases} || [] }),
+       '... and even when that group is a hidden Remix (its releases must not route here)');
+    ok(!scalar(grep { $_ eq 'Trans Europe Express' } @{ $rg{'rg-tees'}{aliases} || [] }),
+       '... and, as ever, when it is the same rank');
+}
+
+# ---------------------------------------------------------------------------
+# 11. EDITION TITLES come free with the release browse (review 2026-09-19).
+#     MusicBrainz names a release GROUP after its first edition; Kraftwerk's
+#     2003 "Tour de France Soundtracks" group holds the 2009/2015/2020 editions
+#     titled plain "Tour de France" — Simon's copy. The bootleg pass already
+#     fetches every release with its group, so the titles cost no request.
+#     Only OFFICIAL (or status-less) editions count: a bootleg's title must not
+#     become a way into a real album.
+# ---------------------------------------------------------------------------
+{
+    local %RELEASES = ($KRAFTX => [
+        { id => 'r1', title => 'Tour de France Soundtracks', status => 'Official',
+          'release-group' => { id => 'rg-tdfs', title => 'Tour de France Soundtracks' } },
+        { id => 'r2', title => 'Tour de France', status => 'Official',
+          'release-group' => { id => 'rg-tdfs', title => 'Tour de France Soundtracks' } },
+        { id => 'r3', title => 'Tour de France', status => 'Official',
+          'release-group' => { id => 'rg-tdfs', title => 'Tour de France Soundtracks' } },
+        { id => 'r4', title => 'Live in Paris Bootleg', status => 'Bootleg',
+          'release-group' => { id => 'rg-tdfs', title => 'Tour de France Soundtracks' } },
+        { id => 'r5', title => 'Tour de France', status => undef,
+          'release-group' => { id => 'rg-tdf83', title => 'Tour de France' } },
+    ]);
+    %CACHE = ();
+    $API->warmOfficial($KRAFTX, sub {});
+    my $ed = $API->can('peekEditions') ? $API->peekEditions($KRAFTX) : undef;
+    my %t = map { $_ => 1 } @{ ($ed || {})->{'rg-tdfs'} || [] };
+    ok($t{'Tour de France'}, 'the group records its edition titled "Tour de France"');
+    ok(!$t{'Live in Paris Bootleg'}, '... but never a bootleg edition\'s title');
+    ok(scalar(keys %t) == 2, '... each distinct title once (the group\'s own name included, dropped later)');
 }
 
 print "\n$pass passed, $fail failed\n";

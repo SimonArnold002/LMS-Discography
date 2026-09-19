@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.11';
+use constant CACHE_VERSION => '0.51.12';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -204,6 +204,64 @@ sub _rivalsByTitle {
         } @{ $by{$k} };
     }
     return \%by;
+}
+
+# { rg-mbid => 1 } for the groups a local copy's MusicBrainz id may place it in
+# (Sources::_idGroup): every group except the hidden Remix/DJ-mix ones — the
+# same pool claimedLocalIds claims across, so a tile and "Also in your library"
+# never disagree about where an id-tagged copy belongs.
+sub _idGroups {
+    my ($rgs) = @_;
+    my %g;
+    for my $rg (@{ $rgs || [] }) {
+        next unless $rg->{mbid};
+        next if grep { $HIDE_SECONDARY{$_} } @{ $rg->{secondary} || [] };
+        $g{ $rg->{mbid} } = 1;
+    }
+    return \%g;
+}
+
+# Which EDITION titles each release group may match by (review 2026-09-19).
+# MusicBrainz names a group after its first edition; later editions can be
+# sold under another name (Kraftwerk's 2003 "Tour de France Soundtracks" group
+# holds the 2009 "Tour de France" Simon owns). Returns
+# { rg-mbid => [ [norm, raw, albumOnly], ... ] } for API::peekEditions' titles.
+#
+# The alias rule (API::getReleaseGroups) applies: an edition title that is
+# ANOTHER group's real title is dropped — the B-52's box holds an edition
+# titled like the debut album. ONE exception, safe only because of the size
+# gate in Sources::matchesFor: when every group it clashes with is a plain
+# (visible) SINGLE, the title is kept for a non-single group but marked
+# album-only, so only an album-sized copy may use it. A clash with a hidden
+# Remix group drops it (that group's releases must not route here).
+sub _editionTitles {
+    my ($rgs, $edMap) = @_;
+    return {} unless $edMap && ref $edMap eq 'HASH';
+
+    my %owners;
+    push @{ $owners{ Plugins::Discography::Sources::_norm($_->{title}) } }, $_ for @$rgs;
+
+    my %out;
+    for my $rg (@$rgs) {
+        my $titles = $edMap->{ $rg->{mbid} } or next;
+        my %seen = map { $_ => 1 } grep { length }
+                   map { Plugins::Discography::Sources::_norm($_) }
+                   grep { defined } ($rg->{title}, @{ $rg->{aliases} || [] });
+        for my $raw (@$titles) {
+            my $n = Plugins::Discography::Sources::_norm($raw);
+            next if $n eq '' || $seen{$n}++;
+            my @others = grep { $_->{mbid} ne $rg->{mbid} } @{ $owners{$n} || [] };
+            if (!@others) {
+                push @{ $out{ $rg->{mbid} } }, [ $n, $raw, 0 ];
+            }
+            elsif (($rg->{type} // '') ne 'Single'
+                   && !grep { ($_->{type} // '') ne 'Single'
+                              || grep { $HIDE_SECONDARY{$_} } @{ $_->{secondary} || [] } } @others) {
+                push @{ $out{ $rg->{mbid} } }, [ $n, $raw, 1 ];
+            }
+        }
+    }
+    return \%out;
 }
 
 sub _shownTypes {
@@ -1678,6 +1736,8 @@ sub _buildList {
     # Same-title release-groups compete for one candidate (four official groups
     # normalise to "the beatles"); this decides which one owns it.
     my $rivals = _rivalsByTitle($rgs, $officialMap, $show);
+    # Edition titles each group may also match by (same browse as $officialMap).
+    my $editions = _editionTitles($rgs, Plugins::Discography::API->peekEditions($mbid));
 
     # Invariants for the whole list, computed ONCE (matchesFor used to redo both
     # for every release group): the artist norm and the source order. The RG
@@ -1685,6 +1745,9 @@ sub _buildList {
     # lookup and the matcher (was normed twice).
     my $artistNorm = Plugins::Discography::Sources::_norm($opts->{artist} // '');
     my $sources    = [ Plugins::Discography::Sources::orderedSources() ];
+    # Groups a local copy's MusicBrainz id can place it in: the same pool
+    # "Also in your library" claims across, so the two views agree.
+    my $idGroups   = _idGroups($rgs);
 
     # For the empty-artist verdict below: how many release groups the USER's own
     # filters left on the table, and whether streaming was actually resolved.
@@ -1705,7 +1768,8 @@ sub _buildList {
             $rivals->{$rgNorm},
             { artistNorm => $artistNorm, albumNorm => $rgNorm, sources => $sources,
               index => $pool->{index}, aliases => $rg->{aliases},
-              localTracks => $localTracks });
+              rgType => $rg->{type}, editions => $editions->{ $rg->{mbid} },
+              idGroups => $idGroups, localTracks => $localTracks });
         # Which streaming candidates a release group CLAIMED. Collected here
         # rather than recomputed, because matching every candidate against
         # every release group is exactly the work this loop already does.
@@ -1941,7 +2005,7 @@ sub _buildList {
             !grep { $HIDE_SECONDARY{$_} } @{ $rg->{secondary} };
         } @$rgs;
         my $claimed = ($local && @$local)
-            ? Plugins::Discography::Sources->claimedLocalIds(\@rgPool, $opts->{artist}, $local, $relMap)
+            ? Plugins::Discography::Sources->claimedLocalIds(\@rgPool, $opts->{artist}, $local, $relMap, $editions)
             : {};
         my @extras  = grep { !$claimed->{ $_->{_albumid} } } @{ $local || [] };
 
@@ -3417,6 +3481,16 @@ sub _releaseDetail {
     my $rg     = $pass->{rg};
     my $artist = $pass->{artist} // '';
 
+    # The list view's same-name guard, applied here too (review 2026-09-19).
+    # Only the tile's url coderef passes the list's $opts, which carry
+    # shared_name; _rgView (Material) and playCommand rebuild $pass from action
+    # params, which do not. Resolve it the same way the list did (a cache hit
+    # once the list or search has run) before anything is fetched.
+    return Plugins::Discography::API->sharesNameWithProminentAsync($artist, $pass->{mbid}, sub {
+        $pass->{shared_name} = $_[0] ? 1 : 0;
+        _releaseDetail($client, $callback, $pass);
+    }) unless exists $pass->{shared_name};
+
     # Meta as an indented prose row (the view header already shows the
     # artwork; an image here would mutate the row to a clamped one-liner).
     my $metaTitle = _escHtml($rg->{title} . ($artist ? " \x{2013} $artist" : ''));
@@ -3660,9 +3734,13 @@ sub _releaseDetail {
 
     Plugins::Discography::Sources->getCandidates($client, $artist, 0, sub {
         my $bySvc = shift;
-        my $local = Plugins::Discography::Sources->localAlbums(
-            $pass->{artist_id}, $artist, $pass->{mbid},
-            { fallback => _idFallback($pass) });
+        # Same gate as the list's $local (_discographyView): a secondary act
+        # with no library id of its own gets no name lookup, or the prominent
+        # act's owned album reads Local on a detail page whose tile did not.
+        my $local = ($pass->{shared_name} && !$pass->{artist_id}) ? []
+                  : Plugins::Discography::Sources->localAlbums(
+                        $pass->{artist_id}, $artist, $pass->{mbid},
+                        { fallback => _idFallback($pass) });
         # Lazy owned-track pool, so the drill agrees with the tile for a release
         # owned only as a compilation track (same suppression as $local).
         my $ltCache;
@@ -3685,10 +3763,11 @@ sub _releaseDetail {
                               [ map { $_->{_mbid} } grep { $_->{_mbid} } @$local ] ) } };
 
         my $finish = sub {
-            my ($rivalBucket) = @_;
+            my ($rivalBucket, $eds, $idGroups) = @_;
             $sections = Plugins::Discography::Sources->matchesFor(
                 $bySvc, $artist, $rg->{title}, $local, $rg->{mbid}, $relMap, $rivalBucket,
-                { aliases => $rg->{aliases}, localTracks => $localTracks });
+                { aliases => $rg->{aliases}, rgType => $rg->{type}, editions => $eds,
+                  idGroups => $idGroups, localTracks => $localTracks });
             $sectionsDone = 1;
             # Review needs $sections (Qobuz-description fallback rides the match).
             _fetchAlbumReview($client, $artist, $rg->{title}, $rg->{mbid}, $sections, sub {
@@ -3712,7 +3791,11 @@ sub _releaseDetail {
                     my $rivals = _rivalsByTitle($rgs,
                         Plugins::Discography::API->peekOfficial($ambid),
                         _shownTypes());
-                    $finish->($rivals->{ Plugins::Discography::Sources::_norm($rg->{title}) });
+                    # ... and the same edition titles, or the drill-in drops a
+                    # match the tile shows.
+                    my $eds = _editionTitles($rgs, Plugins::Discography::API->peekEditions($ambid));
+                    $finish->($rivals->{ Plugins::Discography::Sources::_norm($rg->{title}) },
+                              $eds->{ $rg->{mbid} }, _idGroups($rgs));
                 },
                 onError => sub { $finish->(undef) },
             );

@@ -50,6 +50,9 @@ because line numbers rot on the next edit.
 | The officialness pass is deliberately NOT parallel with the release-group | A2 | `The officialness pass is deliberately NOT` |
 | The proxy name is deliberately NOT lowercased | A2 | `The proxy name is deliberately NOT lowercased` |
 | `localAlbums` trusting a TAGGED contributor that owns nothing (name path skipped) — UNPROVEN | B | `UNPROVEN in Simon's library` |
+| Type-aware alias prune (keep an alias that clashes only with a Single) — DECLINED, measured | A2 | `The alias prune stays type-blind` |
+| An edition MusicBrainz files under another group follows MB's grouping — not corrected | A2 | `MusicBrainz's own grouping is not corrected` |
+| An id-tagged copy is held to its id's group, even when the tag is wrong | A2 | `A wrong MusicBrainz id tag holds the copy` |
 
 **Two standing rules that kill most repeat findings:**
 
@@ -150,6 +153,21 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   fetch.** Two concurrent MB chains would exceed MusicBrainz's 1 req/s etiquette.
 - **The proxy name is deliberately NOT lowercased**, and the band row resolves its
   contributor id LAZILY on click by design (0.26.1).
+- **The alias prune stays type-blind** (`API::getReleaseGroups` alias drop, `_rivalsByTitle`;
+  review 2026-09-19, finding 3, DECLINED by measurement). Keeping an alias that clashes only with
+  a Single — so Kraftwerk's album could match by "Tour de France" — was built and replayed over
+  1,100 artists: it kept **104** aliases, most of them false (The Fame -> Fame Monster, live albums
+  -> singles, The Doors -> Light My Fire, Tanto tempo -> Remixes). Reverted. The Kraftwerk case is
+  solved instead by EDITION titles plus the album-size gate (0.51.12). Pinned in `t_alias.pl` §10.
+- **MusicBrainz's own grouping is not corrected** (Simon, 2026-09-19: *"we are not fixing for MB
+  errors"*). An edition title attaches an owned album to the group MB files that edition under,
+  even where that grouping looks odd — All India Radio *Fall Remixes* -> *Fall*, Dylan *The Best of
+  the Cutting Edge* -> *The Cutting Edge*. That is MB data, not a matcher gap.
+- **A wrong MusicBrainz id tag holds the copy to the wrong group** (0.51.12, Simon: *"it should
+  not try to match again it if its matched via id"*). `Sources::_idGroup`: a local copy whose id
+  places it in another group on the page is never title-matched elsewhere. The cost is a mis-tagged
+  file, which the title used to rescue; the tag is the user's data and is trusted, as tier 0 always
+  has been.
 
 ### B. KNOWN-OPEN AND ACCEPTED — do not re-report as new
 
@@ -607,6 +625,9 @@ titles stripped to empty** (the rule requires a surviving remainder).
   pass can re-resolve the weak ones WITHOUT touching user corrections. A stored wrong match is
   stickier than a computed one: today a bad resolution silently improves as MB improves.
 - **Correction UI + unmatched list**, as Simon scoped. 61 rows is a realistic queue.
+  - **Manual match from close candidates (Simon, 2026-09-19 — FUTURE, not started):** for the edge
+    cases no automatic rule settles, let the user pick the right copy from the near-miss
+    candidates. A pick is stored as a user override and outranks every automatic tier.
 - The MB-tag fast path ALREADY EXISTS and needs nothing new: `Sources.pm` reads
   `Slim::Schema::Album->musicbrainz_id` (:316) and resolves a Contributor by `musicbrainz_id` (:362).
   Simon's library is not Picard-tagged, so Tier 0 currently has nothing to feed it — the index IS
@@ -823,6 +844,51 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   likewise deliberately LBF-only and outside the shared engine.
 
 ## Development Log
+
+### 0.51.12 (2026-09-19) — review round: detail-page guard, joint credits, an album is not a single
+Code review of the 0.51.x block, fixed one at a time, test first. **UNVERIFIED LIVE** until installed.
+- **Finding 1 — the release DETAIL page lacked the list's same-name guard.** Material's `_rgView` and
+  `playCommand` rebuild `$pass` without `shared_name`, so a secondary act with no own library id
+  looked its name up and could read the prominent act's album as Local. `_releaseDetail` now resolves
+  `sharesNameWithProminentAsync` itself when the flag is absent (at the TOP of the sub, so the link
+  fetch runs once) and gates `$local`/`localTracks` exactly as the list. No reachable live case was
+  found (Sonic Boom's secondary acts, 18 detail pages) — the branch is closed, not a field fix.
+  `t_detailshared.pl` (new, 12).
+- **Finding 2 — `localAlbums`' TAG path dropped joint-credit contributors** (confirmed live: Holly
+  Golightly's page by name lacked *Medicine County* and *No Help Coming*, owned under the joint
+  contributor 135756; 163 such pairs in the library). `_jointRows` extracted from the name path,
+  `_jointArtistIds` (probe-free) feeds both `localAlbums` and `localTracks` on the tag path.
+  `t_local.pl` §11 (52 total); §9's pin corrected to "the tag path never term-probes".
+- **Finding 3 — AN ALBUM IS NOT A SINGLE** (Kraftwerk: the 12-track *Tour De France (2009 Digital
+  Remaster)* read Local — and Qobuz — on the single *Tour de France (Etape 2) (edit)*). Simon's rule:
+  an album must never match a single, with or without ids, streaming as well as local.
+  - **Size gate.** Every copy is sized the way the Qobuz plugin sizes its own artist pages: 30+ min
+    or >6 tracks = album, <4 tracks = single, else EP. Qobuz `tracks_count`/`duration`, Tidal
+    `numberOfTracks`/`duration` (else `type`), Deezer `record_type`; Local from a RELEASETYPE
+    SINGLE/EP tag (`tags:W`; ALBUM is LMS's default and proves nothing), else a lazy
+    `titles album_id tags:d` count, memoised. A Single group never takes an album-sized copy; unknown
+    size keeps the old behaviour. `CAND_CACHE_V` 4 -> 5 (candidate shape gained `_size`).
+  - **Edition titles.** MB names a group after its FIRST edition; Simon's copy is a later edition of
+    "Tour de France Soundtracks" titled "Tour de France". `warmOfficial` now keeps each group's
+    OFFICIAL release titles (`dsc:rgo:v4`, `t`), `Browse::_editionTitles` prunes them like aliases —
+    except a clash only with visible plain Singles is kept ALBUM-ONLY — and they are tried last in
+    `matchesFor`/`claimedLocalIds` with the alias shape. Replay over 1,100 artists: **44 owned albums
+    newly attach**, 42 of which matched nothing before (5 of the "11 real matcher gaps" among them:
+    Behaviour, The Orb, The Orchids, Drive, Big Star). Prince *Sign 'O' the Times* reaches the Single
+    group by edition title and is stopped only by the size gate — the two must ship together.
+  - **Matched by id is not matched again** (Simon: *"it should not try to match again it if its
+    matched via id"*). `Sources::_idGroup` + `Browse::_idGroups`: a local copy whose MusicBrainz id
+    places it in another group on the page is skipped before any title rule. `t_size.pl` §5.
+  - The type-aware alias prune was tried first and DECLINED by measurement — see `The alias prune
+    stays type-blind`.
+  - `t_size.pl` (new, 35), `t_alias.pl` §10–11 (39), `t_rivals.pl` §7 (23).
+- **Predicted from the live baseline** (382 Single tiles showing Local): 349 are compilation-track
+  links (untouched); of 32 owned-album rows, **23 false matches go** (Tour de France, Lola, For Emma,
+  Since I Left You, five VA compilations…) and **9 real owned singles stay** (two only via their
+  RELEASETYPE tag).
+- **LIVE VERIFY AFTER INSTALL:** Kraftwerk — *Tour de France (Etape 2)* shows no Local and no Qobuz
+  album; the album tile shows Local. Holly Golightly by NAME shows *Medicine County* and *No Help
+  Coming*. Re-run the singles scan and diff it against the baseline.
 
 ### 0.51.6–0.51.11 (2026-09-19) — two review rounds + The B-52's field case, all verified live
 Each decision is written into the entry it amends (grep the phrase); this is the per-build index.

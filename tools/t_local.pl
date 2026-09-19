@@ -302,8 +302,9 @@ ok(scalar(() = Plugins::Discography::Sources::localArtistIdsByMbid(undef)) == 0,
 # can spell costs no search at all.
 %CONTRIB = ($MB => [ T::Contrib->new(id => 88810, name => $ZALGO) ]);
 @QUERIES = (); %LIBRARY = ();
-Plugins::Discography::Sources->localAlbums(undef, $ZALGO, $MB);
-ok(scalar(@QUERIES) == 0, 'localAlbums resolves by tag with NO name search');
+my $byTag = Plugins::Discography::Sources->localAlbums(undef, $ZALGO, $MB);
+ok(!grep({ $_ eq $TOK_C } @QUERIES),
+   'localAlbums resolves by tag: the name is asked only for JOINT credits, never term-probed');
 
 # ...and an UNTAGGED library still falls through to the ladder unchanged --
 # the whole point is that nothing existing behaves differently.
@@ -409,6 +410,64 @@ ok(scalar(@QUERIES) == 0, 'an explicit artist_id outranks the tag (and the name)
     my $pool = $LT->(137542, 'The B-52s');
     ok(scalar(@$pool) == 1 && $pool->[0]{_trackid} == 678355,
        'a track the artist only COMPOSED stays out of the pool; his own recording stays in');
+    %LIBRARY = ();
+}
+
+# ---------------------------------------------------------------------------
+# 11. THE TAG MUST NOT DROP JOINT CREDITS (review 2026-09-19, finding 2).
+#     0.48.6's rule (B): a page for "Holly Golightly" also counts a library
+#     contributor that is a JOINT credit naming her ("Holly Golightly and The
+#     Brokeoffs"), or the collaboration vanishes from the page it belongs on.
+#     That lived only in the NAME ladder, and 0.51.3's tag-first read skipped
+#     the ladder whenever the tag hit. Live, 2026-09-19: her name-opened page
+#     lost Medicine County / No Help Coming (owned under contributor 135756).
+#     The tag decides WHO she is; the name only ADDS joint credits naming her.
+# ---------------------------------------------------------------------------
+{
+    my $MBH   = '0b0a6c9e-2f5a-4bb7-9b7a-3f6a2a8e1c11';
+    my $SOLO  = { id => 501, album => 'Slowly but Surely', artist => 'Holly Golightly' };
+    my $JOINT = [ { id => 502, album => 'Medicine County', artist => 'Holly Golightly and The Brokeoffs' },
+                  { id => 503, album => 'No Help Coming',  artist => 'Holly Golightly and The Brokeoffs' } ];
+    my $VA    = { id => 9, title => 'Devil Do', album => 'Some VA Comp', compilation => '1',
+                  albumartist_ids => '133736', artist_ids => '135756' };
+    local %OWNS = (135757 => { albums => [ $SOLO ], titles => [] },
+                   135756 => { albums => $JOINT,   titles => [ $VA ] },
+                   999    => { albums => [ { id => 504, album => 'Other Act', artist => 'Holly Golightly' } ] },
+                   998    => { albums => [ { id => 505, album => 'Nope', artist => 'Holly Golightly Smith & Co' } ] });
+    local %CONTRIB = ($MBH => [ T::Contrib->new(id => 135757, name => 'Holly Golightly') ]);
+    local %LIBRARY = ('Holly Golightly' => [
+        { id => 135757, artist => 'Holly Golightly' },
+        { id => 135756, artist => 'Holly Golightly and The Brokeoffs' },
+        { id => 999,    artist => 'Holly Golightly' },              # an UNTAGGED same-name contributor
+        { id => 998,    artist => 'Holly Golightly Smith & Co' },   # a part that is NOT her
+    ]);
+    my $ids = sub { join ',', sort map { $_->{_albumid} } @{ $_[0] || [] } };
+
+    ok($ids->(Plugins::Discography::Sources->localAlbums(undef, 'Holly Golightly', $MBH)) eq '501,502,503',
+       'tag path keeps the joint credit naming her (Medicine County, No Help Coming)');
+    my $la = Plugins::Discography::Sources->localAlbums(undef, 'Holly Golightly', $MBH);
+    ok(!grep({ $_->{_albumid} == 504 } @$la),
+       '... but NOT an untagged same-name contributor: the tag, not the name, says who she is');
+    ok(!grep({ $_->{_albumid} == 505 } @$la),
+       '... and not a joint credit whose part is merely LONGER than her name');
+
+    # No name to go on (a same-name page's 'mbid' fallback passes none): the tag alone.
+    ok($ids->(Plugins::Discography::Sources->localAlbums(undef, undef, $MBH)) eq '501',
+       'with no name the tag alone decides (no joint lookup without a name)');
+
+    # localTracks takes the same tag path, so it keeps the joint credit's VA track.
+    my $t = Plugins::Discography::Sources->localTracks(undef, 'Holly Golightly', { mbid => $MBH });
+    ok(scalar(grep { $_->{_trackid} == 9 } @{ $t || [] }) == 1,
+       'localTracks keeps the joint credit too');
+
+    # Controls: an explicit id is untouched (the user pointed at a contributor).
+    @QUERIES = ();
+    ok($ids->(Plugins::Discography::Sources->localAlbums(135757, 'Holly Golightly', $MBH)) eq '501'
+       && !@QUERIES, 'an explicit id is used as-is, no joint lookup (unchanged)');
+    # ...and an untagged library still takes the name ladder, joint included (unchanged).
+    local %CONTRIB = ();
+    my $u = $ids->(Plugins::Discography::Sources->localAlbums(undef, 'Holly Golightly', $MBH));
+    ok($u =~ /502/ && $u =~ /503/, 'untagged library: the name ladder still adds the joint credit (unchanged)');
     %LIBRARY = ();
 }
 

@@ -32,7 +32,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.11';
+use constant CACHE_VERSION => '0.51.12';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
@@ -65,7 +65,7 @@ use constant POOL_LOG_MAX   => 25;          # log a pool this small IN FULL
 # apart again — widen this if composer support is ever built, and both call
 # sites widen together.
 use constant PERFORMANCE_ROLES => 'ARTIST,ALBUMARTIST,BAND,TRACKARTIST';
-use constant CAND_CACHE_V   => '4';         # bump on shape/matcher changes
+use constant CAND_CACHE_V   => '5';         # bump on shape/matcher changes (5: _size)
                                             # v2: flush octet-query poisoned pools
                                             # v3: artist-first pools (search-cap
                                             #     lottery dropped e.g. Valtari)
@@ -374,6 +374,28 @@ sub _creditParts {
 #     amount of solo work can leak in and "Also in your library" stays honest.
 #   * browsed name is single, a library contributor is joint AND NAMES IT as
 #     one of its parts -> that contributor counts too.
+sub _jointRows {
+    my ($an, $rows) = @_;
+    return grep {
+        my @p = _creditParts($_->{name} // '');
+        @p >= 2 && grep { _normKey($_) eq $an } @p;
+    } @$rows;
+}
+
+# (B) on its own, for the identity-first path (review 2026-09-19): when the
+# library's MusicBrainz tag has already said WHO the artist is, the name may
+# only ADD joint credits naming them — never another same-name contributor,
+# which the tag has implicitly ruled out. Without this the tag path dropped
+# every collaboration the name ladder used to add (live: Holly Golightly lost
+# the two albums owned under "Holly Golightly and The Brokeoffs").
+sub _jointArtistIds {
+    my ($artist, $exclude) = @_;
+    return () unless defined $artist && length $artist;
+    my @rows = grep { !$exclude || ($_->{artist_id} // '') ne $exclude }
+               @{ _localArtistRows($artist, { no_probe => 1 }) };
+    return grep { $_ } map { $_->{artist_id} } _jointRows(_normKey($artist), \@rows);
+}
+
 sub _localArtistIds {
     my ($artist, $exclude) = @_;
     my $an = _normKey($artist);
@@ -389,10 +411,7 @@ sub _localArtistIds {
     # collaboration silently disappears from the page it belongs on. The test
     # is part EQUALITY, never substring, so "Nick Cave" cannot pick up
     # "Nick Cavendish & Friends".
-    my @joint = grep {
-        my @p = _creditParts($_->{name} // '');
-        @p >= 2 && grep { _normKey($_) eq $an } @p;
-    } @rows;
+    my @joint = _jointRows($an, \@rows);
 
     if ($exact || @joint) {
         my @ids = map { $_->{artist_id} }
@@ -439,9 +458,12 @@ sub localAlbums {
         my @byMbid = grep { !$opt->{exclude} || $_ ne $opt->{exclude} }
                      localArtistIdsByMbid($mbid);
         if (@byMbid) {
-            @ids = @byMbid;
-            _dbg("localAlbums: mbid $mbid -> artist_id " . join('+', @ids)
-                 . ' (library MusicBrainz tag, no name matching)');
+            my %have = map { $_ => 1 } @byMbid;
+            my @joint = grep { !$have{$_}++ } _jointArtistIds($artist, $opt->{exclude});
+            @ids = (@byMbid, @joint);
+            _dbg("localAlbums: mbid $mbid -> artist_id " . join('+', @byMbid)
+                 . ' (library MusicBrainz tag)'
+                 . (@joint ? ' + joint credit(s) ' . join('+', @joint) : ''));
         }
     }
 
@@ -487,7 +509,7 @@ sub localAlbums {
         my $r = eval {
             Slim::Control::Request::executeRequest(undef,
                 ['albums', 0, 500, "artist_id:$id",
-                 'role_id:' . PERFORMANCE_ROLES, 'tags:ljya']);
+                 'role_id:' . PERFORMANCE_ROLES, 'tags:ljyaW']);
         };
         next unless $r;
         for my $e (@{ $r->getResult('albums_loop') || [] }) {
@@ -554,6 +576,7 @@ sub localAlbums {
             _mbid       => ($mbid ? lc $mbid : undef),
             _candTitle  => $title,
             _candArtist => $e->{artist} // $artist,
+            _reltype    => $e->{release_type},   # RELEASETYPE tag (LMS default ALBUM) - _localSize
         };
     }
     _dbg("local albums for artist_id=" . join("+", @ids) . ": " . scalar @out
@@ -582,6 +605,11 @@ sub localTracks {
     if (!$artistId && $opt->{mbid}) {
         @ids = grep { !$opt->{exclude} || $_ ne $opt->{exclude} }
                localArtistIdsByMbid($opt->{mbid});
+        # Joint credits naming the artist, as localAlbums' tag path adds them.
+        if (@ids) {
+            my %have = map { $_ => 1 } @ids;
+            push @ids, grep { !$have{$_}++ } _jointArtistIds($artist, $opt->{exclude});
+        }
     }
     if (!@ids && !$artistId && defined $artist && length $artist) {
         my ($found) = _localArtistIds($artist, $opt->{exclude});
@@ -1980,6 +2008,7 @@ sub matchesFor {
     my $artistNorm = defined $opt->{artistNorm} ? $opt->{artistNorm} : _norm($artist);
     my $albumNorm  = defined $opt->{albumNorm}  ? $opt->{albumNorm}  : _norm($albumTitle);
     my $sources    = $opt->{sources} || [ orderedSources() ];
+    my $rgSingle   = ($opt->{rgType} // '') eq 'Single';
 
     # Candidate index (peekPool builds it): STREAMING pools only test the subset
     # sharing a first token with this release group, not the whole pool. Local
@@ -2012,12 +2041,31 @@ sub matchesFor {
         }
     }
 
-    # Canonical title first, then each alias. Returns 1 on the first hit.
+    # EDITION titles (Browse::_editionTitles): tried last, with the alias
+    # pass's strict whole-title shape. An album-only one (it clashes with a
+    # single's real title) needs an album-sized copy.
+    my @eds = grep { ref $_ eq 'ARRAY' && length($_->[0] // '') } @{ $opt->{editions} || [] };
+    if ($index && @lkeys && @eds) {
+        my %seenK = map { $_ => 1 } @lkeys;
+        for my $e (@eds) {
+            next unless length $e->[0] >= 2;
+            push @lkeys, grep { !$seenK{$_}++ } _titleKeys($e->[0], $artistNorm);
+        }
+    }
+
+    # Canonical title first, then each alias, then each edition title.
+    # Returns 1 on the first hit.
     my $titleHit = sub {
-        my ($gateArtist, $candTitle) = @_;
+        my ($gateArtist, $it, $isLocal) = @_;
+        my $candTitle = $it->{_candTitle};
         return 1 if _albumMatches($artistNorm, $albumNorm, $gateArtist, $candTitle, $albumTitle);
         for my $a (@alts) {
             return 1 if _aliasMatches($artistNorm, $a->[0], $a->[1], $gateArtist, $candTitle);
+        }
+        for my $e (@eds) {
+            next unless _aliasMatches($artistNorm, $e->[0], $e->[1], $gateArtist, $candTitle);
+            return 1 unless $e->[2];
+            return 1 if (($isLocal ? _localSize($it) : $it->{_size}) // '') eq 'album';
         }
         return 0;
     };
@@ -2045,6 +2093,9 @@ sub matchesFor {
             # Identity (tier 0) is never second-guessed by the rival rule: an
             # MBID says which group this IS.
             unless (_mbidMatch($it, $rgMbid, $relMap)) {
+                # Its id places it in another group on this page: it is that
+                # group's, never this one's by title.
+                next if defined _idGroup($it, $relMap, $opt->{idGroups});
                 # A LOCAL candidate was fetched by artist_id + performance role,
                 # so the DB join ALREADY proves the browsed artist performs on
                 # this album. The `albums` query then collapses a multi-artist
@@ -2056,7 +2107,13 @@ sub matchesFor {
                 # split still sees the true album-artist. (Simon: Raising Sand,
                 # 2026-07-11.)
                 my $gateArtist = $a->{local} ? $artist : $it->{_candArtist};
-                next unless $titleHit->($gateArtist, $it->{_candTitle});
+                next unless $titleHit->($gateArtist, $it, $a->{local});
+                # AN ALBUM IS NOT A SINGLE (Simon, Kraftwerk, 2026-09-19): his
+                # 12-track "Tour De France" read Local on the single "Tour de
+                # France (Etape 2) (edit)" on title alone. A copy of unknown
+                # size is left to the title, as before.
+                next if $rgSingle
+                     && (($a->{local} ? _localSize($it) : $it->{_size}) // '') eq 'album';
                 # Several same-title groups matched it; only its owner keeps it.
                 next if $rivals && @$rivals > 1 && $rgMbid
                      && _rivalOwner($it->{_year}, $rivals) ne $rgMbid;
@@ -2119,10 +2176,12 @@ sub matchesFor {
 # every RG the caller passes (including type-filtered ones) so a hidden
 # section can't resurface its matches as "unmatched".
 sub claimedLocalIds {
-    my ($class, $rgs, $artist, $local, $relMap) = @_;
+    my ($class, $rgs, $artist, $local, $relMap, $editions) = @_;
     my %claimed;
     return \%claimed unless $local && @$local;
     my $artistNorm = _norm($artist);
+    # The pool's groups, for the same "placed by id elsewhere" rule as matchesFor.
+    my %idGroups = map { $_->{mbid} => 1 } grep { $_->{mbid} } @{ $rgs || [] };
     for my $rg (@{ $rgs || [] }) {
         my $albumNorm = _norm($rg->{title});
         # Same alias pass as matchesFor — an owned copy filed under the English
@@ -2141,10 +2200,19 @@ sub claimedLocalIds {
             # artist), so gate on $artist not the collapsed _candArtist — same
             # co-credit reasoning as matchesFor. Keeps a co-credited owned album
             # from leaking into "Also in your library" when its tile matched.
-            next unless _mbidMatch($it, $rg->{mbid}, $relMap)
-                     || _albumMatches($artistNorm, $albumNorm, $artist, $it->{_candTitle}, $rg->{title})
-                     || grep { _aliasMatches($artistNorm, $_->[0], $_->[1], $artist,
-                                             $it->{_candTitle}) } @alts;
+            unless (_mbidMatch($it, $rg->{mbid}, $relMap)) {
+                next if defined _idGroup($it, $relMap, \%idGroups);
+                next unless _albumMatches($artistNorm, $albumNorm, $artist, $it->{_candTitle}, $rg->{title})
+                         || (grep { _aliasMatches($artistNorm, $_->[0], $_->[1], $artist,
+                                                  $it->{_candTitle}) } @alts)
+                         # Edition titles, as matchesFor tries them.
+                         || (grep { _aliasMatches($artistNorm, $_->[0], $_->[1], $artist, $it->{_candTitle})
+                                    && (!$_->[2] || (_localSize($it) // '') eq 'album') }
+                                  @{ ($editions || {})->{ $rg->{mbid} } || [] });
+                # Same size gate as matchesFor, or an album the single no longer
+                # shows would ALSO be hidden from "Also in your library".
+                next if ($rg->{type} // '') eq 'Single' && (_localSize($it) // '') eq 'album';
+            }
             $claimed{ $it->{_albumid} } = 1;
         }
     }
@@ -2625,8 +2693,65 @@ sub _candYear {
     return undef;
 }
 
+# What KIND of release a streaming copy is: 'album', 'ep', 'single' or undef
+# (unknown). Judged as the Qobuz plugin judges its own artist pages (Plugin.pm,
+# the artist/get album list we fetch too): 30+ minutes or more than 6 tracks is
+# an album, under 4 tracks a single, anything between an EP. Counts first
+# (Qobuz tracks_count, Tidal numberOfTracks, Deezer nb_tracks, all durations in
+# seconds); a stated type only when there are no counts (Tidal `type`, Deezer
+# `record_type`). Qobuz's own `release_type` is deliberately NOT read — its
+# plugin overrides it with the counts, and 0.46.8 found it unreliable. Search
+# payloads carry none of this, so the album-search fallback stays unknown and
+# matches exactly as before.
+sub _candSize {
+    my ($album) = @_;
+    return undef unless ref $album eq 'HASH';
+    my ($tracks) = grep { defined && !ref && /^\d+$/ }
+                   map { $album->{$_} } qw(tracks_count numberOfTracks nb_tracks);
+    my $dur = $album->{duration};
+    $dur = undef unless defined $dur && !ref $dur && $dur =~ /^\d+(?:\.\d+)?$/;
+    return _sizeFromCounts($tracks, $dur) if $tracks;
+    my $type = lc($album->{record_type} // $album->{type} // '');
+    return 'album'  if $type eq 'album' || $type eq 'compile';
+    return 'ep'     if $type eq 'ep';
+    return 'single' if $type eq 'single';
+    return undef;
+}
+
+sub _sizeFromCounts {
+    my ($tracks, $dur) = @_;
+    return 'album'  if ($dur && $dur >= 1800) || $tracks > 6;
+    return 'single' if $tracks < 4;
+    return 'ep';
+}
+
+# A LIBRARY copy's size, worked out only when it matters (a copy title-matching
+# a MusicBrainz Single) and remembered on the item. A RELEASETYPE tag of
+# SINGLE/EP decides; LMS reads ALBUM for every untagged file (2,882 of Simon's
+# 2,931), so ALBUM proves nothing and the tracks decide instead.
+sub _localSize {
+    my ($it) = @_;
+    return $it->{_size} if exists $it->{_size};
+    my $tag = uc($it->{_reltype} // '');
+    return $it->{_size} = 'single' if $tag eq 'SINGLE';
+    return $it->{_size} = 'ep'     if $tag eq 'EP';
+    my $size;
+    if (my $al = $it->{_albumid}) {
+        my $r = eval {
+            Slim::Control::Request::executeRequest(undef,
+                ['titles', 0, 500, "album_id:$al", 'tags:d']);
+        };
+        my $loop = $r ? ($r->getResult('titles_loop') || []) : [];
+        my $dur = 0;
+        $dur += ($_->{duration} || 0) for @$loop;
+        $size = _sizeFromCounts(scalar @$loop, $dur) if @$loop;
+    }
+    return $it->{_size} = $size;
+}
+
 sub _decorate {
     my ($item, $svc, $album, $candArtist) = @_;
+    $item->{_size}       = _candSize($album);
     $item->{_svc}        = $svc;
     $item->{_albumid}    = $album->{id};
     $item->{_cover}      = $item->{image} if defined $item->{image} && !ref $item->{image};
@@ -2930,6 +3055,20 @@ sub _mbidMatch {
     return 1 if $mb eq $rgMbid;
     return 1 if $relMap && defined $relMap->{$mb} && $relMap->{$mb} eq $rgMbid;
     return 0;
+}
+
+# The group a local copy's MBID places it in, when that group is one of this
+# page's ($idGroups = { rg-mbid => 1 }). A copy matched there by id is not
+# offered to any other group by title (Simon, 2026-09-19: "it should not try to
+# match again it if its matched via id"). No id, an id the release map cannot
+# place, or a group not on the page -> undef, and the title decides as before.
+sub _idGroup {
+    my ($it, $relMap, $idGroups) = @_;
+    my $mb = $it->{_mbid} or return undef;
+    return undef unless $idGroups && %$idGroups;
+    return $mb if $idGroups->{$mb};
+    my $g = $relMap ? $relMap->{$mb} : undef;
+    return (defined $g && $idGroups->{$g}) ? $g : undef;
 }
 
 # ===========================================================================

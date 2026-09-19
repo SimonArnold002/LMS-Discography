@@ -50,7 +50,7 @@ my $prefs = preferences('plugin.discography');
 # instance for a namespace and ignores later args). tools/syntax_check.sh
 # asserts all three agree and match install.xml.
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.11';
+use constant CACHE_VERSION => '0.51.12';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 # MB's canonical artist name, remembered in-process as well as cached — the
@@ -2016,7 +2016,7 @@ use constant REL_PAGE_SIZE      => 100;
 use constant REL_MAX_PAGES      => 40;     # 4000 releases; The Beatles need 33
 use constant REL_PAGE_GAP       => 1.1;    # seconds between pages (MB etiquette)
 
-sub _officialKey { 'dsc:rgo:v3:' . $_[0] }
+sub _officialKey { 'dsc:rgo:v4:' . $_[0] }   # v4 adds t = edition titles
 
 # 1 unless the release carries an explicit non-official status. A status-less
 # release counts as official (see FAIL-OPEN above).
@@ -2045,6 +2045,15 @@ sub peekReleaseMap {
     my ($class, $artistMbid) = @_;
     my $c = $cache->get(_officialKey($artistMbid)) or return undef;
     return $c->{r};
+}
+
+# { release-group-mbid => [ distinct official edition titles ] }, or undef —
+# the same browse again. Browse::_editionTitles decides which a group may
+# actually match by.
+sub peekEditions {
+    my ($class, $artistMbid) = @_;
+    my $c = $cache->get(_officialKey($artistMbid)) or return undef;
+    return $c->{t};
 }
 
 # ---------------------------------------------------------------------------
@@ -2247,7 +2256,7 @@ sub warmOfficial {
     return $cb->() if $officialInFlight{$artistMbid};
     $officialInFlight{$artistMbid} = 1;
 
-    my (%official, %rgOf);
+    my (%official, %rgOf, %editions);
     my $page = 0;
 
     my $fetchPage; $fetchPage = sub {
@@ -2273,6 +2282,14 @@ sub warmOfficial {
                     # ... and every release points back at its group, which is
                     # how a library album's MUSICBRAINZ_ALBUMID finds its tile.
                     $rgOf{ lc $rel->{id} } = $id if $rel->{id};
+                    # ... and each OFFICIAL edition's own title. MusicBrainz
+                    # names a group after its first edition, so later editions
+                    # sold under another name ("Tour de France", 2009, inside
+                    # the 2003 "Tour de France Soundtracks") are only findable
+                    # here. A bootleg's title never becomes a way in.
+                    $editions{$id}{ $rel->{title} } = 1
+                        if _isOfficial($rel->{status})
+                        && defined $rel->{title} && length $rel->{title};
                 }
 
                 my $total = $data->{'release-count'} // 0;
@@ -2288,7 +2305,9 @@ sub warmOfficial {
                     if $offset + REL_PAGE_SIZE < $total;
 
                 eval { $cache->set(_officialKey($artistMbid),
-                                   { o => \%official, r => \%rgOf }, OFFICIAL_TTL); 1 }
+                                   { o => \%official, r => \%rgOf,
+                                     t => { map { $_ => [ sort keys %{ $editions{$_} } ] } keys %editions } },
+                                   OFFICIAL_TTL); 1 }
                     or $log->warn("official-status cache set failed: $@");
 
                 my $boot = grep { !$official{$_} } keys %official;

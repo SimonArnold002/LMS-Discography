@@ -212,5 +212,48 @@ ok(join(',', map { $_->{mbid} } @{ $a->{$stKey} })
    eq join(',', map { $_->{mbid} } @{ $b->{$stKey} }),
    'rival order does not depend on the input order');
 
+# ---------------------------------------------------------------------------
+# 7. WHICH EDITION TITLES A GROUP MAY MATCH BY (review 2026-09-19). An edition
+#    title that is ANOTHER group's real title is dropped, exactly as an alias
+#    is (the B-52's box: an album clashing with an album) — with ONE exception:
+#    when every group it clashes with is a plain SINGLE, it is kept but marked
+#    album-only, so only an album-sized copy may use it. That is Kraftwerk's
+#    "Tour de France": the 2009 edition of the album vs the 1983 single.
+# ---------------------------------------------------------------------------
+{
+    my $edit = \&Plugins::Discography::Browse::_editionTitles;
+    my @rgs = (
+        { mbid => 'rg-tdfs',  title => 'Tour de France Soundtracks', type => 'Album',  secondary => [] },
+        { mbid => 'rg-tdf83', title => 'Tour de France',             type => 'Single', secondary => [] },
+        { mbid => 'rg-rad',   title => "Radio\x{2010}Aktivit\x{e4}t",  type => 'Album',  secondary => [],
+          aliases => ['Radioactivity'] },
+        { mbid => 'rg-radrx', title => 'Radio-Activity',             type => 'Single', secondary => ['Remix'] },
+        { mbid => 'rg-b52',   title => "The B-52's",                 type => 'Album',  secondary => [] },
+        { mbid => 'rg-3cd',   title => '3 Original CDs',             type => 'Album',  secondary => ['Compilation'] },
+        { mbid => 'rg-man',   title => "Die Mensch\x{b7}Maschine",     type => 'Album',  secondary => [] },
+        { mbid => 'rg-sgl',   title => 'Some Single',                type => 'Single', secondary => [] },
+        { mbid => 'rg-other', title => 'Other Single',               type => 'Single', secondary => [] },
+    );
+    my $ed = $edit ? $edit->(\@rgs, {
+        'rg-tdfs'  => [ 'Tour de France Soundtracks', 'Tour de France' ],
+        'rg-rad'   => [ 'Radio-Activity', 'Radioactivity' ],
+        'rg-3cd'   => [ "The B-52's", 'Three Original CDs' ],
+        'rg-man'   => [ 'The Man-Machine' ],
+        'rg-sgl'   => [ 'Other Single' ],
+    }) : {};
+    my %by = map { my $g = $_; ($g => { map { $_->[1] => $_ } @{ $ed->{$g} || [] } }) } keys %$ed;
+    ok($by{'rg-tdfs'}{'Tour de France'} && $by{'rg-tdfs'}{'Tour de France'}[2],
+       'Tour de France: kept for the album, marked album-only (it clashes only with a single)');
+    ok(!$by{'rg-tdfs'}{'Tour de France Soundtracks'}, '... the group\'s own name is not repeated');
+    ok($by{'rg-man'}{'The Man-Machine'} && !$by{'rg-man'}{'The Man-Machine'}[2],
+       'an edition title nothing else carries is kept, for any copy');
+    ok(!$by{'rg-rad'}{'Radio-Activity'},
+       'a clash with a HIDDEN Remix group drops it (its releases must not route here)');
+    ok(!$by{'rg-rad'}{'Radioactivity'}, '... and one already an alias is not repeated');
+    ok(!$by{'rg-3cd'}{"The B-52's"}, 'a clash with another ALBUM drops it (the B-52\'s box, as §8 of t_alias)');
+    ok($by{'rg-3cd'}{'Three Original CDs'}, '... while the box keeps its other titles');
+    ok(!$by{'rg-sgl'}{'Other Single'}, 'a SINGLE never gains another single\'s title');
+}
+
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);
