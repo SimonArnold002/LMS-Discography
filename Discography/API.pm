@@ -50,7 +50,7 @@ my $prefs = preferences('plugin.discography');
 # instance for a namespace and ignores later args). tools/syntax_check.sh
 # asserts all three agree and match install.xml.
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.5';
+use constant CACHE_VERSION => '0.51.6';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 # MB's canonical artist name, remembered in-process as well as cached — the
@@ -1327,8 +1327,20 @@ sub filterRowsWithContent {
                 next if $folded{$i};
                 next if $slot[$i]{artist_id};
                 next unless $mbof[$i];
-                my ($hit) = @{ Plugins::Discography::Sources::localArtistsByMbid($mbof[$i]) };
-                next unless $hit;
+                my @hits = @{ Plugins::Discography::Sources::localArtistsByMbid($mbof[$i]) };
+                next unless @hits;
+                # Several contributors can carry one tag (a duplicate
+                # contributor, one holding the albums): take the OWNER, as the
+                # survivor choice above does. The first by DB order could be
+                # the empty one, and an explicit artist_id outranks the mbid in
+                # localAlbums, so the row would read Local over 0 owned albums.
+                my ($hit) = @hits;
+                if (@hits > 1) {
+                    my %n = map { $_ => Plugins::Discography::Sources::_albumCountFor(
+                                      $hits[$_]{artist_id}) } 0 .. $#hits;
+                    ($hit) = map { $hits[$_] }
+                             sort { $n{$b} <=> $n{$a} || $a <=> $b } 0 .. $#hits;
+                }
                 $slot[$i]{artist_id} = $hit->{artist_id};
                 my %have = map { $_ => 1 } @{ $slot[$i]{sources} || [] };
                 unshift @{ $slot[$i]{sources} }, 'Local' unless $have{Local};

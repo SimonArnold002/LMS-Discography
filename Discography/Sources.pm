@@ -32,7 +32,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.5';
+use constant CACHE_VERSION => '0.51.6';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
@@ -1184,15 +1184,23 @@ sub _artImgKey {
 }
 
 # A live artist photo from the user's own services, in svc_priority order.
-# $cb->($url | undef). Services are asked ONE AT A TIME and the first photo
-# wins: this runs behind a thumbnail the browser has already asked for, so the
-# cheapest answer that fills the row is the right one — a fan-out would triple
-# the traffic to improve nothing the user can see.
+# $cb->($url | undef). Services are asked ONE AT A TIME and the first EXACT
+# photo ends the walk: this runs behind a thumbnail the browser has already
+# asked for, so the cheapest answer that fills the row is the right one — a
+# fan-out would triple the traffic to improve nothing the user can see.
 #
 # The name gate is the matcher's own: an exact `_norm` match, else
 # `_artistMatch` (token subset, so "Mothers of Invention" accepts "The Mothers
 # of Invention"). A service's relevance tail is full of neighbours — an
 # ungated first hit would confidently show the wrong band's face.
+#
+# EXACT BEATS LOOSE ACROSS THE WHOLE WALK, not per service. A token-subset
+# photo is only REMEMBERED (first in priority order) and served when no
+# service knows the exact name at all: a loose "Genesis P-Orridge" on Qobuz
+# must not pre-empt the exact "Genesis" on Deezer. And an exact entity with no
+# photo anywhere VETOES every loose one — the artist exists, has no picture,
+# and a neighbour's face cached for 30 days is worse than the icon. The cost
+# is confined to names no service answers exactly, which walk every service.
 sub artistImage {
     my ($class, $client, $name, $cb) = @_;
     $cb ||= sub {};
@@ -1215,10 +1223,15 @@ sub artistImage {
         $cb->($url);
     };
 
+    my ($loose, $sawExact);
     my $next;
     $next = sub {
         my $a = shift @adapters;
-        return $done->(undef) unless $a;
+        unless ($a) {
+            _dbg("artist image '$name': loose fallback $loose")
+                if $loose && !$sawExact;
+            return $done->($sawExact ? undef : $loose);
+        }
 
         my $svc     = $a->{name};
         my $settled = 0;
@@ -1231,16 +1244,26 @@ sub artistImage {
             # token-subset hit is considered: the services rank by relevance,
             # not by identity, so "The Mothers" can outrank "The Mothers of
             # Invention" for a query the second one answers exactly.
-            my @cands = grep { ref $_ eq 'HASH' && $_->{img}
-                               && _norm($_->{name} // '') ne '' }
+            #
+            # The exact test sees EVERY hit, photo or not. An exact entity with
+            # no picture (or a placeholder, dropped by _svcArtistImage) is the
+            # artist this tier exists for: it vetoes every token-subset
+            # NEIGHBOUR's face ("Genesis P-Orridge" for Genesis), from this
+            # service and every other.
+            my @cands = grep { ref $_ eq 'HASH' && _norm($_->{name} // '') ne '' }
                         @{ ref $hits eq 'ARRAY' ? $hits : [] };
-            for my $test (sub { _norm($_[0]) eq $want },
-                          sub { _artistMatch($want, _norm($_[0])) }) {
-                for my $h (@cands) {
-                    next unless $test->($h->{name});
-                    _dbg("artist image '$name': $svc -> $h->{img}");
-                    return $done->($h->{img});
-                }
+            my @exact = grep { _norm($_->{name}) eq $want } @cands;
+            if (my ($h) = grep { $_->{img} } @exact) {
+                _dbg("artist image '$name': $svc -> $h->{img}");
+                return $done->($h->{img});
+            }
+            if (@exact) {
+                $sawExact = 1;
+                _dbg("artist image '$name': $svc has the exact entity but no photo");
+            }
+            elsif (!$loose) {
+                my ($h) = grep { $_->{img} && _artistMatch($want, _norm($_->{name})) } @cands;
+                $loose = $h->{img} if $h;
             }
             $next->();
         };

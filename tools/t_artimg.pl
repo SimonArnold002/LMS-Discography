@@ -75,12 +75,15 @@ my $img = \&Plugins::Discography::Browse::_artistImg;
 
 # Streaming adapters are a runtime fact (are the plugins installed?), so the
 # gate is stubbed here — AFTER the real Sources.pm has loaded, or its own
-# definition would win.
+# definition would win. Stub adapters(), NOT orderedAdapters(): the real
+# orderedAdapters must run, because it ends in `return sort ...` and sort in
+# SCALAR context is undefined behaviour that returns nothing. A stub returning
+# a plain list hid exactly that, and _artistImg's gate read false forever.
 our $SVC_ON = 0;
 {
     no strict 'refs'; no warnings 'redefine';
-    *{'Plugins::Discography::Sources::orderedAdapters'}
-        = sub { $main::SVC_ON ? ({ name => 'Deezer', priority => 1 }) : () };
+    *{'Plugins::Discography::Sources::adapters'}
+        = sub { $main::SVC_ON ? ({ name => 'Deezer' }) : () };
 }
 
 my ($pass, $fail) = (0, 0);
@@ -233,6 +236,89 @@ ok(scalar(!defined $svcImg->('Nope', { name => 'X', picture => 'http://x/y.jpg' 
     ok(scalar(!$bad || $bad !~ /^https?:/),
        'a nameless proxy URL never turns into a remote fetch');
 }
+
+# ---------------------------------------------------------------------------
+# 8. THE NAME GATE IN artistImage. The exact-name test must see EVERY hit, not
+#    only the ones carrying a photo. An exact entity with no picture (or only a
+#    placeholder, which _svcArtistImage drops) is exactly the artist that
+#    reaches this tier, and filtering it out first handed the row to a
+#    token-subset NEIGHBOUR's face — "Genesis P-Orridge" for Genesis — cached
+#    for 30 days.
+# ---------------------------------------------------------------------------
+{
+    no strict 'refs'; no warnings 'redefine';
+    *{'Slim::Utils::Timers::setTimer'}     = sub { 1 };
+    *{'Slim::Utils::Timers::killSpecific'} = sub { 1 };
+    # Section 7 stubbed artistImage itself; reload the module for the real one.
+    delete $INC{'Plugins/Discography/Sources.pm'};
+    local $SIG{__WARN__} = sub {};
+    require Plugins::Discography::Sources;
+}
+our @HITS;
+{
+    no strict 'refs'; no warnings 'redefine';
+    *{'Plugins::Discography::Sources::adapters'} = sub {
+        ({ name => 'Deezer', query_enc => 'bytes',
+           artists => sub { $_[3]->([ @main::HITS ]) } })
+    };
+}
+sub artImg {
+    my ($name) = @_;
+    my $got = 'NOT CALLED';
+    Plugins::Discography::Sources->artistImage(undef, $name, sub { $got = shift });
+    return $got;
+}
+@HITS = ({ name => 'Genesis' },
+         { name => 'Genesis P-Orridge', img => 'https://x/gpo.jpg' });
+ok(scalar(!defined artImg('Genesis')),
+   'an exact entity with NO photo -> nothing, not a neighbour\'s face');
+@HITS = ({ name => 'Genesis P-Orridge', img => 'https://x/gpo.jpg' },
+         { name => 'Genesis', img => 'https://x/genesis.jpg' });
+ok(scalar((artImg('Genesis') // '') eq 'https://x/genesis.jpg'),
+   '... an exact entity WITH a photo wins from any position (control)');
+@HITS = ({ name => 'Mothers of Invention and Friends', img => 'https://x/moi.jpg' });
+ok(scalar((artImg('Mothers of Invention') // '') eq 'https://x/moi.jpg'),
+   '... and with NO exact entity the token-subset match still answers (control)');
+
+# ---------------------------------------------------------------------------
+# 9. EXACT BEATS LOOSE ACROSS SERVICES, not only within one. A higher-priority
+#    service answering with only a NEIGHBOUR must not pre-empt the exact entity
+#    a lower-priority service holds. Services are still asked one at a time,
+#    and an exact photo still ends the walk at once; a loose photo is only
+#    remembered, and used only if NO service knows the exact name.
+# ---------------------------------------------------------------------------
+our (%SVCHITS, @ASKED);
+{
+    no strict 'refs'; no warnings 'redefine';
+    *{'Plugins::Discography::Sources::adapters'} = sub {
+        map { my $svc = $_;
+              { name => $svc, query_enc => 'bytes',
+                artists => sub { push @main::ASKED, $svc;
+                                 $_[3]->([ @{ $main::SVCHITS{$svc} || [] } ]) } } }
+            qw(Qobuz Deezer);
+    };
+}
+sub artImg2 { my ($n, %h) = @_; %SVCHITS = %h; @ASKED = (); return artImg($n) }
+
+ok(scalar((artImg2('Genesis',
+        Qobuz  => [{ name => 'Genesis P-Orridge', img => 'https://x/gpo.jpg' }],
+        Deezer => [{ name => 'Genesis', img => 'https://x/genesis.jpg' }]) // '')
+    eq 'https://x/genesis.jpg'),
+   'a loose hit on the FIRST service does not beat an exact hit on the second');
+ok(scalar(!defined artImg2('Genesis',
+        Qobuz  => [{ name => 'Genesis P-Orridge', img => 'https://x/gpo.jpg' }],
+        Deezer => [{ name => 'Genesis' }])),
+   '... and an exact entity with no photo ANYWHERE vetoes every loose photo');
+ok(scalar((artImg2('Mothers of Invention',
+        Qobuz  => [{ name => 'Mothers of Invention and Friends', img => 'https://x/q.jpg' }],
+        Deezer => [{ name => 'Mothers of Invention Tribute', img => 'https://x/d.jpg' }]) // '')
+    eq 'https://x/q.jpg'),
+   'no exact entity anywhere -> the loose photo, in PRIORITY order (control)');
+artImg2('Genesis',
+        Qobuz  => [{ name => 'Genesis', img => 'https://x/genesis.jpg' }],
+        Deezer => [{ name => 'Genesis', img => 'https://x/other.jpg' }]);
+ok(scalar("@ASKED" eq 'Qobuz'),
+   'an exact photo still ends the walk: the next service is never asked');
 
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

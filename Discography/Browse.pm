@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.5';
+use constant CACHE_VERSION => '0.51.6';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -1252,8 +1252,11 @@ sub _artistImg {
         unless defined $name && length $name;
     # No MAI *and* no services = nothing to resolve; don't route a request
     # through the proxy only to answer it with the icon we already have.
+    # Counted in LIST context: orderedAdapters ends in `return sort`, and sort
+    # in scalar context returns nothing — `scalar(orderedAdapters())` was false
+    # with every service enabled.
     return IMG_BASE . 'dsc-bio_MTL_icon_person.png'
-        unless $mai || eval { scalar(Plugins::Discography::Sources::orderedAdapters()) };
+        unless $mai || eval { my @a = Plugins::Discography::Sources::orderedAdapters(); scalar @a };
     require URI::Escape;
     return 'imageproxy/dsc/artist/' . URI::Escape::uri_escape_utf8($name) . '/image.png';
 }

@@ -1104,9 +1104,14 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
      Placeholder target -> tier 3. Any other probe outcome (timeout, 4xx, DNS) is INCONCLUSIVE and
      KEEPS MAI's url — a network hiccup must not demote a good photo.
   3. **The user's own services**, `Sources->artistImage`: Qobuz/Tidal/Deezer in `svc_priority` order,
-     one at a time, first photo wins. Exact `_norm` name match across the whole result list FIRST, then
+     one at a time, first EXACT photo wins. Exact `_norm` name match across the whole result list FIRST, then
      `_artistMatch` token-subset — services rank by relevance, not identity, so "The Mothers" can
      outrank "The Mothers of Invention" for a query the second answers exactly.
+     **Exact beats loose across the WHOLE walk (0.51.5 review, Simon: "we should not be losing exact
+     matches")**: the exact test sees every hit, photo or not; a token-subset photo is only remembered
+     (first in priority order) and served when NO service knows the exact name; an exact entity with no
+     photo anywhere vetoes every loose one (was: "Genesis P-Orridge" for Genesis, cached 30d). Cost: a
+     name no service answers exactly now walks every service. Pinned in `t_artimg.pl` §8–9.
   4. **The person icon** (as a `file://` url — the proxy only accepts file/http(s)).
 - **The service photo rides in FREE on a search we already make.** `_artistHits` now keeps `img`,
   built by each plugin's OWN url builder — Qobuz `API::Common->getImageFromImagesHash`, TIDAL/Deezer

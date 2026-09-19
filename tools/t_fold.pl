@@ -468,6 +468,28 @@ $API->filterRowsWithContent([{ name => "B52's", sources => ['Qobuz'] }],
 ok(ref $out eq 'ARRAY' && !@$out, 'a row proven empty is still dropped, not attached to');
 %TAGGED = ();
 
+# DUPLICATE TAGGED CONTRIBUTORS. localArtistsByMbid returns ALL of them on
+# purpose (two "The La's" in Simon's library, one holding the albums), so the
+# attach must pick the one that OWNS the albums, the way the fold survivor
+# does. Taking the first the DB returned gave the row "Local" and a page of
+# 0 owned: an explicit artist_id outranks the mbid lookup in localAlbums.
+{
+    local %ALBUMS = (58667 => 0, 57545 => 5);
+    local %TAGGED = ($MBID => [ T::Contrib->new(id => 58667, name => "The La's"),
+                                T::Contrib->new(id => 57545, name => "The La\x{2019}s") ]);
+    my $o = fold({ name => "B52's", sources => ['Qobuz'] });
+    ok(($o->[0]{artist_id} // 0) == 57545,
+       'two contributors share the tag -> the attach takes the one OWNING the albums');
+    local %TAGGED = ($MBID => [ reverse @{ $TAGGED{$MBID} } ]);
+    $o = fold({ name => "B52's", sources => ['Qobuz'] });
+    ok(($o->[0]{artist_id} // 0) == 57545, '... whichever order the DB returns them in');
+    local %ALBUMS = (58667 => 2, 57545 => 2);
+    local %TAGGED = ($MBID => [ T::Contrib->new(id => 58667, name => 'A'),
+                                T::Contrib->new(id => 57545, name => 'A') ]);
+    $o = fold({ name => "B52's", sources => ['Qobuz'] });
+    ok(($o->[0]{artist_id} // 0) == 58667, '... and equal counts keep the DB order, as before');
+}
+
 # ---------------------------------------------------------------------------
 # JAMES YORKSTON (field, 2026-09-19): TWO library rows in one group. The row
 # ranked first ("James Yorkston", one VA track) must not win over the one that
