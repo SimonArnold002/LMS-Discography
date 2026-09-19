@@ -53,6 +53,8 @@ because line numbers rot on the next edit.
 | Type-aware alias prune (keep an alias that clashes only with a Single) — DECLINED, measured | A2 | `The alias prune stays type-blind` |
 | An edition MusicBrainz files under another group follows MB's grouping — not corrected | A2 | `MusicBrainz's own grouping is not corrected` |
 | An id-tagged copy is held to its id's group, even when the tag is wrong | A2 | `A wrong MusicBrainz id tag holds the copy` |
+| Joint-credit pickup on an `artist_id` entry — DECLINED, measured; the name path's false pickups are known | A2 | `Joint pickup is not added to the id path` |
+| Collaborations cut-off at 5 collaborators (drops AfroCubism, Smokin' Mojo Filters, Atomic Orchestra) | A2 | `The collaborations cut-off is 5` |
 
 **Two standing rules that kill most repeat findings:**
 
@@ -163,11 +165,30 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   errors"*). An edition title attaches an owned album to the group MB files that edition under,
   even where that grouping looks odd — All India Radio *Fall Remixes* -> *Fall*, Dylan *The Best of
   the Cutting Edge* -> *The Cutting Edge*. That is MB data, not a matcher gap.
+- **The collaborations cut-off is 5** (`API::COLLAB_MAX_MEMBERS`, `_vetCollabs`; Simon,
+  2026-09-19). A collaboration target with more than 5 collaborators is treated as a charity or
+  all-star ensemble and not listed. It knowingly drops three real-ish projects in Simon's library —
+  The Smokin' Mojo Filters (7), The Atomic Orchestra (8), AfroCubism (10); a cut-off of 10 would keep
+  them and still exclude every charity group (lowest: Peace Together, 11). A tuning call, not a gap.
 - **A wrong MusicBrainz id tag holds the copy to the wrong group** (0.51.12, Simon: *"it should
   not try to match again it if its matched via id"*). `Sources::_idGroup`: a local copy whose id
   places it in another group on the page is never title-matched elsewhere. The cost is a mis-tagged
   file, which the title used to rescue; the tag is the user's data and is trusted, as tier 0 always
   has been.
+- **Joint pickup is not added to the id path** (`localAlbums`/`localTracks` with an explicit
+  `artist_id`, `_jointRows`; Simon, 2026-09-19, DECLINED by measurement). Adding the 0.48.6 joint
+  contributors to an id-entered page was replayed over all 1,117 album artists: 28 pages gain 35
+  albums, and **8 albums on 7 pages are a DIFFERENT band** whose name merely contains the artist's —
+  Love <- *Love and Rockets*, Cake <- *The Sea and Cake*, Bob <- *Bob & Earl*, Associates, Dean Martin,
+  The Chameleons, The Roots. No string rule separates them from *Holly Golightly and The Brokeoffs*.
+  The fix for Holly Golightly is a MusicBrainz "member of band" link (Simon added it 2026-09-19; MB
+  had her only as a COLLABORATOR, a relation `warmBandMembers` does not read), which puts
+  the Brokeoffs under "Also a member of" — the 0.25.0 design. NB the local mirror does not replicate,
+  so the link appears only after the mirror is updated.
+  - **Superseded for Holly Golightly by 0.51.13's Collaborations section**, which reads the
+    collaboration relation MB already had — no edit or mirror update needed.
+  - **Known and left as-is:** those 7 false pickups already happen on the NAME path (a Similar-artists
+    or name-only entry), since 0.48.6. Re-raise only with a stronger signal than the name.
 
 ### B. KNOWN-OPEN AND ACCEPTED — do not re-report as new
 
@@ -845,6 +866,34 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
+### 0.51.13 (2026-09-19) — "Collaborations": MusicBrainz collaboration links beside the bands
+- **Field (Holly Golightly):** her page never linked to "Holly Golightly and The Brokeoffs", where she
+  owns two albums. MusicBrainz records her there as a COLLABORATOR, and `warmBandMembers` kept only
+  "member of band". Adding the joint albums by name was measured and DECLINED (see `Joint pickup is
+  not added to the id path`); the relation MusicBrainz already holds is the identity-safe route.
+- **`API::warmBandMembers`** now also keeps the forward `collaboration` links from the SAME
+  artist-rels response (no target that is already a band, each once, at most `COLLAB_CHECK_MAX` 8),
+  and **`API::_vetCollabs`** keeps one only when its target lists **1..`COLLAB_MAX_MEMBERS` (5)
+  collaborators and has >= 1 release group**. Cached `dsc:collabs:v1:<mbid>` 14d beside the bands;
+  a failed lookup caches nothing (retried next visit); the early return needs BOTH keys, so a band
+  list cached before this build cannot keep collaborations from being fetched. `clearArtistCache`
+  clears it. `peekCollabs` is the sync read.
+- **Why 5 (Simon's call):** measured over 1,100 library artists, 119 collaboration links on 99 pages,
+  mostly charity supergroups. By target collaborator count: every real duo/side project is 1-5
+  (Fripp & Eno 2, FFS 2, The Gutter Twins 2, M|A|R|R|S 4, the Brokeoffs 1); charity ensembles start
+  at 10 (Peace Together 11, Band Aid 21, USA for Africa 37, "1,000 UK Artists" 722). 5 keeps **34
+  links on 30 pages**. Deliberately lost: The Smokin' Mojo Filters (7), The Atomic Orchestra (8),
+  AfroCubism (10). Phil Spector -> The Crystals / The Ronettes passes — MB records his production
+  work as "collaboration"; MB's data is not corrected.
+- **`Browse`:** new "Collaborations" section after "Also a member of" (same `_bandLinkRow` drill,
+  same second-load contract, rows only ever added below the bands). Similar artists now also drop a
+  name shown under Collaborations (`_dropBandDupes` — Material keys app rows by title, 0.51.1).
+- `tools/t_collab.pl` (new, 18; red before the change).
+- **LIVE VERIFY AFTER INSTALL:** Holly Golightly (Artists row) shows "Collaborations: Holly
+  Golightly and The Brokeoffs", and the drill shows *Medicine County* / *No Help Coming*. Brian Eno
+  shows Fripp & Eno + Harmonia 76 and NOT "N.M.L. NO MORE LANDMINE" (22). Bob Dylan shows no
+  Collaborations section (USA for Africa 37, AUAA 54). Second load, as with the bands.
+
 ### 0.51.12 (2026-09-19) — review round: detail-page guard, joint credits, an album is not a single
 Code review of the 0.51.x block, fixed one at a time, test first. **UNVERIFIED LIVE** until installed.
 - **Finding 1 — the release DETAIL page lacked the list's same-name guard.** Material's `_rgView` and
@@ -886,9 +935,16 @@ Code review of the 0.51.x block, fixed one at a time, test first. **UNVERIFIED L
   links (untouched); of 32 owned-album rows, **23 false matches go** (Tour de France, Lola, For Emma,
   Since I Left You, five VA compilations…) and **9 real owned singles stay** (two only via their
   RELEASETYPE tag).
-- **LIVE VERIFY AFTER INSTALL:** Kraftwerk — *Tour de France (Etape 2)* shows no Local and no Qobuz
-  album; the album tile shows Local. Holly Golightly by NAME shows *Medicine County* and *No Help
-  Coming*. Re-run the singles scan and diff it against the baseline.
+- **VERIFIED LIVE (installed 2026-09-19):** Kraftwerk — the single *Tour de France (Etape 2)* now
+  shows Qobuz only (its real single), the album tile shows Local/Qobuz. Singles re-scan vs the
+  baseline: all 23 predicted album copies left the singles (16 tiles lost Local, 7 now play the real
+  song off a VA compilation instead); the 9 owned singles stayed; **13 singles newly show Local**,
+  each a track link — the size gate took away a false album-sized STREAMING match (ELO *Mr. Blue Sky*
+  had been claiming the Qobuz *Mr. Blue Sky: The Very Best of ELO*, which now sits on its own
+  compilation tile), so the orphaned single now plays the song from the user's VA compilation.
+- **Finding 2 caveat, found live:** the joint pickup runs on the NAME and TAG paths only. Every main
+  entry (Artists row, search row) carries an `artist_id`, so Holly Golightly's page still lacks the
+  two albums there — see `Joint pickup is not added to the id path`.
 
 ### 0.51.6–0.51.11 (2026-09-19) — two review rounds + The B-52's field case, all verified live
 Each decision is written into the entry it amends (grep the phrase); this is the per-build index.

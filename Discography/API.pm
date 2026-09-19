@@ -50,7 +50,7 @@ my $prefs = preferences('plugin.discography');
 # instance for a namespace and ignores later args). tools/syntax_check.sh
 # asserts all three agree and match install.xml.
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.12';
+use constant CACHE_VERSION => '0.51.13';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 # MB's canonical artist name, remembered in-process as well as cached — the
@@ -1967,6 +1967,7 @@ sub clearArtistCache {
         $cache->remove(_rgKey($mbid));       push @cleared, 'rg';
         $cache->remove(_officialKey($mbid)); push @cleared, 'official';
         $cache->remove(_bandsKey($mbid));    push @cleared, 'bands';
+        $cache->remove(_collabsKey($mbid));  push @cleared, 'collabs';
         $cache->remove(_rgCountKey($mbid));  push @cleared, 'rgcount';
         # The empty verdict MUST go with them: Refresh exists to say "look
         # again", and a stale "nothing here" would keep the artist's search row
@@ -2173,15 +2174,99 @@ sub peekBands {
     return $cache->get(_bandsKey($artistMbid));
 }
 
+# COLLABORATIONS (Simon, 2026-09-19). The SAME artist-rels response carries
+# MusicBrainz "collaboration" links — Holly Golightly -> "Holly Golightly and The
+# Brokeoffs", where she is recorded as a collaborator, not a band member. Most
+# such links are charity supergroups (Band Aid 21 collaborators, USA for Africa
+# 37, "1,000 UK Artists" 722); measured over 1,100 library artists, the TARGET's
+# collaborator count separates them cleanly: real duos and side projects have
+# 1-5, charity ensembles start at 10. So a link is kept when its target has
+# 1..COLLAB_MAX_MEMBERS collaborators and at least one release group. Each
+# candidate costs one artist-rels lookup plus a (cached) release-group count.
+use constant COLLAB_MAX_MEMBERS => 5;
+use constant COLLAB_CHECK_MAX   => 8;    # candidates vetted per artist, at most
+
+sub _collabsKey { 'dsc:collabs:v1:' . $_[0] }
+
+# Cache-only, sync: arrayref of { mbid, name } kept collaborations, or undef
+# until warmed. Empty arrayref = warmed, none.
+sub peekCollabs {
+    my ($class, $artistMbid) = @_;
+    return $cache->get(_collabsKey($artistMbid));
+}
+
+# Vet collaboration candidates serially (MB etiquette gap; 0 on a mirror).
+# $done->(\@kept, $ok): $ok is false when any lookup failed, and the caller
+# then caches nothing, so a blip cannot hide a real collaboration for 14 days.
+sub _vetCollabs {
+    my ($class, $cands, $done) = @_;
+    my (@kept, $ok);
+    $ok = 1;
+    my $gap = $class->mbGap(1.1);
+    my $i = 0;
+    my $get = sub {
+        my ($url, $onData) = @_;
+        Slim::Networking::SimpleAsyncHTTP->new(
+            sub {
+                my $d = eval { from_json(shift->content) };
+                return $onData->(($@ || ref $d ne 'HASH') ? undef : $d);
+            },
+            sub { $onData->(undef) },
+            { timeout => 12 }
+        )->get($url, 'Accept' => 'application/json', 'User-Agent' => USER_AGENT);
+    };
+    my $next = sub {
+        my ($self) = @_;
+        my $c = $cands->[$i++];
+        return $done->(\@kept, $ok) unless $c && $ok;
+        my $step = sub {
+            $gap ? Slim::Utils::Timers::setTimer(undef, time() + $gap, sub { $self->($self) })
+                 : $self->($self);
+        };
+        $get->(_mbBase() . 'artist/' . $c->{mbid} . '?inc=artist-rels&fmt=json', sub {
+            my $d = shift;
+            unless ($d) { $ok = 0; return $step->() }
+            my %who;
+            for my $rel (@{ ref $d->{relations} eq 'ARRAY' ? $d->{relations} : [] }) {
+                next unless ($rel->{type} // '') eq 'collaboration'
+                         && ($rel->{direction} // '') eq 'backward';
+                my $id = lc($rel->{artist}{id} // '') or next;
+                $who{$id} = 1;
+            }
+            my $n = scalar keys %who;
+            return $step->() unless $n >= 1 && $n <= COLLAB_MAX_MEMBERS;
+            my $rgc = $class->peekReleaseGroupCount($c->{mbid});
+            if (defined $rgc) {
+                push @kept, $c if $rgc > 0;
+                return $step->();
+            }
+            $get->(_mbBase() . 'release-group?artist=' . $c->{mbid} . '&fmt=json&limit=1', sub {
+                my $r = shift;
+                my $cnt = $r ? ($r->{'release-group-count'} // 0) : undef;
+                unless (defined $cnt) { $ok = 0; return $step->() }
+                eval { $cache->set(_rgCountKey($c->{mbid}), $cnt + 0, RGCOUNT_TTL); 1 };
+                push @kept, $c if $cnt > 0;
+                $step->();
+            });
+        });
+    };
+    $next->($next);
+    return;
+}
+
 my %bandsInFlight;
 
-# Resolve the artist's "member of band" relationships once and cache them.
+# Resolve the artist's "member of band" relationships once and cache them,
+# and (same response) its vetted collaborations.
 # $cb fires exactly once (cache hit / done / failure / already in flight).
 sub warmBandMembers {
     my ($class, $artistMbid, $cb) = @_;
     $cb ||= sub {};
     return $cb->() unless $artistMbid;
-    return $cb->() if defined $cache->get(_bandsKey($artistMbid));
+    # BOTH must be cached: a band list written before collaborations existed
+    # would otherwise keep them from ever being fetched.
+    return $cb->() if defined $cache->get(_bandsKey($artistMbid))
+                   && defined $cache->get(_collabsKey($artistMbid));
     return $cb->() if $bandsInFlight{$artistMbid};
     $bandsInFlight{$artistMbid} = 1;
 
@@ -2220,8 +2305,32 @@ sub warmBandMembers {
             _setMbName($artistMbid, $data->{name});
             _dbg("band-members: $artistMbid -> " . scalar(@bands) . ' band(s): '
                  . join(', ', map { $_->{name} } @bands));
-            delete $bandsInFlight{$artistMbid};
-            $cb->();
+
+            # Collaborations: forward links, never a target already listed as
+            # a band, each once, then vetted (see COLLAB_MAX_MEMBERS).
+            my %isBand = map { $_->{mbid} => 1 } @bands;
+            my (%seenC, @cands);
+            for my $rel (@{ ref $data->{relations} eq 'ARRAY' ? $data->{relations} : [] }) {
+                next unless ($rel->{type} // '') eq 'collaboration'
+                         && ($rel->{direction} // '') eq 'forward';
+                my $t  = $rel->{artist} or next;
+                my $id = lc($t->{id} // '') or next;
+                next if $isBand{$id} || $seenC{$id}++;
+                push @cands, { mbid => $id, name => $t->{name} };
+            }
+            splice(@cands, COLLAB_CHECK_MAX) if @cands > COLLAB_CHECK_MAX;
+            $class->_vetCollabs(\@cands, sub {
+                my ($kept, $ok) = @_;
+                if ($ok) {
+                    eval { $cache->set(_collabsKey($artistMbid), $kept, BANDS_TTL); 1 }
+                        or $log->warn("collaborations cache set failed: $@");
+                }
+                _dbg("collaborations: $artistMbid -> " . scalar(@$kept) . ' of '
+                     . scalar(@cands) . ' kept' . ($ok ? '' : ' (lookup failed - not cached)')
+                     . (@$kept ? ': ' . join(', ', map { $_->{name} } @$kept) : ''));
+                delete $bandsInFlight{$artistMbid};
+                $cb->();
+            });
         },
         sub {
             _dbg("band-members: lookup failed for $artistMbid: " . (shift->error // 'HTTP error'));

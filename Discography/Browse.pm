@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.12';
+use constant CACHE_VERSION => '0.51.13';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -2191,6 +2191,22 @@ sub _buildList {
             sort { lc($a->{name}) cmp lc($b->{name}) } @$bands;
     }
 
+    # "Collaborations" — MusicBrainz collaboration links (a duo or side project
+    # the artist is recorded as a COLLABORATOR on, not a member of: Holly
+    # Golightly -> "Holly Golightly and The Brokeoffs"). Vetted in the SAME
+    # warm as the bands (API::_vetCollabs drops charity supergroups and dead
+    # entities), same drill, same second-load contract, and placed after the
+    # bands so a cold->warm flip still only adds rows below.
+    my $collabs = Plugins::Discography::API->peekCollabs($mbid);
+    if ($collabs && @$collabs) {
+        my @sorted = sort { lc($a->{name}) cmp lc($b->{name}) } @$collabs;
+        push @items, _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_COLLABORATIONS',
+            $useH, IMG_BASE . 'dsc-bio_MTL_icon_person.png',
+            [ map { _bandLinkRow($client, $opts, $_) } @sorted ],
+            { id => 'sect:COLLABS', itemActions => _listItemActions($opts, 'sect:COLLABS') });
+        push @items, map { _bandLinkRow($client, $opts, $_) } @sorted;
+    }
+
     # "Similar artists" — MAI/Last.fm related artists, each a DRILL into that
     # artist's discography (identical behaviour to an "Also a member of" link,
     # only resolved by NAME rather than a known mbid). Same second-load contract
@@ -2231,8 +2247,10 @@ sub _buildList {
     # BAND row wins, because membership is asserted MusicBrainz data while
     # Last.fm "similar" is a suggestion — and a band the artist is actually IN
     # is a strange thing to file under "similar" in the first place.
+    # Collaborations are navigation rows keyed by title too, so they count.
     my $similar = _dropBandDupes(
-        ($opts->{shared_name} ? undef : _peekSimilar($mbid)), $bands);
+        ($opts->{shared_name} ? undef : _peekSimilar($mbid)),
+        [ @{ $bands || [] }, @{ $collabs || [] } ]);
     if ($similar && @$similar) {
         push @items, _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_SIMILAR_ARTISTS',
             $useH, IMG_BASE . 'dsc-bio_MTL_icon_person.png',
