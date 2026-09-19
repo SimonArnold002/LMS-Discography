@@ -86,6 +86,15 @@ is_size({ record_type => 'compile' },'album',  'Deezer: record_type compile = al
 is_size({ record_type => 'ep' },     'ep',     'Deezer: record_type ep');
 is_size({ release_type => 'album' }, 'undef',  'Qobuz\'s own release_type is NOT trusted (its plugin recomputes it)');
 is_size({},                          'undef',  'nothing known = no size (behaves as before)');
+# THE ALBUM-SEARCH FALLBACK IS SIZED TOO (review 2026-09-19; the comment here
+# used to claim search payloads carry nothing). Verified live: Deezer
+# /search/album returns nb_tracks + record_type, and Qobuz search items carry
+# tracks_count/duration — so a searched candidate is gated like any other.
+is_size({ nb_tracks => 12, record_type => 'album',  type => 'album' }, 'album',
+        'Deezer SEARCH payload: nb_tracks decides (Tour de France 2009 Remaster, live shape)');
+is_size({ nb_tracks => 3,  record_type => 'single', type => 'album' }, 'single',
+        'Deezer SEARCH payload: a 3-track single (its `type` is always "album" — not read)');
+is_size({ tracks_count => 18, duration => 4200 }, 'album', 'Qobuz SEARCH payload: counts as on the artist page');
 
 # _decorate carries it onto the candidate.
 {

@@ -25,7 +25,8 @@ use strict;
 use warnings;
 use FindBin;
 
-our (%CACHE, $DATA, @URLS, %FAIL);
+our (%CACHE, $DATA, @URLS, %FAIL, @EV);
+our $BASE = 'http://mirror:5000/ws/2/';   # a mirror: _mbGap is 0
 
 BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
@@ -47,6 +48,13 @@ BEGIN {
         my ($cls, $cb, $errcb, $opt) = @_;
         return bless { cb => $cb, err => $errcb }, 'T::HTTP';
     };
+    # Fires immediately, but RECORDS that the chain waited — which is the whole
+    # question for MusicBrainz's 1 req/s etiquette.
+    *{'Slim::Utils::Timers::setTimer'} = sub {
+        my (undef, $when, $cb) = @_;
+        push @main::EV, 'wait';
+        return $cb->();
+    };
     for my $p (qw(Slim::Utils::Log Slim::Utils::Prefs JSON::XS::VersionOneAndTwo)) {
         push @{"${p}::ISA"}, 'Exporter';
     }
@@ -61,8 +69,8 @@ sub get    { return $main::CACHE{ $_[1] } }
 sub set    { $main::CACHE{ $_[1] } = $_[2]; return 1 }
 sub remove { delete $main::CACHE{ $_[1] }; return 1 }
 package T::Prefs;
-# A mirror base: _mbGap is 0, so the vetting chain runs synchronously here.
-sub get { return $_[1] eq 'mb_base_url' ? 'http://mirror:5000/ws/2/' : undef }
+# A mirror base ($BASE) leaves _mbGap at 0; the public API makes it 1.1.
+sub get { return $_[1] eq 'mb_base_url' ? $main::BASE : undef }
 sub set { return 1 } sub init { return 1 } sub setChange { return 1 }
 package T::Resp;
 sub new { bless {}, shift } sub content { '{}' } sub error { 'stub error' }
@@ -70,6 +78,7 @@ package T::HTTP;
 sub get {
     my ($self, $url) = @_;
     push @main::URLS, $url;
+    push @main::EV, 'get';
     if (grep { index($url, $_) >= 0 } keys %main::FAIL) {
         return $self->{err}->(T::Resp->new);
     }
@@ -206,6 +215,34 @@ ok($names->($API->peekBands($HOLLY)) eq 'Avenue A,Thee Headcoatees', '... while 
 warm($HOLLY);
 $API->clearArtistCache(mbid => $HOLLY);
 ok(!defined $API->peekCollabs($HOLLY), 'clearArtistCache removes the collaborations too');
+
+# ---------------------------------------------------------------------------
+# 5. MUSICBRAINZ ETIQUETTE (review 2026-09-19). Against the PUBLIC API every
+#    request in the vetting chain must be spaced, not just the first of each
+#    candidate: the release-group count used to follow its own artist-rels
+#    response immediately, i.e. two requests back to back. A 503 there caches
+#    nothing, and since the warm needs BOTH keys the whole vet re-runs on every
+#    render. On a mirror the gap is 0 and nothing waits.
+# ---------------------------------------------------------------------------
+{
+    local $BASE = 'https://musicbrainz.org/ws/2/';
+    %CACHE = (); @URLS = (); @EV = ();
+    warm($HOLLY);
+    # The band lookup itself opens the chain; everything after it must wait.
+    my @after = @EV[1 .. $#EV];
+    my $back2back = 0;
+    for my $i (1 .. $#after) {
+        $back2back++ if $after[$i] eq 'get' && $after[$i - 1] eq 'get';
+    }
+    ok(scalar(@URLS) > 3, 'public API: the vetting chain really ran');
+    ok($back2back == 0, 'public API: no two MusicBrainz requests go out back to back');
+    ok(scalar($after[0] eq 'wait'), '... including the first vetting request after the band lookup');
+}
+{
+    %CACHE = (); @EV = ();
+    warm($HOLLY);
+    ok(scalar(!grep { $_ eq 'wait' } @EV), 'a mirror still waits for nothing');
+}
 
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

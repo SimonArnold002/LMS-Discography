@@ -2204,25 +2204,32 @@ sub _vetCollabs {
     $ok = 1;
     my $gap = $class->mbGap(1.1);
     my $i = 0;
+    # EVERY request here is spaced, not just the first of each candidate: the
+    # release-group count follows its own artist-rels response, so pacing only
+    # between candidates still put two requests back to back against the public
+    # API (review 2026-09-19). The chain is entered straight after
+    # warmBandMembers' own request, so the first one waits too. $gap is 0 on a
+    # mirror, where nothing waits at all.
     my $get = sub {
         my ($url, $onData) = @_;
-        Slim::Networking::SimpleAsyncHTTP->new(
-            sub {
-                my $d = eval { from_json(shift->content) };
-                return $onData->(($@ || ref $d ne 'HASH') ? undef : $d);
-            },
-            sub { $onData->(undef) },
-            { timeout => 12 }
-        )->get($url, 'Accept' => 'application/json', 'User-Agent' => USER_AGENT);
+        my $fire = sub {
+            Slim::Networking::SimpleAsyncHTTP->new(
+                sub {
+                    my $d = eval { from_json(shift->content) };
+                    return $onData->(($@ || ref $d ne 'HASH') ? undef : $d);
+                },
+                sub { $onData->(undef) },
+                { timeout => 12 }
+            )->get($url, 'Accept' => 'application/json', 'User-Agent' => USER_AGENT);
+        };
+        $gap ? Slim::Utils::Timers::setTimer(undef, time() + $gap, $fire) : $fire->();
     };
     my $next = sub {
         my ($self) = @_;
         my $c = $cands->[$i++];
         return $done->(\@kept, $ok) unless $c && $ok;
-        my $step = sub {
-            $gap ? Slim::Utils::Timers::setTimer(undef, time() + $gap, sub { $self->($self) })
-                 : $self->($self);
-        };
+        # No gap here: $get spaces every request itself.
+        my $step = sub { $self->($self) };
         $get->(_mbBase() . 'artist/' . $c->{mbid} . '?inc=artist-rels&fmt=json', sub {
             my $d = shift;
             unless ($d) { $ok = 0; return $step->() }

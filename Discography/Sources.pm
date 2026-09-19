@@ -2700,9 +2700,15 @@ sub _candYear {
 # (Qobuz tracks_count, Tidal numberOfTracks, Deezer nb_tracks, all durations in
 # seconds); a stated type only when there are no counts (Tidal `type`, Deezer
 # `record_type`). Qobuz's own `release_type` is deliberately NOT read — its
-# plugin overrides it with the counts, and 0.46.8 found it unreliable. Search
-# payloads carry none of this, so the album-search fallback stays unknown and
-# matches exactly as before.
+# plugin overrides it with the counts, and 0.46.8 found it unreliable.
+# THE ALBUM-SEARCH FALLBACK IS SIZED THE SAME WAY (corrected at the 0.51.13
+# review; this comment used to claim search payloads carry nothing). Verified
+# live: Deezer /search/album returns `nb_tracks` + `record_type`, and Qobuz
+# search items carry `tracks_count`/`duration`, so a searched candidate is
+# gated like any other. Only a payload with neither counts nor a type stays
+# unknown, and an unknown size matches exactly as before. NB Deezer's `type`
+# field is the ENTITY type ("album" for every row) — `record_type` is the one
+# that means anything, and it is read only when there are no counts.
 sub _candSize {
     my ($album) = @_;
     return undef unless ref $album eq 'HASH';

@@ -889,6 +889,17 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   same second-load contract, rows only ever added below the bands). Similar artists now also drop a
   name shown under Collaborations (`_dropBandDupes` — Material keys app rows by title, 0.51.1).
 - `tools/t_collab.pl` (new, 18; red before the change).
+- **Review of this build, two fixes (2026-09-19):**
+  - **`_vetCollabs` paced only between CANDIDATES**, so a candidate's release-group count followed its
+    own artist-rels response immediately — two requests back to back against the public API, where a
+    503 caches nothing and (both keys being required) the whole vet re-runs on every render. Every
+    request in the chain is now spaced by `$get` itself, including the first after the band lookup;
+    a mirror still waits for nothing. `t_collab.pl` §5 (22 total), verified red first.
+  - **`_candSize`'s comment claimed "search payloads carry none of this"** — false, and a comment is
+    not the contract: Deezer `/search/album` returns `nb_tracks` + `record_type` (verified live) and
+    Qobuz search items carry `tracks_count`/`duration`, so the album-search fallback IS size-gated.
+    Prose corrected (incl. Deezer's `type` being the entity type, always "album") and the behaviour
+    pinned in `t_size.pl` §1 (38 total).
 - **LIVE VERIFY AFTER INSTALL:** Holly Golightly (Artists row) shows "Collaborations: Holly
   Golightly and The Brokeoffs", and the drill shows *Medicine County* / *No Help Coming*. Brian Eno
   shows Fripp & Eno + Harmonia 76 and NOT "N.M.L. NO MORE LANDMINE" (22). Bob Dylan shows no
