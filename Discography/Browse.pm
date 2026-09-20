@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.16';
+use constant CACHE_VERSION => '0.51.17';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -1209,12 +1209,11 @@ sub _disambiguateByLibrary {
                             . ($c->{score} // '?') . ") weight $w ("
                             . scalar(keys %$claimed) . " raw match(es))");
                     }
-                    my $gap = $api->mbGap(1.1);   # 0 on a mirror
-                    if ($gap > 0) {
-                        Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + $gap,
-                            sub { $step->() });
-                    }
-                    else { $step->() }
+                    # No gap of its own (0.51.17): every request this walk makes
+                    # goes through API::_netGet, which paces on the URL. A gap
+                    # here as well would double the wait on the public host,
+                    # and on a mirror it was already 0.
+                    $step->();
                 });
         };
         $step->();

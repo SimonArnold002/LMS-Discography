@@ -49,14 +49,13 @@ BEGIN {
         my ($cls, $cb, $errcb, $opt) = @_;
         return bless { cb => $cb, err => $errcb }, 'T::HTTP';
     };
-    # Fires immediately, but RECORDS that the chain waited — which is the whole
-    # question for MusicBrainz's 1 req/s etiquette.
+    # Fires immediately. Nothing in this suite depends on a real delay.
     *{'Slim::Utils::Timers::setTimer'} = sub {
         my (undef, $when, $cb) = @_;
-        push @main::EV, 'wait';
-        push @main::WHEN, $when;      # the DEADLINE, for the hi-res check in 5b
+        push @main::WHEN, $when;
         return $cb->();
     };
+    *{'Slim::Utils::Timers::killSpecific'} = sub { 1 };
     for my $p (qw(Slim::Utils::Log Slim::Utils::Prefs JSON::XS::VersionOneAndTwo)) {
         push @{"${p}::ISA"}, 'Exporter';
     }
@@ -227,68 +226,39 @@ $API->clearArtistCache(mbid => $HOLLY);
 ok(!defined $API->peekCollabs($HOLLY), 'clearArtistCache removes the collaborations too');
 
 # ---------------------------------------------------------------------------
-# 5. MUSICBRAINZ ETIQUETTE (review 2026-09-19). Against the PUBLIC API every
-#    request in the vetting chain must be spaced, not just the first of each
-#    candidate: the release-group count used to follow its own artist-rels
-#    response immediately, i.e. two requests back to back. A 503 there caches
-#    nothing, and since the warm needs BOTH keys the whole vet re-runs on every
-#    render. On a mirror the gap is 0 and nothing waits.
-# ---------------------------------------------------------------------------
-{
-    local $BASE = 'https://musicbrainz.org/ws/2/';
-    %CACHE = (); @URLS = (); @EV = ();
-    warm($HOLLY);
-    # The band lookup itself opens the chain; everything after it must wait.
-    my @after = @EV[1 .. $#EV];
-    my $back2back = 0;
-    for my $i (1 .. $#after) {
-        $back2back++ if $after[$i] eq 'get' && $after[$i - 1] eq 'get';
-    }
-    ok(scalar(@URLS) > 3, 'public API: the vetting chain really ran');
-    ok($back2back == 0, 'public API: no two MusicBrainz requests go out back to back');
-    ok(scalar($after[0] eq 'wait'), '... including the first vetting request after the band lookup');
-}
-{
-    %CACHE = (); @EV = ();
-    warm($HOLLY);
-    ok(scalar(!grep { $_ eq 'wait' } @EV), 'a mirror still waits for nothing');
-}
-
-# ---------------------------------------------------------------------------
-# 5b. THE GAP IS SCHEDULED AGAINST THE HI-RES CLOCK (review 2026-09-20).
-#     Slim::Utils::Timers::_makeTimer does `EV::timer($when - EV::now, ...)`,
-#     and EV::now is a hi-res epoch. A deadline built from CORE time(), which
-#     truncates to the whole second, therefore fires after `1.1 - frac(now)` —
-#     under one second nine times in ten, which is exactly the MB etiquette
-#     limit the gap exists to respect. Pacing that quietly does not pace is
-#     worse than none, because the 503 it earns caches nothing and the whole
-#     vet re-runs on the next render.
+# 5. THIS CHAIN DOES NOT BUILD ITS OWN TRANSPORT (0.51.17). Pacing used to live
+#    here — a timer per request, sized by `mbGap` — and it was wrong twice: the
+#    gap came from the CONFIGURED base, so a mirror install paced nothing even
+#    on a public retry, and the deadline was built from core time(), which
+#    truncates. Both are now the queue's job (`_netGet`, guarded by
+#    tools/t_netqueue.pl, which owns the gap, the 503 backoff and the hi-res
+#    deadlines). What is still THIS suite's business is that the vetting goes
+#    through that door at all: a chain that builds its own SimpleAsyncHTTP
+#    would be paced by nothing, and the queue could not see it.
 #
-#     Deterministic by construction: spin (bounded, < 1s, once) until the
-#     clock is at least half a second past the whole second, so a truncated
-#     base is off by more than half a second and a hi-res one by ~0.
+#    Asserted on the SOURCE, because a stub cannot prove the absence of a call
+#    the code never makes — and on the routing, by counting what _netGet saw.
 # ---------------------------------------------------------------------------
 {
-    local $BASE = 'https://musicbrainz.org/ws/2/';
-    my $gap = $API->mbGap(1.1);
-    ok(scalar($gap == 1.1), 'public API: the courtesy gap is 1.1s');
-
-    # Bounded by the WALL CLOCK, not an iteration count: within one second the
-    # fraction must cross 0.5, and a fast machine must not spin out early and
-    # weaken the check.
-    my $stop = Time::HiRes::time() + 1.2;
-    1 while Time::HiRes::time() < $stop
-         && (Time::HiRes::time() - int(Time::HiRes::time())) < 0.5;
-
-    %CACHE = (); @URLS = (); @EV = (); @WHEN = ();
-    my $t0 = Time::HiRes::time();
+    open my $fh, '<', "$FindBin::Bin/../Discography/API.pm" or die $!;
+    my $src = do { local $/; <$fh> };
+    my ($vet) = $src =~ /^(sub _vetCollabs \{.*?^\})/ms;
+    ok(scalar($vet), '_vetCollabs found in the shipped source');
+    ok(scalar($vet && $vet !~ /SimpleAsyncHTTP/),
+       '... and it builds no transport of its own');
+    ok(scalar($vet && $vet =~ /_netGet\(/),
+       '... every request goes through the queue');
+    my ($warm) = $src =~ /^(sub warmBandMembers \{.*?^\})/ms;
+    ok(scalar($warm && $warm !~ /SimpleAsyncHTTP/ && $warm =~ /_netGet\(/),
+       'the band lookup goes through it too');
+}
+{
+    # And the chain really does run end to end through the seam.
+    %CACHE = (); @URLS = ();
     warm($HOLLY);
-
-    ok(scalar(@WHEN > 0), 'public API: a deadline was actually scheduled');
-    my $drift = @WHEN ? abs($WHEN[0] - $gap - $t0) : 99;
-    ok(scalar($drift < 0.25),
-       sprintf('the deadline is built on the HI-RES clock: it lands %.3fs from now+gap (a truncated time() would sit %.3fs short)',
-               $drift, $t0 - int($t0)));
+    ok(scalar(@URLS) > 3, 'the vetting chain really ran');
+    ok(scalar(!grep { !m{^\Q$BASE\E} } @URLS),
+       '... and every url it sent was built from the configured base');
 }
 
 # ---------------------------------------------------------------------------
@@ -301,7 +271,11 @@ ok(!defined $API->peekCollabs($HOLLY), 'clearArtistCache removes the collaborati
 #    vetting runs at the END of the chain (warmCollaborations), after the pass.
 # ---------------------------------------------------------------------------
 {
-    local $BASE = 'https://musicbrainz.org/ws/2/';
+    # The MIRROR base, deliberately. This section is about the ORDER of the
+    # chain, not its pacing, and pacing now belongs to the queue: against the
+    # public host the requests would be spread over real seconds by real
+    # timers, which says nothing about ordering and makes the suite slow.
+    # t_netqueue.pl owns the public-host behaviour, on a fake clock.
     %CACHE = (); @URLS = ();
     my $n = 0;
     $API->warmBandMembers($HOLLY, sub { $n++ });

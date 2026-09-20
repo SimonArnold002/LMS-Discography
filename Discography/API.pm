@@ -57,7 +57,7 @@ my $prefs = preferences('plugin.discography');
 # instance for a namespace and ignores later args). tools/syntax_check.sh
 # asserts all three agree and match install.xml.
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.16';
+use constant CACHE_VERSION => '0.51.17';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 # MB's canonical artist name, remembered in-process as well as cached — the
@@ -148,7 +148,231 @@ sub _mbThrottled {
 
 # Inter-page gap: the given MB-etiquette default against the public API, 0 on a
 # local mirror.
+#
+# LEGACY, and going away. Every paced loop it served now goes through _netGet
+# instead, which paces on the URL rather than on the configured base — see THE
+# ONE OUTBOUND REQUEST QUEUE below. Kept only for the callers that ask "are we
+# throttled?" as a POLICY question (whether to run a speculative pass at all),
+# which is a different question from how fast to send.
 sub _mbGap { _mbThrottled() ? $_[0] : 0 }
+
+# ---------------------------------------------------------------------------
+# THE ONE OUTBOUND REQUEST QUEUE (0.51.17)
+# ---------------------------------------------------------------------------
+# Every MusicBrainz ws/2 request in this plugin goes through _netGet. Nothing
+# here may build its own SimpleAsyncHTTP to that host.
+#
+# WHY, and why it is NOT the same design as LBF's. MusicBrainz publishes ~1
+# request/s per IP, averaged, and refuses EVERY request from that IP with 503
+# above it. LBF hit that in the field (~80 refusals in ten minutes, 2026-09-14)
+# because five of its paths sent unpaced beside two that paced themselves, and
+# built one queue. Discography's exposure is smaller and differently shaped —
+# it sends only on a page open or a search, with no warm and no library sweep —
+# so a CROSS-PLUGIN gate shared with LBF was scoped and DECLINED (Simon,
+# 2026-09-20; see the ledger). What was wrong here is narrower and real:
+#
+#   `_mbGap` decides from the CONFIGURED BASE. On a mirror install it returns 0,
+#   and the four paths that deliberately retry a zero-result mirror search
+#   against the PUBLIC host (_artistMbidByName, getArtistCandidates) therefore
+#   sent to musicbrainz.org with no gap, no backoff and no queue at all.
+#
+# So the decision is made on the URL, exactly as LBF's comment says it must be:
+# a request to the user's own mirror is not queued and never waits behind a
+# public one, and a public retry is paced even when the configured base is a
+# mirror.
+#
+# THE RULE, enforced here and nowhere else:
+#   * ONE public request in flight at a time;
+#   * the next no sooner than NET_GAP_MB after the previous one was SENT;
+#   * nothing goes out while the shared backoff is in force, and the queue
+#     itself notes a 503 and a success — callers must not, or one refusal would
+#     double the curve twice.
+#
+# ONE CLOCK, DELIBERATELY. Every deadline here is built from Time::HiRes::time()
+# and handed to Slim::Utils::Timers, which compares against a hi-res clock
+# (`_makeTimer` does `EV::timer($when - EV::now, ...)`). Mixing core time() into
+# a deadline silently shortens it by frac(now) — that was the 0.51.16 bug.
+#
+# LBF's backoff mixes the two clocks and that is NOT a bug to port a fix for:
+# its whole public-MusicBrainz surface is two user-triggered call sites (the
+# tracklist fallback when ListenBrainz has none, and Diag's connection probe),
+# so it cannot earn a 503 and `_mbNoteLimit` never runs. HERE the backoff is
+# reachable — a user with no mirror sends every request of a cold artist page
+# through this queue, which for a big discography is dozens — so the clock has
+# to be right. Same shape, different reachability; see the ledger.
+#
+# $onOk / $onErr receive exactly what SimpleAsyncHTTP hands its callbacks, so a
+# call site converts by replacing `->new(...)->get(...)` and nothing else.
+#
+# ADDING THE COMMUNITY API HERE (api.lms-community.org) is the intended next
+# step and needs two things this does not yet do, because nothing calls it yet:
+# the MANDATORY `X-LMS-Plugin-ID` header on every request (the dev asked for it;
+# it must carry the CALLING plugin's package), and a per-job retry/wait budget
+# for its 429s. Its limit is self-imposed politeness, not a published rule, so
+# its bucket wants serialisation and a 429 backoff but no fixed gap.
+use constant NET_GAP_MB        => 1.1;   # public musicbrainz.org only
+use constant NET_BACKOFF_START => 5;
+use constant NET_BACKOFF_MAX   => 30;
+use constant NET_WATCHDOG_PAD  => 5;     # past the timeout, a lost callback frees the slot
+
+# One bucket per rate-limited host. A URL with no bucket is sent straight out.
+# `our`, not `my`, ON PURPOSE: the guard suite resets and inspects this between
+# sections. LBF's equivalent suite has to lift its queue's source out of the
+# file and eval it into another package to get at the same state, which then
+# needs every constant re-declared beside it; one word here avoids all of that.
+our %NET = (
+    mb => { gap => NET_GAP_MB, queue => [], inflight => 0, nextAt => 0,
+            timer => undef, busyUntil => 0, delay => 0, pumping => 0, repump => 0 },
+);
+
+sub _netBucket {
+    my ($url) = @_;
+    return 'mb' if defined $url && $url =~ m{^https?://([^/]*\.)?musicbrainz\.org/}i;
+    return undef;
+}
+
+sub _netIsRateLimited {
+    my ($resp, $err) = @_;
+    if (ref $resp && $resp->can('code')) {
+        my $code = $resp->code // 0;
+        return 1 if $code == 503 || $code == 429;
+    }
+    $err = '' unless defined $err;
+    $err .= (ref $resp && $resp->can('error')) ? ($resp->error // '') : '';
+    return $err =~ /rate limit|exceeding the allowable|too many requests|\b503\b|\b429\b/i ? 1 : 0;
+}
+
+sub _netNoteOk { $NET{ $_[0] }{delay} = 0; return }
+
+sub _netNoteLimit {
+    my ($b) = @_;
+    my $s = $NET{$b} or return 0;
+    $s->{delay} = $s->{delay} ? $s->{delay} * 2 : NET_BACKOFF_START;
+    $s->{delay} = NET_BACKOFF_MAX if $s->{delay} > NET_BACKOFF_MAX;
+    my $until = Time::HiRes::time() + $s->{delay};
+    $s->{busyUntil} = $until if $until > $s->{busyUntil};   # only ever outward
+    $log->warn("$b rate limit - backing off $s->{delay}s");
+    return $s->{delay};
+}
+
+# Seconds until the named bucket may send again (0 = now). For diagnostics.
+sub netQueueWait {
+    my (undef, $b) = @_;
+    my $s = $NET{ $b || 'mb' } or return 0;
+    my $now = Time::HiRes::time();
+    my $at  = $s->{nextAt} > $s->{busyUntil} ? $s->{nextAt} : $s->{busyUntil};
+    return $at > $now ? $at - $now : 0;
+}
+
+sub _netGet {
+    my ($url, $onOk, $onErr, %opt) = @_;
+    my $job = { url => $url, ok => ($onOk || sub {}), err => ($onErr || sub {}),
+                timeout => ($opt{timeout} || 15) };
+    my $b = _netBucket($url);
+    unless ($b) { _netSend(undef, $job); return }
+    push @{ $NET{$b}{queue} }, $job;
+    _netPump($b);
+    return;
+}
+
+# A LOOP, NOT RECURSION, AND RE-ENTRY IS FOLDED INTO IT (LBF's reasoning): a
+# callback that lands synchronously — a test stub, a cached transport —
+# re-enters the pump from inside _netSend, and a plain guard would drop that
+# wake-up and strand the queue. `local` restores the guard even if a caller's
+# callback dies inside the loop; a flag left set would silence every request to
+# that host for the life of the process.
+sub _netPump {
+    my ($b) = @_;
+    my $s = $NET{$b} or return;
+    if ($s->{pumping}) { $s->{repump} = 1; return }
+    local $s->{pumping} = 1;
+    do {
+        $s->{repump} = 0;
+        while (!$s->{inflight} && @{ $s->{queue} }) {
+            my $now = Time::HiRes::time();
+            my $at  = $s->{nextAt} > $s->{busyUntil} ? $s->{nextAt} : $s->{busyUntil};
+            if ($at > $now) {
+                # CLAIM THE SLOT BEFORE SCHEDULING, and keep a boolean rather
+                # than the handle (nothing ever kills this timer). `$s->{timer}
+                # ||= setTimer(...)` assigns AFTER the call returns, so a
+                # transport or timer that fires synchronously clears the flag
+                # first and then has the stale handle written back over it —
+                # leaving a claim nothing will ever release and a queue stalled
+                # for the life of the process.
+                unless ($s->{timer}) {
+                    $s->{timer} = 1;
+                    Slim::Utils::Timers::setTimer(undef, $at,
+                        sub { $s->{timer} = 0; _netPump($b) });
+                }
+                last;
+            }
+            my $job = shift @{ $s->{queue} };
+            $s->{inflight} = 1;
+            $s->{nextAt}   = $now + $s->{gap};
+            _netSend($b, $job);
+        }
+    } while ($s->{repump});
+    return;
+}
+
+sub _netSend {
+    my ($b, $job) = @_;
+    my ($settled, $watchdog) = (0, undef);
+    # Frees the slot exactly once, whichever of the two callbacks or the
+    # watchdog gets there first, and BEFORE the caller's callback runs — so a
+    # callback that queues its next request finds the queue ready for it.
+    my $release = sub {
+        return if $settled++;
+        return unless $b;
+        Slim::Utils::Timers::killSpecific($watchdog) if $watchdog;
+        $NET{$b}{inflight} = 0;
+        _netPump($b);
+    };
+    my $http = Slim::Networking::SimpleAsyncHTTP->new(
+        sub {
+            my $already = $settled;
+            _netNoteOk($b) if $b;
+            $release->();
+            $job->{ok}->(@_) unless $already;
+        },
+        sub {
+            my $already = $settled;
+            _netNoteLimit($b) if $b && _netIsRateLimited($_[0], $_[1]);
+            $release->();
+            $job->{err}->(@_) unless $already;
+        },
+        { timeout => $job->{timeout} },
+    );
+    # USER_AGENT() with parens: it is a SUB declared further down this file, not
+    # a constant, so a bareword here is a strict-subs error at compile time.
+    $http->get($job->{url}, 'Accept' => 'application/json', 'User-Agent' => USER_AGENT());
+    # ARMED AFTER THE SEND, AND ONLY IF STILL UNSETTLED. The watchdog measures
+    # time from the moment the request went out, which is what it is for; and a
+    # transport that answers synchronously (a cached layer, a test stub) has
+    # already settled by now, so there is no timer to arm and immediately kill.
+    if ($b && !$settled) {
+        $watchdog = Slim::Utils::Timers::setTimer(undef,
+            Time::HiRes::time() + $job->{timeout} + NET_WATCHDOG_PAD, sub {
+                return if $settled;
+                $log->warn("no callback for $job->{url} - freeing the queue");
+                $watchdog = undef;
+                $release->();
+                # A response-shaped object: error handlers call ->error and
+                # ->code on their first argument.
+                $job->{err}->(Plugins::Discography::API::LostResponse->new, 'timed out');
+            });
+    }
+    return;
+}
+
+{
+    package Plugins::Discography::API::LostResponse;
+    sub new     { return bless {}, shift }
+    sub code    { return 0 }
+    sub error   { return 'no callback' }
+    sub content { return '' }
+    sub headers { return {} }
+}
 
 # Auto-detect a LOCAL MusicBrainz mirror on the SAME host — the common
 # musicbrainz-docker-alongside-LMS setup — so it works with zero config. Only
@@ -195,7 +419,7 @@ sub autodetectMirror {
             return $cb->();
         }
         my $base = $MB_AUTO_CANDIDATES[$i++];
-        Slim::Networking::SimpleAsyncHTTP->new(
+        _netGet($base . 'artist/' . MB_PROBE_MBID . '?fmt=json',
             sub {
                 my $data = eval { from_json(shift->content) };
                 if (!$@ && ref $data eq 'HASH' && ($data->{name} // '') eq MB_PROBE_NAME) {
@@ -206,9 +430,7 @@ sub autodetectMirror {
                 $try->();   # answered but not MusicBrainz -> next candidate
             },
             sub { $try->() },   # unreachable / error -> next candidate
-            { timeout => 3 }
-        )->get($base . 'artist/' . MB_PROBE_MBID . '?fmt=json',
-               'Accept' => 'application/json', 'User-Agent' => USER_AGENT());
+            timeout => 3);
     };
     $try->();
     return;
@@ -247,7 +469,7 @@ use constant RG_TTL => 14 * 86400;
 # this UI can usefully show; truncation is logged.
 use constant RG_PAGE_SIZE => 100;
 use constant RG_MAX_PAGES => 6;
-use constant RG_PAGE_GAP  => 1.1;   # seconds between pages
+# (RG_PAGE_GAP removed in 0.51.17 — the queue supplies the gap, once.)
 
 # Bump when the cached release-group shape or filtering changes — versioned key
 # invalidates every stale entry at once (the fleet's bump-every-layer rule).
@@ -505,7 +727,7 @@ sub _artistMbidByName {
             . ($loose ? ', unquoted' : '')
             . ($isFallback ? ', public fallback' : '') . ')');
 
-        Slim::Networking::SimpleAsyncHTTP->new(
+        _netGet($url,
             sub {
                 my $resp = shift;
                 # CAPTURE THE PARSE ERROR HERE, not 80 lines below. $@ is a
@@ -815,8 +1037,7 @@ sub _artistMbidByName {
                 _dbg("MB artist search '$name' ($field) => HTTP error ($err; not cached, retry works)");
                 $onDone->(undef);
             },
-            { timeout => 12 }
-        )->get($url, 'Accept' => 'application/json', 'User-Agent' => USER_AGENT);
+            timeout => 12);
     };
 
     $run->($run, _mbBase(), 0, 'artist', 0);
@@ -971,18 +1192,15 @@ sub warmCandidateCounts {
                @{ $cands || [] };
     return $cb->() unless @todo;
 
-    my $gap = $class->mbGap(1.1);
-    my $i   = 0;
+    my $i = 0;
     my $next = sub {
         my ($self) = @_;
         my $c = $todo[$i++];
         return $cb->() unless $c;
-        my $step = sub {
-            $gap ? Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + $gap,
-                       sub { $self->($self) })
-                 : $self->($self);
-        };
-        Slim::Networking::SimpleAsyncHTTP->new(
+        # No gap of its own: _netGet paces on the URL (0.51.17). Keeping one
+        # here as well would DOUBLE the wait on the public host.
+        my $step = sub { $self->($self) };
+        _netGet(_mbBase() . 'release-group?artist=' . $c->{mbid} . '&fmt=json&limit=1',
             sub {
                 my $d = eval { from_json(shift->content) };
                 my $n = (!$@ && ref $d eq 'HASH') ? ($d->{'release-group-count'} // 0) : undef;
@@ -993,9 +1211,7 @@ sub warmCandidateCounts {
                 $step->();
             },
             sub { $step->() },
-            { timeout => 12 }
-        )->get(_mbBase() . 'release-group?artist=' . $c->{mbid} . '&fmt=json&limit=1',
-               'Accept' => 'application/json', 'User-Agent' => USER_AGENT);
+            timeout => 12);
     };
     $next->($next);
     return;
@@ -1611,7 +1827,7 @@ sub warmArtistAliases {
         _dbg("aliases $mbid: cached, but no canonical name - refetching for it");
     }
 
-    Slim::Networking::SimpleAsyncHTTP->new(
+    _netGet(_mbBase() . "artist/$mbid?inc=aliases&fmt=json",
         sub {
             my $d = eval { from_json(shift->content) };
             my @names;
@@ -1640,9 +1856,7 @@ sub warmArtistAliases {
         # Errors are NOT cached - an alias list is an enabler, and pinning an
         # empty one for a month would silently disable the retry.
         sub { $cb->([]) },
-        { timeout => 12 }
-    )->get(_mbBase() . "artist/$mbid?inc=aliases&fmt=json",
-           'Accept' => 'application/json', 'User-Agent' => USER_AGENT);
+        timeout => 12);
     return;
 }
 
@@ -1709,7 +1923,7 @@ sub getArtistCandidates {
     # reference-cycle leak (same fix as _artistMbidByName, ported from LBF 0.9.95).
     my $run = sub {
         my ($self, $base, $isFb, $loose) = @_;
-        Slim::Networking::SimpleAsyncHTTP->new(
+        _netGet($base . $mkQ->($loose),
             sub {
                 my $data = eval { from_json(shift->content) };
                 my $arts = (!$@ && ref $data eq 'HASH' && ref $data->{artists} eq 'ARRAY')
@@ -1763,8 +1977,7 @@ sub getArtistCandidates {
                 # hang the page rather than degrade it.
                 $settle->([]);
             },
-            { timeout => 12 }
-        )->get($base . $mkQ->($loose), 'Accept' => 'application/json', 'User-Agent' => USER_AGENT);
+            timeout => 12);
     };
     $run->($run, _mbBase(), 0, 0);
 }
@@ -1825,7 +2038,7 @@ sub getReleaseGroups {
 
         $log->info("fetching release groups: $url");
 
-        Slim::Networking::SimpleAsyncHTTP->new(
+        _netGet($url,
             sub {
                 my $resp = shift;
                 my $data = eval { from_json($resp->content) };
@@ -1863,9 +2076,11 @@ sub getReleaseGroups {
                 my $total = $data->{'release-group-count'} // scalar @all;
                 $page++;
                 if ($offset + RG_PAGE_SIZE < $total && $page < RG_MAX_PAGES) {
-                    # Serial + spaced: MB etiquette is <=1 req/s per client.
-                    Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + _mbGap(RG_PAGE_GAP),
-                        sub { $fetchPage->($offset + RG_PAGE_SIZE) });
+                    # Straight on to the next page: the pages are serial by
+                    # construction (each is asked for from the previous one's
+                    # response) and _netGet supplies the MB etiquette gap on
+                    # the public host. A second gap here would double it.
+                    $fetchPage->($offset + RG_PAGE_SIZE);
                     return;
                 }
 
@@ -1904,8 +2119,7 @@ sub getReleaseGroups {
                 $log->error("MB release-group fetch failed: $err");
                 $onError->($err);
             },
-            { timeout => 20 }
-        )->get($url, 'Accept' => 'application/json', 'User-Agent' => USER_AGENT);
+            timeout => 20);
     };
 
     $fetchPage->(0);
@@ -2023,7 +2237,7 @@ sub clearArtistCache {
 use constant OFFICIAL_TTL       => 14 * 86400;
 use constant REL_PAGE_SIZE      => 100;
 use constant REL_MAX_PAGES      => 40;     # 4000 releases; The Beatles need 33
-use constant REL_PAGE_GAP       => 1.1;    # seconds between pages (MB etiquette)
+# (REL_PAGE_GAP removed in 0.51.17 — see RG_PAGE_GAP.)
 
 sub _officialKey { 'dsc:rgo:v4:' . $_[0] }   # v4 adds t = edition titles
 
@@ -2120,7 +2334,7 @@ sub warmLocalReleases {
         my $done = sub { delete $rel2rgInFlight{$m}; $next->(); };
         my $url  = _mbBase() . 'release/' . $m . '?inc=release-groups&fmt=json';
 
-        Slim::Networking::SimpleAsyncHTTP->new(
+        _netGet($url,
             sub {
                 my $data = eval { from_json(shift->content) };
                 if ($@ || ref $data ne 'HASH') {
@@ -2148,8 +2362,7 @@ sub warmLocalReleases {
                 }
                 $done->();
             },
-            { timeout => 15 }
-        )->get($url, 'Accept' => 'application/json', 'User-Agent' => USER_AGENT);
+            timeout => 15);
     };
 
     $next->();
@@ -2213,33 +2426,27 @@ sub _vetCollabs {
     my ($class, $cands, $done) = @_;
     my (@kept, $ok);
     $ok = 1;
-    my $gap = $class->mbGap(1.1);
     my $i = 0;
-    # EVERY request here is spaced, not just the first of each candidate: the
-    # release-group count follows its own artist-rels response, so pacing only
-    # between candidates still put two requests back to back against the public
-    # API (review 2026-09-19). The chain is entered straight after
-    # warmBandMembers' own request, so the first one waits too. $gap is 0 on a
-    # mirror, where nothing waits at all.
+    # PACING IS NOT THIS SUB'S JOB ANY MORE (0.51.17). Every request here used
+    # to be spaced by a timer of its own, which was right in intent and wrong
+    # twice over: the gap came from `mbGap`, which reads the CONFIGURED base, so
+    # a mirror install paced nothing even on a public retry; and the deadline
+    # was built from core time(), which truncates. _netGet paces on the URL, so
+    # a mirror still waits for nothing and a public request always waits.
     my $get = sub {
         my ($url, $onData) = @_;
-        my $fire = sub {
-            Slim::Networking::SimpleAsyncHTTP->new(
-                sub {
-                    my $d = eval { from_json(shift->content) };
-                    return $onData->(($@ || ref $d ne 'HASH') ? undef : $d);
-                },
-                sub { $onData->(undef) },
-                { timeout => 12 }
-            )->get($url, 'Accept' => 'application/json', 'User-Agent' => USER_AGENT);
-        };
-        $gap ? Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + $gap, $fire) : $fire->();
+        _netGet($url,
+            sub {
+                my $d = eval { from_json(shift->content) };
+                return $onData->(($@ || ref $d ne 'HASH') ? undef : $d);
+            },
+            sub { $onData->(undef) },
+            timeout => 12);
     };
     my $next = sub {
         my ($self) = @_;
         my $c = $cands->[$i++];
         return $done->(\@kept, $ok) unless $c && $ok;
-        # No gap here: $get spaces every request itself.
         my $step = sub { $self->($self) };
         $get->(_mbBase() . 'artist/' . $c->{mbid} . '?inc=artist-rels&fmt=json', sub {
             my $d = shift;
@@ -2332,7 +2539,7 @@ sub warmBandMembers {
 
     my $url = _mbBase() . 'artist/' . $artistMbid . '?inc=artist-rels&fmt=json';
 
-    Slim::Networking::SimpleAsyncHTTP->new(
+    _netGet($url,
         sub {
             my $data = eval { from_json(shift->content) };
             if ($@ || ref $data ne 'HASH') {
@@ -2400,8 +2607,7 @@ sub warmBandMembers {
             delete $bandsInFlight{$artistMbid};
             $cb->();                     # not cached -> retried later
         },
-        { timeout => 15 }
-    )->get($url, 'Accept' => 'application/json', 'User-Agent' => USER_AGENT);
+        timeout => 15);
 }
 
 my %officialInFlight;
@@ -2437,7 +2643,7 @@ sub warmOfficial {
                 . '&inc=release-groups&limit=' . REL_PAGE_SIZE
                 . '&offset=' . $offset . '&fmt=json';
 
-        Slim::Networking::SimpleAsyncHTTP->new(
+        _netGet($url,
             sub {
                 my $data = eval { from_json(shift->content) };
                 if ($@ || ref $data ne 'HASH' || ref $data->{releases} ne 'ARRAY') {
@@ -2467,8 +2673,9 @@ sub warmOfficial {
                 my $total = $data->{'release-count'} // 0;
                 $page++;
                 if ($offset + REL_PAGE_SIZE < $total && $page < REL_MAX_PAGES) {
-                    Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + _mbGap(REL_PAGE_GAP),
-                        sub { $fetchPage->($offset + REL_PAGE_SIZE) });
+                    # As the release-group pager: serial already, and _netGet
+                    # owns the gap (0.51.17).
+                    $fetchPage->($offset + REL_PAGE_SIZE);
                     return;
                 }
 
@@ -2497,8 +2704,7 @@ sub warmOfficial {
                 delete $officialInFlight{$artistMbid};
                 $cb->();
             },
-            { timeout => 20 }
-        )->get($url, 'Accept' => 'application/json', 'User-Agent' => USER_AGENT);
+            timeout => 20);
     };
 
     _dbg("official-status warm: starting release browse for $artistMbid");
@@ -2552,7 +2758,7 @@ sub getReleaseGroupUrls {
     }
 
     my $url = _mbBase() . 'release-group/' . $mbid . '?inc=url-rels&fmt=json';
-    Slim::Networking::SimpleAsyncHTTP->new(
+    _netGet($url,
         sub {
             my $resp = shift;
             my $data = eval { from_json($resp->content) };
@@ -2578,8 +2784,7 @@ sub getReleaseGroupUrls {
             $log->warn("MB url-rels fetch failed: " . (shift->error // '?'));
             $onDone->([]);
         },
-        { timeout => 15 }
-    )->get($url, 'Accept' => 'application/json', 'User-Agent' => USER_AGENT);
+        timeout => 15);
 }
 
 1;

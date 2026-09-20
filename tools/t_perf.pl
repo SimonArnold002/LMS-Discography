@@ -101,6 +101,21 @@ mkdir "$tmp/Plugins" or die "mkdir: $!";
 symlink "$FindBin::Bin/../Discography", "$tmp/Plugins/Discography" or die "symlink: $!";
 unshift @INC, "$tmp";
 require Plugins::Discography::API;
+
+# THE QUEUE IS NOT THIS SUITE'S SUBJECT (0.51.17). Every MusicBrainz request now
+# goes through API::_netGet, which serialises public-host requests behind a 1.1s
+# gap and a 503 backoff. That is real behaviour with real timers, and against the
+# PUBLIC FALLBACK this suite's resolver takes it would spread these requests over
+# actual seconds while proving nothing about the thing under test. So the queue is
+# bypassed here and the suite keeps its own transport stub unchanged.
+# tools/t_netqueue.pl owns the queue, on a fake clock, with seven mutants.
+{
+    no strict 'refs'; no warnings 'redefine';
+    *{'Plugins::Discography::API::_netGet'} = sub {
+        my ($url, $ok, $err, %opt) = @_;
+        return Slim::Networking::SimpleAsyncHTTP->new($ok, $err, \%opt)->get($url);
+    };
+}
 my $API = 'Plugins::Discography::API';
 
 my ($pass, $fail) = (0, 0);

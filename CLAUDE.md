@@ -57,6 +57,7 @@ because line numbers rot on the next edit.
 | Collaborations cut-off at 5 collaborators (drops AfroCubism, Smokin' Mojo Filters, Atomic Orchestra) | A2 | `The collaborations cut-off is 5` |
 | The 4 watchdog timers still using core `time()` | A2 | `four WATCHDOG timers still built from core` |
 | A cross-plugin shared MB rate limiter (DSC + LBF) | A2 | `A CROSS-PLUGIN shared rate limiter` |
+| LBF's mixed clock in its own MB backoff | A2 | `is NOT a finding — no writer` |
 | `_probeArtistImage` reading the wrong error-callback argument | A3 | `the error callback's third argument` |
 | `_idGroup` could block a group from its own id-tagged copy | A3 | `_idGroup cannot block a group` |
 | `getAPIHandler(undef)` killing the service image tier | A3 | `getSomeUserId` |
@@ -235,6 +236,21 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   Discography ever grows a warm or a library sweep.
 - **MAI calls `api.lms-community.org` from the same box and is not ours** — so no gate we build is
   a complete answer on that host. Known, named, not a defect in this plugin.
+
+- **LBF's mixed clock in `_mbNoteLimit`/`_mbWait` is NOT a finding — no writer** (2026-09-20).
+  Reported while porting LBF's queue here: it builds `$mbBusyUntil` from core `time()` and then
+  compares it against `Time::HiRes::time()` and hands it to `setTimer`, so its 503 backoff is up to
+  a second short. **Simon: "LBF barely calls MB and we tested it in full, never got a 503."**
+  Checked, and the code agrees: LBF's entire public-MusicBrainz surface is TWO call sites —
+  `getReleaseDetails` (the tracklist fallback, only when ListenBrainz has none, only for a release
+  someone opens) and `Diag.pm`'s connection probe, which a user presses a button for. The sort-name
+  warm and the radio's name->MBID fallback both went on 2026-09-14. Nothing there can earn a 503,
+  so `_mbNoteLimit` never runs and the truncated clock never executes. A branch with no writer.
+  **Discography is different and that is why its queue uses one clock:** a user with no mirror sends
+  EVERY request of a cold artist page through it — release-group paging, release paging (up to 40
+  pages for the Beatles), band members, collaboration vetting — so its backoff is reachable. Same
+  shape, different reachability. Do not propose porting a fix to LBF, and do not "align" this one
+  back to the reference.
 
 ### A3. DISPROVEN — a review WILL re-derive these from the code; each was measured
 
@@ -928,6 +944,57 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   likewise deliberately LBF-only and outside the shared engine.
 
 ## Development Log
+
+### 0.51.17 (2026-09-20) — one outbound request queue
+- **The leak.** `_mbGap` decided pacing from the CONFIGURED base, so on a mirror install it returned
+  0 — and the four paths that deliberately retry a zero-result mirror search against the PUBLIC host
+  (`_artistMbidByName` x2, `getArtistCandidates` x2) sent to musicbrainz.org with no gap, no backoff
+  and no queue at all. That was the one part of this plugin that could earn a 503, and it was the
+  part nothing paced. Found in the third review round; the cross-plugin gate that was scoped first
+  was DECLINED (see A2).
+- **`API::_netGet`** is now the only door. One bucket per rate-limited host, and the decision is made
+  on the **URL**: a mirror request is never queued and never waits behind a public one, a public
+  request always waits. One in flight, `NET_GAP_MB` (1.1s) from the previous SEND, a shared 503/429
+  backoff (5 -> 30s, noted by the queue and never by a caller), and a watchdog `NET_WATCHDOG_PAD`
+  past the timeout so a lost callback cannot wedge the queue for the life of the process.
+  `$onOk`/`$onErr` get exactly what SimpleAsyncHTTP hands its callbacks, so **all 11 request sites
+  converted by replacing `->new(...)->get(...)` and nothing else**.
+- **Four per-loop gaps DELETED**, including the two fixed in 0.51.16: `RG_PAGE_GAP`, `REL_PAGE_GAP`,
+  `warmCandidateCounts`, and `Browse::_disambiguateByLibrary`'s. Those loops are serial by
+  construction (each request is made from the previous response), so a gap of their own would have
+  **doubled** the wait on the public host. `mbGap` survives ONLY where it answers a policy question —
+  "are we throttled, should this speculative pass run at all?" — which is not the same question as
+  how fast to send.
+- **Two defects in the ported design, both fixed here and both still present in LBF's copy:**
+  - `$s->{timer} ||= setTimer(...)` assigns the handle AFTER the call returns, so a transport or
+    timer that fires synchronously clears the flag and then has the stale handle written back over
+    it — a claim nothing releases and a queue stalled for good. Now a boolean, claimed BEFORE
+    scheduling. Surfaced by a suite whose stub fires timers immediately.
+  - The watchdog was armed BEFORE the send. It now arms after, and only if the request has not
+    already settled: it measures time from when the request went out, and a synchronous transport
+    no longer arms a timer just to kill it.
+- **`tools/t_netqueue.pl` (new, 29)** on a FAKE CLOCK — nothing sent, nothing waited on.
+  **Anti-tested with seven mutants, all caught:** core-`time()` backoff (4 fails), no gap (2),
+  mirror queued (5), no watchdog (2), 503 unnoted (5), slot never released (7), cap removed (1);
+  control green. Three assertions are SOURCE-level, because the rule is about what no code may do:
+  API.pm builds a transport in `_netSend` and nowhere else, no `)->get(` survives outside it, and
+  Browse builds one only for `_probeArtistImage` (which needs `maxRedirect => 0` and a HEAD, so it
+  stays outside on purpose and never touches MusicBrainz).
+  - **The anti-test also found a flaw in the suite itself:** a mutant aborted at the first
+    divergence and hid the assertions that would have named the cause. `finish`/`failWith` now
+    report instead of dying — the fleet's ok()-must-not-die rule, applied to the helpers.
+  - **And the first cut of the source guard matched `_netGet`'s OWN header comment** explaining how
+    to convert a call site, reporting the documentation as a violation. Comments are stripped now.
+- **Four suites retargeted**, because pacing moved out from under them: `t_collab` §5 now asserts
+  that the vetting ROUTES through the queue (source-level) instead of counting its waits, and its §6
+  uses the mirror base since it is about chain ORDER, not pacing; `t_canon`, `t_credit` and `t_perf`
+  bypass the queue outright — they reach the public fallback incidentally and would otherwise spread
+  their requests over real seconds while proving nothing about their own subject.
+- **NOT DONE, deliberately:** the community API is not plumbed in. Its bucket wants serialisation and
+  a 429 backoff but no fixed gap, plus the MANDATORY `X-LMS-Plugin-ID` header carrying the CALLING
+  plugin's package and a per-job retry budget. Nothing calls it yet, and shipping a half-ready door
+  invites a caller that violates the dev's one requirement. The header note is in `_netGet`'s comment.
+
 
 ### 0.51.13 (2026-09-19) — "Collaborations": MusicBrainz collaboration links beside the bands
 - **Field (Holly Golightly):** her page never linked to "Holly Golightly and The Brokeoffs", where she
