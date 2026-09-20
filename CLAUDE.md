@@ -55,8 +55,11 @@ because line numbers rot on the next edit.
 | An id-tagged copy is held to its id's group, even when the tag is wrong | A2 | `A wrong MusicBrainz id tag holds the copy` |
 | Joint-credit pickup on an `artist_id` entry — DECLINED, measured; the name path's false pickups are known | A2 | `Joint pickup is not added to the id path` |
 | Collaborations cut-off at 5 collaborators (drops AfroCubism, Smokin' Mojo Filters, Atomic Orchestra) | A2 | `The collaborations cut-off is 5` |
+| The 4 watchdog timers still using core `time()` | A2 | `four WATCHDOG timers still built from core` |
+| A cross-plugin shared MB rate limiter (DSC + LBF) | A2 | `A CROSS-PLUGIN shared rate limiter` |
 | `_probeArtistImage` reading the wrong error-callback argument | A3 | `the error callback's third argument` |
 | `_idGroup` could block a group from its own id-tagged copy | A3 | `_idGroup cannot block a group` |
+| `getAPIHandler(undef)` killing the service image tier | A3 | `getSomeUserId` |
 | Deezer's artist-albums payload has no track count, so no size | A3 | `Deezer states record_type` |
 | `length $e->[0] >= 2` parsing as `length($e->[0] >= 2)` | A3 | `a named unary binds tighter` |
 | Collaborations needing a second entry after the 0.51.15 reorder | A3 | `the Collaborations section is on the page at the FIRST entry` |
@@ -205,6 +208,34 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   - **Known and left as-is:** those 7 false pickups already happen on the NAME path (a Similar-artists
     or name-only entry), since 0.48.6. Re-raise only with a stronger signal than the name.
 
+- **The four WATCHDOG timers still built from core `time()` are deliberate** (2026-09-20).
+  `Browse.pm` `POOL_WAIT_MAX` (20s) and `Sources.pm` `SVC_TIMEOUT` (20s) / `SEARCH_TIMEOUT` (10s) /
+  `ARTIMG_TIMEOUT` (15s) schedule against `Slim::Utils::Timers`' hi-res clock from a truncated base,
+  so they fire up to 1s EARLY. On a 10-20s budget that is <=10%, and early is the safe direction for
+  a watchdog — the request is abandoned marginally sooner, never later. Left alone on purpose when
+  the same bug WAS fixed in the two MusicBrainz pacing gaps, where sub-second accuracy is the entire
+  point. Re-raise only with a measured case of a watchdog cutting off a response that would have
+  arrived.
+
+- **A CROSS-PLUGIN shared rate limiter (DSC + LBF one gate) — DECLINED by Simon, 2026-09-20.**
+  Proposed after the review found that the four public-host retries in `_artistMbidByName` and
+  `getArtistCandidates` go out unpaced (`_mbGap` reads the CONFIGURED base, so a mirror install
+  paces nothing), and that MusicBrainz's ~1 req/s is a per-IP SUM — so two plugins each pacing
+  themselves still sum. The design was one gate instance in a neutral namespace, first-loader-wins,
+  shared by both plugins. **Simon: "too complicated and prone to failure."** And he is right on the
+  premise, not only the cost: **Discography sends only on a page open or a search** — it has no
+  warm and no background sweep, so it cannot sustain a rate that matters beside LBF. The shape that
+  justified LBF's queue (five unpaced paths plus a warm, ~80 503s in ten minutes) is not this
+  plugin's. **Also settled here:** the community API has NO hard limit — LBF's numbers are
+  self-imposed politeness, and the dev reports the traffic has made little impact.
+  **What was agreed instead:** ONE request helper inside Discography (LBF's `_hostedGet` shape —
+  one in flight, shared 429/503 backoff, mirror and localhost bypass), keeping a 1.1s gap ONLY for
+  public musicbrainz.org URLs because that limit alone is real and published; all 11 request sites
+  converted, the four per-loop `setTimer` gaps then deleted. Re-raise the shared gate only if
+  Discography ever grows a warm or a library sweep.
+- **MAI calls `api.lms-community.org` from the same box and is not ours** — so no gate we build is
+  a complete answer on that host. Known, named, not a defect in this plugin.
+
 ### A3. DISPROVEN — a review WILL re-derive these from the code; each was measured
 
 **Why this section exists (Simon, 2026-09-19).** A finding that a review "checked and cleared"
@@ -217,6 +248,7 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 |---|---|---|
 | `_probeArtistImage` reads `Location` off the wrong argument, so the Deezer placeholder probe can never fire | **WRONG** (raised 2026-09-19, and once before) | `Slim::Networking::SimpleAsyncHTTP` invokes **the error callback's third argument** as the response: `$self->ecb->( $self, $error, $http->response )` (read in the 9.0 source). `my (undef, $error, $res) = @_` is therefore correct, and `$res->header('Location')` is an `HTTP::Response` method. The 302-in-the-error-callback behaviour under `maxRedirect => 0` was measured live in 0.51.0 on the real Mothers/Pink Floyd/B52's urls. |
 | `_idGroup` (0.51.12) could keep a release group from matching a copy whose id names THAT group | **WRONG** | `_idGroup cannot block a group` from its own copy: it is only consulted INSIDE the `unless (_mbidMatch(...))` branch, i.e. only after the id has already failed to name this group. Symmetric by construction, and pinned by the "control: its own group still takes it by id" assertion in `t_size.pl` §5. |
+| `artistImage(undef, ...)` from the ImageProxy handler cannot reach the services, because `getAPIHandler(undef)` has no client to hang an API instance off | **WRONG** | All three plugins handle a clientless call the same way, read in their own sources 2026-09-20: `$clientOrId ||= ...->getSomeUserId()` (Qobuz) / `userId => ...->getSomeUserId()` (TIDAL, Deezer), then construct an API object from that user id. A handler comes back whenever any account is signed in, so tier 3 works from the proxy. Re-raise only for a service whose `getAPIHandler` genuinely requires `ref $client`. |
 | Deezer's artist-albums payload carries no track count, so a Deezer copy has no size and the single gate cannot act on it | **WRONG** | `/artist/<id>/albums` omits `nb_tracks` but **Deezer states record_type** on every row, which `_candSize` reads when there are no counts; `/search/album` carries BOTH (`nb_tracks` + `record_type`, verified live 2026-09-19). Pinned in `t_size.pl` §1. |
 | `length $e->[0] >= 2` in `_editionTitles`/`matchesFor` parses as `length($e->[0] >= 2)` | **WRONG** | In Perl **a named unary binds tighter** than a comparison operator, so it is `length($e->[0]) >= 2`, which is the intent. Same shape appears in the alias pass and has been correct since 0.48.0. |
 | Moving the collaboration vetting off the render path (0.51.15) costs a visit: the section now needs a SECOND entry on a cold artist | **WRONG** | Measured live on 0.51.15 after `["discography","clearcache","mbid:4a00ec9d-…"]` wiped `rg,official,bands,collabs`: **the Collaborations section is on the page at the FIRST entry**, with the same two links as 0.51.13 (Fripp & Eno, Harmonia 76). `warmBandMembers` caches the candidate list on its own single request, so `peekCollabs` is already fed before `warmOfficial`'s deferred render fires; only the VETTING trails. Holly Golightly (→ the Brokeoffs, both owned albums) and Bob Dylan (no section) unchanged. |
@@ -951,6 +983,57 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
     sub's other two exits. No WRITER: it needs an empty name AND a broken install. `t_artimg.pl` (41).
   - **Declined in the same round and logged in §A3:** `_probeArtistImage` reading the wrong
     error-callback argument (the LMS source passes the response as the third argument).
+- **Third review of this build, two fixes (2026-09-20):**
+  - **The 1.1s MusicBrainz gap was scheduled against the WRONG CLOCK.** `_vetCollabs` and
+    `warmCandidateCounts` built their deadline from core `time()`, which truncates to the whole
+    second, while `Slim::Utils::Timers::_makeTimer` does `EV::timer($when - EV::now, ...)` against a
+    hi-res epoch (read in the 9.1 source). The real delay was therefore `1.1 - frac(now)`: **under
+    one second nine times in ten**, i.e. the etiquette limit the gap exists to respect, and the 503
+    it earns caches nothing so the whole vet re-runs next render. Both now use
+    `Time::HiRes::time()`, and **API.pm gained `use Time::HiRes ();`** — its two pre-existing hi-res
+    calls (the RG and release page loops) were working only because Browse.pm loads the module into
+    the process. `t_collab.pl` §5b (33 total), red first and deterministic in both directions
+    (it spins to a known fraction of the second, bounded by the wall clock).
+    **Only the public API is affected — `mbGap` is 0 against a mirror, so no timer is set at all
+    and Simon's rig cannot show this either way.** The four remaining core-`time()` timers
+    (`Browse.pm` POOL_WAIT_MAX, `Sources.pm` SVC/SEARCH/ARTIMG) are 10-20s WATCHDOGS: up to 1s
+    early on a 20s budget, in the safe direction, deliberately left alone.
+  - **`t_collab.pl` was NON-DETERMINISTIC and a build gate passed it by luck.** Its pre-upgrade-cache
+    check picked the key to delete with `grep { /collab/ } keys %CACHE`, which also matches
+    `dsc:collabcand:v1:`; Perl randomises hash order per process, so it deleted the wrong key and
+    asserted against it in **6 runs out of 10**. Anchored to `/^dsc:collabs:/`. A green gate is only
+    evidence if the suite is deterministic - every suite was then run 3x, all 31 stable.
+  - **Two release groups could both claim the same EDITION title.** `_editionTitles` tested an
+    edition title against every group's CANONICAL title, never against the other groups' edition
+    titles, so where two groups each sell an edition under a name no group is titled, both kept the
+    key and `_rivalsByTitle` (which arbitrates by OWNER) had two — one owned copy rendered as Local
+    under BOTH tiles. **Measured by driving the real sub over all 1,043 resolvable library artists
+    against the mirror: 13 clashes on 12 artists** (the Police's "Every Breath You Take: The
+    Singles" is filed under both "Every Breath You Take" and "Greatest Hits"; also ELO, Kraftwerk
+    "3-D (The Catalogue)", Count Basie, New Order, Foals, Lady Gaga, Miles Davis, Coltrane, Mingus,
+    CCR, John Barry). A title claimed by more than one group is now dropped from ALL of them — the
+    copy falls back to its own title, its MBID, or "Also in your library". Replay over the same
+    1,043 artists: **4,455 -> 4,429 edition titles, exactly the 13 x 2, nothing else touched**, and
+    0 duplicate claims left. **No owned copy in Simon's library lands on one today** (all 2,931
+    checked), so nothing changes on his pages; the WRITER is any user owning one of those titles.
+    `t_rivals.pl` §8 (28 total), red first with all four controls green.
+  - **A service that never answered was cached as a service with no photo.** In
+    `Sources::artistImage` the watchdog firing, the adapter throwing, the plugin having no API
+    handler and a search that legitimately returned nothing all arrived as `$settle->(undef)`, and
+    the end of the walk wrote '' at `ARTIMG_EMPTY_TTL` — one flaky minute pinned the person icon on
+    an artist for a day. The adapters already carry the fleet spec's distinction (`_artistHits`
+    returns undef for a response it could not read, an arrayref otherwise), so the walk now tracks
+    whether ANY service replied and caches only then, exactly as `_vetCollabs` treats its `$ok`.
+    The verdict rides back through `artistImage`'s callback as a second argument, through
+    `_resolveArtistImage`, to `artistImageProxy`, which keeps its OWN `dsc:artimg:v1` entry over the
+    whole resolution and would otherwise have pinned the same failure. `t_artimg.pl` §10 (49 total,
+    was 41), red first; the propagation half is caught by its control.
+  - **`_albumCountFor` ran inside a sort comparator** — a DB query, O(n log n) per identity plus one
+    more for the winner, while the 0.51.x note claimed "no new query". Counted once per contributor
+    before the sort (same order, same winner); the ledger prose corrected in place rather than left
+    to be re-derived. `t_bees.pl` §10 (33 total), red first.
+  - **Settled, not a finding:** `_resolveArtistImage` calls `artistImage(undef, ...)` with no client
+    (the ImageProxy handler has none), and the service tier is NOT dead as a result — logged in §A3.
 - **LIVE VERIFY AFTER INSTALL:** Holly Golightly (Artists row) shows "Collaborations: Holly
   Golightly and The Brokeoffs", and the drill shows *Medicine County* / *No Help Coming*. Brian Eno
   shows Fripp & Eno + Harmonia 76 and NOT "N.M.L. NO MORE LANDMINE" (22). Bob Dylan shows no
@@ -1047,7 +1130,13 @@ Each decision is written into the entry it amends (grep the phrase); this is the
   and the drill opens a blank stranger (soak: drill mbid 276eb2d3…, 0 releases, vs 50/31).
 - **FIX (Sources.pm, `splitOwnedByIdentity`):** split rows sort by `_albumCountFor` DESC, contributor
   id breaking ties — still deterministic, which is all the id order was for. The count is the one
-  already computed for the representative; no new query. All split rows keep the original `_seq`, so
+  already computed for the representative; no new query. **CORRECTED 2026-09-20 (review): not true
+  as written.** `_albumCountFor` is a `Slim::Control::Request` DB query and it was called from
+  INSIDE the representative sort's comparator, so an identity holding n contributors ran it
+  O(n log n) times and once more for the winner. It is now taken ONCE per contributor before the
+  sort - same order, same winner - and pinned by `t_bees.pl` §10 ("The Dupes": two identities,
+  one holding an apostrophe-variant duplicate; 3 contributors, 3 queries, where it was 4).
+  All split rows keep the original `_seq`, so
   `rankArtistHits` (ties on owned/exact/sources/seq) preserves the order. Search path only — the
   browse path never builds these rows. No cache bump: the split pass is never cached.
 - **`tools/t_bees.pl` 23 -> 29 assertions:** the Bees now assert emission ORDER (18, 7, 1 albums),

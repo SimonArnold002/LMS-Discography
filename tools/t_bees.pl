@@ -47,6 +47,12 @@ my @LIB = (
     # TIE: two acts with the SAME album count -> the lower id goes first.
     { name => 'The Ties', artist_id => 710 },
     { name => 'The Ties', artist_id => 700 },
+    # COST (2026-09-20): a name with TWO identities, one of which holds two
+    # contributors (an apostrophe-variant duplicate). This is the only shape
+    # that reaches the representative SORT with more than one candidate.
+    { name => 'The Dupes', artist_id => 800 },
+    { name => 'The Dupes', artist_id => 801 },   # same MB tag as 800
+    { name => 'The Dupes', artist_id => 810 },   # a genuinely different act
 );
 my %MBID = (
     75007 => '276cfa71-6bc0-4b0f-8a9c-000000000001',
@@ -62,10 +68,14 @@ my %MBID = (
     650   => '3997d4a6-bc09-43e7-8650-000000000650',
     700   => '71e50000-6bc0-4b0f-8a9c-000000000700',
     710   => '71e50000-6bc0-4b0f-8a9c-000000000710',
+    800   => 'd0be0000-6bc0-4b0f-8a9c-000000000800',
+    801   => 'd0be0000-6bc0-4b0f-8a9c-000000000800',   # SAME tag as 800
+    810   => 'd0be0000-6bc0-4b0f-8a9c-000000000810',
 );
 my %ALBUMS = (75007 => 18, 79768 => 7, 77854 => 1, 400 => 5, 401 => 0,
               500 => 3, 501 => 2, 100 => 9, 200 => 4,
-              600 => 0, 601 => 0, 602 => 0, 650 => 31, 700 => 2, 710 => 2);
+              600 => 0, 601 => 0, 602 => 0, 650 => 31, 700 => 2, 710 => 2,
+              800 => 6, 801 => 0, 810 => 2);
 # LMS's own artist icon per act (folder artist-art). Two acts HAVE art; the
 # bootleg act (77854) is in the menu but has NONE -> the split must give it a
 # neutral icon, never MAI's online guess of the prominent act.
@@ -94,6 +104,7 @@ BEGIN {
         my (undef, $args) = @_;
         if (($args->[0] // '') eq 'albums') {
             my ($aid) = map { /^artist_id:(\d+)/ ? $1 : () } @$args;
+            push @main::ALBQ, $aid;      # §10 counts these
             return bless { count => ($ALBUMS{$aid} // 0) }, 'T::Req';
         }
         if (($args->[0] // '') eq 'browselibrary') {
@@ -304,6 +315,34 @@ sub beeRow { row(name => 'The Bees', artist_id => 79768,
     $out = split_([ row(name => 'The Ties', artist_id => 710) ]);
     ok(scalar(join(',', map { $_->{artist_id} } @$out) eq '700,710'),
        'equal album counts -> lower contributor id first');
+}
+
+# ---------------------------------------------------------------------------
+# 10. WHAT THE SPLIT COSTS (review 2026-09-20). The 0.51.x entry for this fix
+#     says "the count is the one already computed for the representative; no
+#     new query" — and the code did not do that: `_albumCountFor` is a
+#     `Slim::Control::Request` DB query and it was called from INSIDE the sort
+#     comparator, so an identity holding n contributors ran it O(n log n)
+#     times and then once more for the row it picked. A comment is not the
+#     contract, so the count is now taken ONCE per contributor, before the
+#     sort, and this pins it.
+#
+#     "The Dupes" is the only fixture shape that reaches the comparator with
+#     more than one candidate: two identities, one of which holds an
+#     apostrophe-variant duplicate (800/801 share a tag; 810 is another act).
+# ---------------------------------------------------------------------------
+our @ALBQ;
+{
+    @ALBQ = ();
+    my $out = split_([ row(name => 'The Dupes', artist_id => 800) ]);
+    ok(scalar(@$out == 2), 'two Dupes identities -> two rows');
+    ok(scalar(join(',', map { $_->{artist_id} } @$out) eq '800,810'),
+       '... the contributor owning the albums represents its identity');
+    my %once; $once{$_}++ for @ALBQ;
+    ok(scalar(!grep { $_ > 1 } values %once),
+       'no contributor is counted twice: one album query each');
+    ok(scalar(@ALBQ == 3),
+       '... 3 contributors, 3 queries (it was 4, the comparator ran one twice)');
 }
 
 print "\n$pass passed, $fail failed\n";

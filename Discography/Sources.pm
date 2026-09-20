@@ -32,7 +32,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.15';
+use constant CACHE_VERSION => '0.51.16';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
@@ -1299,23 +1299,37 @@ sub _artImgKey {
 sub artistImage {
     my ($class, $client, $name, $cb) = @_;
     $cb ||= sub {};
-    return $cb->(undef) unless defined $name && length $name;
+    # $cb->($url, $conclusive). $conclusive is false ONLY when the walk ended
+    # without a single service replying, so a caller that caches can tell a
+    # real "no photo" from "we never found out" (see $done). These three exits
+    # are all real answers: no name to search, a cached verdict, no services.
+    return $cb->(undef, 1) unless defined $name && length $name;
 
     my $key = _artImgKey($name);
-    if (defined(my $c = $cache->get($key))) { return $cb->($c || undef) }
+    if (defined(my $c = $cache->get($key))) { return $cb->($c || undef, 1) }
 
     my @adapters = orderedAdapters();
-    return $cb->(undef) unless @adapters;
+    return $cb->(undef, 1) unless @adapters;
 
     my $want  = _norm($name);
     my $qChars = $name; utf8::decode($qChars) unless utf8::is_utf8($qChars);
     my $qBytes = $name; utf8::encode($qBytes) if     utf8::is_utf8($qBytes);
 
+    # $answered: did ANY service actually reply? The adapters already carry
+    # the fleet's inconclusive/miss distinction — `_artistHits` returns undef
+    # for a response it could not read, an arrayref otherwise, and the
+    # watchdog and the `eval` failure both settle with undef. Without this,
+    # "every service timed out" was stored as "nobody has a photo" for a day
+    # (ARTIMG_EMPTY_TTL), so one flaky minute pinned the person icon on an
+    # artist until the next day. `_vetCollabs` applies the same rule to $ok:
+    # a blip caches nothing and is retried on the next visit.
+    my $answered = 0;
     my $done = sub {
         my ($url) = @_;
         eval { $cache->set($key, $url // '',
-            $url ? ARTIMG_FOUND_TTL : ARTIMG_EMPTY_TTL); 1 };
-        $cb->($url);
+            $url ? ARTIMG_FOUND_TTL : ARTIMG_EMPTY_TTL); 1 }
+            if $url || $answered;
+        $cb->($url, ($url || $answered) ? 1 : 0);
     };
 
     my ($loose, $sawExact);
@@ -1345,6 +1359,7 @@ sub artistImage {
             # artist this tier exists for: it vetoes every token-subset
             # NEIGHBOUR's face ("Genesis P-Orridge" for Genesis), from this
             # service and every other.
+            $answered = 1 if ref $hits eq 'ARRAY';   # this service really replied
             my @cands = grep { ref $_ eq 'HASH' && _norm($_->{name} // '') ne '' }
                         @{ ref $hits eq 'ARRAY' ? $hits : [] };
             my @exact = grep { _norm($_->{name}) eq $want } @cands;
@@ -1786,11 +1801,17 @@ sub splitOwnedByIdentity {
         for my $key (@order) {
             # Within one identity, the contributor holding the most albums is
             # the one that drills to content (apostrophe-variant duplicates).
-            my ($rep) = sort { _albumCountFor($b->{artist_id})
-                                   <=> _albumCountFor($a->{artist_id}) }
+            # COUNT ONCE PER CONTRIBUTOR, before the sort: _albumCountFor is a
+            # DB query, and inside a comparator it runs O(n log n) times and
+            # then again for the winner. Same order, same winner — this is
+            # what the 0.51.x note already claimed ("no new query"), now true.
+            my %n = map { ($_->{artist_id} // '') => _albumCountFor($_->{artist_id}) }
+                    @{ $grp{$key} };
+            my ($rep) = sort { $n{ $b->{artist_id} // '' }
+                                   <=> $n{ $a->{artist_id} // '' } }
                         @{ $grp{$key} };
             push @reps, [ $rep, ($key =~ /^id:/ ? undef : $key),
-                          _albumCountFor($rep->{artist_id}) ];
+                          $n{ $rep->{artist_id} // '' } ];
         }
         for my $pair (sort { $b->[2] <=> $a->[2]
                              || $a->[0]{artist_id} <=> $b->[0]{artist_id} } @reps) {

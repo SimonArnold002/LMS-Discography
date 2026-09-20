@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.15';
+use constant CACHE_VERSION => '0.51.16';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -260,6 +260,25 @@ sub _editionTitles {
                 push @{ $out{ $rg->{mbid} } }, [ $n, $raw, 1 ];
             }
         }
+    }
+
+    # AND THE SAME RULE BETWEEN EDITIONS (review 2026-09-20). The test above
+    # is against every group's CANONICAL title only, so where two groups each
+    # sell an edition under a name no group is titled, both kept the key and
+    # `_rivalsByTitle` — which arbitrates by OWNER, and here there are two —
+    # had nothing to separate them: one owned copy rendered as Local under
+    # both tiles. Measured over 1,043 library artists on the mirror: 13 such
+    # clashes on 12 artists (MusicBrainz files "Every Breath You Take: The
+    # Singles" under BOTH the Police's "Every Breath You Take" and their
+    # "Greatest Hits"; ELO, Kraftwerk, Count Basie, New Order likewise).
+    # Nothing can say which tile owns it, so NEITHER may claim it: the copy
+    # falls back to its other routes (its own title, its MusicBrainz id) and
+    # otherwise to "Also in your library", which is the honest answer.
+    my %claims;
+    for my $g (keys %out) { $claims{ $_->[0] }{$g} = 1 for @{ $out{$g} } }
+    for my $g (keys %out) {
+        my @keep = grep { keys %{ $claims{ $_->[0] } } == 1 } @{ $out{$g} };
+        @keep ? ($out{$g} = \@keep) : delete $out{$g};
     }
     return \%out;
 }
@@ -1426,10 +1445,17 @@ sub artistImageProxy {
     }
 
     _resolveArtistImage($name, sub {
-        my ($u) = @_;
+        my ($u, $conclusive) = @_;
+        # An empty verdict is stored only when the walk actually reached an
+        # answer. If no service replied at all, this render still shows the
+        # person icon, but the next one asks again instead of reading a
+        # failure back for a day.
         eval { $cache->set($key, $u // '',
-            $u ? ARTIMG_FOUND_TTL : ARTIMG_EMPTY_TTL); 1 };
-        _dbg("artist image '$name': " . ($u || 'nothing found - person icon'));
+            $u ? ARTIMG_FOUND_TTL : ARTIMG_EMPTY_TTL); 1 }
+            if $u || $conclusive;
+        _dbg("artist image '$name': "
+             . ($u || ($conclusive ? 'nothing found - person icon'
+                                   : 'no service answered - person icon, not cached')));
         $cb->($u || _personIconFile() || '');
     });
     return undef;
@@ -1448,14 +1474,18 @@ sub _resolveArtistImage {
     };
     if ($local && -f $local) {
         my $u = eval { Slim::Utils::Misc::fileURLFromPath($local) };
-        return $cb->($u) if $u;
+        return $cb->($u, 1) if $u;
     }
 
-    # Tier 2 -> 3.
+    # Tier 2 -> 3. $cb->($url, $conclusive): the service tier reports whether
+    # any service actually replied, and that verdict is the whole walk's —
+    # tiers 1 and 2 finding nothing is not an answer on its own, it is why we
+    # asked the services at all. The proxy caches on it (review 2026-09-20).
     _maiArtistPhoto($name, sub {
         my ($u) = @_;
-        return $cb->($u) if $u;
-        Plugins::Discography::Sources->artistImage(undef, $name, sub { $cb->(shift) });
+        return $cb->($u, 1) if $u;
+        Plugins::Discography::Sources->artistImage(undef, $name,
+            sub { $cb->($_[0], $_[1]) });
     });
 }
 

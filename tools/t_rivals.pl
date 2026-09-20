@@ -255,5 +255,53 @@ ok(join(',', map { $_->{mbid} } @{ $a->{$stKey} })
     ok(!$by{'rg-sgl'}{'Other Single'}, 'a SINGLE never gains another single\'s title');
 }
 
+# ---------------------------------------------------------------------------
+# 8. TWO GROUPS OFFERING THE SAME EDITION TITLE (review 2026-09-20). §7 checks
+#    an edition title against every group's CANONICAL title. It did not check
+#    it against the other groups' EDITION titles — so where two groups each
+#    sell an edition under a name no group is titled, both gained the key,
+#    `_rivalsByTitle` had nothing to arbitrate with, and one owned copy
+#    rendered as Local under BOTH tiles.
+#
+#    MEASURED over Simon's 1,043 resolvable library artists against the
+#    mirror, driving this very sub: 13 real clashes on 12 artists. The Police
+#    is the fixture — MusicBrainz files "Every Breath You Take: The Singles"
+#    as an official release of BOTH "Every Breath You Take" and "Greatest
+#    Hits". (In MB "...: The Classics" clashes the same way; here it is given
+#    to one group only, so it can serve as the control.) Others measured:
+#    ELO "The Very Best of Electric Light Orchestra" over two best-ofs,
+#    Kraftwerk "3-D (The Catalogue)", Count Basie "Dance Session" over
+#    Albums #3 and #4, New Order "(The Best of)" vs "(The Rest of)".
+#
+#    No owned copy in Simon's library lands on one TODAY (checked, all 2,931
+#    albums) — the WRITER is any user who owns one of those titles, which for
+#    a Police singles compilation is not exotic.
+# ---------------------------------------------------------------------------
+{
+    my $edit = \&Plugins::Discography::Browse::_editionTitles;
+    my @rgs = (
+        { mbid => 'rg-ebyt', title => 'Every Breath You Take', type => 'Album', secondary => ['Compilation'] },
+        { mbid => 'rg-gh',   title => 'Greatest Hits',         type => 'Album', secondary => ['Compilation'] },
+        { mbid => 'rg-out',  title => "Outlandos d'Amour",     type => 'Album', secondary => [] },
+    );
+    my $ed = $edit->(\@rgs, {
+        'rg-ebyt' => [ 'Every Breath You Take: The Singles', 'Every Breath You Take: The Classics' ],
+        'rg-gh'   => [ 'Every Breath You Take: The Singles', 'Greatest Hits' ],
+        'rg-out'  => [ "Outlandos d'Amour", 'Roxanne' ],
+    });
+    my %by = map { my $g = $_; ($g => { map { $_->[1] => $_ } @{ $ed->{$g} || [] } }) } keys %$ed;
+
+    ok(!$by{'rg-ebyt'}{'Every Breath You Take: The Singles'},
+       'an edition title TWO groups offer is dropped from the first');
+    ok(!$by{'rg-gh'}{'Every Breath You Take: The Singles'},
+       '... and from the second: neither tile may claim the copy');
+    ok($by{'rg-ebyt'}{'Every Breath You Take: The Classics'},
+       'control: an edition title only one group offers is still kept');
+    ok($by{'rg-out'}{'Roxanne'},
+       'control: an unrelated group keeps its own edition title');
+    ok(!$by{'rg-gh'}{'Greatest Hits'},
+       'control: a group still does not repeat its own name');
+}
+
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

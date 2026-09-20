@@ -24,8 +24,9 @@
 use strict;
 use warnings;
 use FindBin;
+use Time::HiRes ();
 
-our (%CACHE, $DATA, @URLS, %FAIL, @EV);
+our (%CACHE, $DATA, @URLS, %FAIL, @EV, @WHEN);
 our $BASE = 'http://mirror:5000/ws/2/';   # a mirror: _mbGap is 0
 
 BEGIN {
@@ -53,6 +54,7 @@ BEGIN {
     *{'Slim::Utils::Timers::setTimer'} = sub {
         my (undef, $when, $cb) = @_;
         push @main::EV, 'wait';
+        push @main::WHEN, $when;      # the DEADLINE, for the hi-res check in 5b
         return $cb->();
     };
     for my $p (qw(Slim::Utils::Log Slim::Utils::Prefs JSON::XS::VersionOneAndTwo)) {
@@ -193,7 +195,12 @@ ok(scalar(@URLS) == 1, '... and costs no request beyond the one it already made'
 # keep the collaborations from ever being fetched.
 %CACHE = ();
 warm($HOLLY);
-my ($collabKey) = grep { /collab/ } keys %CACHE;
+# ANCHOR THE PREFIX. `/collab/` also matches `dsc:collabcand:v1:`, and Perl
+# randomises hash key order per process, so this picked the candidate key on
+# roughly half of all runs and then asserted against the wrong one — a suite
+# that failed 6 times in 10 and still went green through a build gate
+# (2026-09-20).
+my ($collabKey) = grep { /^dsc:collabs:/ } keys %CACHE;
 delete $CACHE{$collabKey} if $collabKey;
 @URLS = ();
 warm($HOLLY);
@@ -245,6 +252,43 @@ ok(!defined $API->peekCollabs($HOLLY), 'clearArtistCache removes the collaborati
     %CACHE = (); @EV = ();
     warm($HOLLY);
     ok(scalar(!grep { $_ eq 'wait' } @EV), 'a mirror still waits for nothing');
+}
+
+# ---------------------------------------------------------------------------
+# 5b. THE GAP IS SCHEDULED AGAINST THE HI-RES CLOCK (review 2026-09-20).
+#     Slim::Utils::Timers::_makeTimer does `EV::timer($when - EV::now, ...)`,
+#     and EV::now is a hi-res epoch. A deadline built from CORE time(), which
+#     truncates to the whole second, therefore fires after `1.1 - frac(now)` —
+#     under one second nine times in ten, which is exactly the MB etiquette
+#     limit the gap exists to respect. Pacing that quietly does not pace is
+#     worse than none, because the 503 it earns caches nothing and the whole
+#     vet re-runs on the next render.
+#
+#     Deterministic by construction: spin (bounded, < 1s, once) until the
+#     clock is at least half a second past the whole second, so a truncated
+#     base is off by more than half a second and a hi-res one by ~0.
+# ---------------------------------------------------------------------------
+{
+    local $BASE = 'https://musicbrainz.org/ws/2/';
+    my $gap = $API->mbGap(1.1);
+    ok(scalar($gap == 1.1), 'public API: the courtesy gap is 1.1s');
+
+    # Bounded by the WALL CLOCK, not an iteration count: within one second the
+    # fraction must cross 0.5, and a fast machine must not spin out early and
+    # weaken the check.
+    my $stop = Time::HiRes::time() + 1.2;
+    1 while Time::HiRes::time() < $stop
+         && (Time::HiRes::time() - int(Time::HiRes::time())) < 0.5;
+
+    %CACHE = (); @URLS = (); @EV = (); @WHEN = ();
+    my $t0 = Time::HiRes::time();
+    warm($HOLLY);
+
+    ok(scalar(@WHEN > 0), 'public API: a deadline was actually scheduled');
+    my $drift = @WHEN ? abs($WHEN[0] - $gap - $t0) : 99;
+    ok(scalar($drift < 0.25),
+       sprintf('the deadline is built on the HI-RES clock: it lands %.3fs from now+gap (a truncated time() would sit %.3fs short)',
+               $drift, $t0 - int($t0)));
 }
 
 # ---------------------------------------------------------------------------

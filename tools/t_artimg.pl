@@ -62,6 +62,11 @@ BEGIN {
 
 package T::Null;  our $AUTOLOAD; sub AUTOLOAD { return } sub DESTROY { }
 package T::Prefs; sub get { 1 } sub set { 1 } sub init { 1 } sub setChange { 1 }
+# Records every write, so §10 can assert that a failed walk caches NOTHING.
+package T::RecCache;
+sub get { return undef }
+sub set { my (undef, $k, $v, $ttl) = @_; push @main::SET, [ $k, $v, $ttl ]; return 1 }
+sub remove { 1 }
 
 package main;
 
@@ -347,6 +352,81 @@ artImg2('Genesis',
         Deezer => [{ name => 'Genesis', img => 'https://x/other.jpg' }]);
 ok(scalar("@ASKED" eq 'Qobuz'),
    'an exact photo still ends the walk: the next service is never asked');
+
+# ---------------------------------------------------------------------------
+# 10. A SERVICE THAT NEVER ANSWERED IS NOT A SERVICE WITH NO PHOTO
+#     (review 2026-09-20). Every leg of the walk ended in `$settle->(undef)` —
+#     the watchdog firing, the adapter throwing, the plugin having no API
+#     handler AND a search that legitimately returned nothing all arrived the
+#     same way. The end of the walk then cached '' for a day, so one flaky
+#     minute pinned the person icon on an artist until the next day.
+#
+#     The adapters already carry the distinction the fleet's streaming-adapter
+#     spec names: `undef` is INCONCLUSIVE, `[]` is a real miss (`_artistHits`
+#     returns undef for a response it could not read, an arrayref otherwise).
+#     So the verdict is cached only when at least one service actually
+#     answered — the same rule `_vetCollabs` applies to its `$ok`.
+#
+#     A recording cache is needed to see the write, and `$cache` is captured
+#     at load, so Sources is reloaded against it (as §8 reloads it).
+# ---------------------------------------------------------------------------
+our @SET;
+{
+    no strict 'refs'; no warnings 'redefine';
+    *{'Slim::Utils::Cache::new'} = sub { bless {}, 'T::RecCache' };
+    delete $INC{'Plugins/Discography/Sources.pm'};
+    local $SIG{__WARN__} = sub {};
+    require Plugins::Discography::Sources;
+    *{'Plugins::Discography::Sources::adapters'} = sub {
+        map { my $svc = $_;
+              { name => $svc, query_enc => 'bytes',
+                artists => sub { $_[3]->($main::SVCHITS{$svc}) } } }
+            qw(Qobuz Deezer);
+    };
+}
+sub artImg3 {
+    my ($n, %h) = @_;
+    %SVCHITS = %h; @SET = ();
+    my $got = 'NOT CALLED';
+    Plugins::Discography::Sources->artistImage(undef, $n, sub { $got = shift });
+    return $got;
+}
+
+ok(scalar(!defined artImg3('Ghost Artist', Qobuz => undef, Deezer => undef)),
+   'no service answered -> still no photo for this render');
+ok(scalar(@SET == 0),
+   '... and NOTHING is cached, so the next visit asks again');
+
+ok(scalar(!defined artImg3('Ghost Artist', Qobuz => [], Deezer => [])),
+   'control: both services answered with nothing -> no photo');
+ok(scalar(@SET == 1 && $SET[0][1] eq ''),
+   '... and THAT verdict is cached, because it is a real answer');
+
+ok(scalar((artImg3('Genesis',
+        Qobuz  => undef,
+        Deezer => [{ name => 'Genesis', img => 'https://x/genesis.jpg' }]) // '')
+    eq 'https://x/genesis.jpg'),
+   'control: one service failing does not stop a later one answering');
+ok(scalar(@SET == 1 && $SET[0][1] eq 'https://x/genesis.jpg'),
+   '... and a found photo is cached as before');
+
+# The verdict has to survive the trip back up, or the proxy — which keeps its
+# OWN 'dsc:artimg:v1' entry over the whole resolution — pins the same failure
+# it was just told not to trust. MAI off, so tiers 1 and 2 stand aside.
+{
+    local $MAI_ON = 0;
+    my @got;
+    %SVCHITS = (Qobuz => undef, Deezer => undef);
+    Plugins::Discography::Browse::_resolveArtistImage('Ghost Artist',
+        sub { @got = @_ });
+    ok(scalar(@got && !$got[0] && !$got[1]),
+       'the "no service answered" verdict reaches _resolveArtistImage\'s caller');
+    %SVCHITS = (Qobuz => [], Deezer => []);
+    Plugins::Discography::Browse::_resolveArtistImage('Ghost Artist',
+        sub { @got = @_ });
+    ok(scalar(@got && !$got[0] && $got[1]),
+       'control: a real "nobody has one" comes back conclusive');
+}
 
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

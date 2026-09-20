@@ -22,6 +22,13 @@ use Slim::Utils::Prefs;
 use Slim::Utils::Cache;
 use Slim::Utils::PluginManager;
 use Slim::Utils::Timers;
+# LMS timers fire against a HI-RES clock (`_makeTimer` does
+# `EV::timer($when - EV::now, ...)`), so every deadline in this file must be
+# built from Time::HiRes::time(). Core `time()` truncates to the second, which
+# turns a 1.1s MB etiquette gap into `1.1 - frac(now)` — under 1s nine times
+# out of ten. Browse.pm carries the same line; API.pm relied on it loading the
+# module into the process, which is not a dependency to lean on.
+use Time::HiRes ();
 use JSON::XS::VersionOneAndTwo;
 
 # For the shared matcher's _norm (same-name folding - see _nameKey). Sources
@@ -50,7 +57,7 @@ my $prefs = preferences('plugin.discography');
 # instance for a namespace and ignores later args). tools/syntax_check.sh
 # asserts all three agree and match install.xml.
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.15';
+use constant CACHE_VERSION => '0.51.16';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 # MB's canonical artist name, remembered in-process as well as cached — the
@@ -971,7 +978,7 @@ sub warmCandidateCounts {
         my $c = $todo[$i++];
         return $cb->() unless $c;
         my $step = sub {
-            $gap ? Slim::Utils::Timers::setTimer(undef, time() + $gap,
+            $gap ? Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + $gap,
                        sub { $self->($self) })
                  : $self->($self);
         };
@@ -2226,7 +2233,7 @@ sub _vetCollabs {
                 { timeout => 12 }
             )->get($url, 'Accept' => 'application/json', 'User-Agent' => USER_AGENT);
         };
-        $gap ? Slim::Utils::Timers::setTimer(undef, time() + $gap, $fire) : $fire->();
+        $gap ? Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + $gap, $fire) : $fire->();
     };
     my $next = sub {
         my ($self) = @_;
