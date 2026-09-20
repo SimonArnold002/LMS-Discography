@@ -214,6 +214,8 @@ use constant NET_GAP_MB        => 1.1;   # public musicbrainz.org only
 use constant NET_BACKOFF_START => 5;
 use constant NET_BACKOFF_MAX   => 30;
 use constant NET_WATCHDOG_PAD  => 5;     # past the timeout, a lost callback frees the slot
+use constant NET_SHED_RETRIES  => 3;     # a shed 503 is transient - see _netIsShed
+use constant NET_SHED_WAIT     => 0.5;   # floor when the server sends Retry-After: 0
 
 # One bucket per rate-limited host. A URL with no bucket is sent straight out.
 # `our`, not `my`, ON PURPOSE: the guard suite resets and inspects this between
@@ -231,8 +233,50 @@ sub _netBucket {
     return undef;
 }
 
+# A SHED IS NOT A RATE LIMIT, and telling them apart is the whole point
+# (measured 2026-09-20). MusicBrainz answers BOTH with 503, and the headers are
+# the only way to know which. A shed, verbatim off the wire:
+#
+#   X-RateLimit-Who: search-shed      X-RateLimit-Zone: search
+#   X-RateLimit-Limit: 1900           X-RateLimit-Remaining: 269
+#   Retry-After: 0
+#   {"error": "The MusicBrainz web server is currently busy. Please try again later."}
+#
+# `Remaining: 269` of 1900 says we were nowhere near a limit: their search
+# cluster was momentarily busy and dropped the request. It is INDEPENDENT of our
+# rate — one arrived after an 18.6s idle gap — so spacing requests further apart
+# does not prevent it, and backing off 5-30s punishes us for their weather.
+# Measured from a cold IP: 4 sheds, all 4 recovered on the FIRST retry 0.4s
+# later. So a shed is retried, and only a real refusal moves the backoff curve.
+#
+# Takes the error callback's arguments in any order and probes whichever object
+# can answer: it gets ($self, $error, $response) and the HTTP::Response is the
+# THIRD (see §A3's note on _probeArtistImage), but not every transport supplies
+# one.
+sub _netIsShed {
+    for my $r (@_) {
+        next unless ref $r;
+        next unless (eval { $r->code } // 0) == 503;
+        return 1 if (eval { $r->header('X-RateLimit-Who') } // '') =~ /shed/i;
+        return 1 if (eval { $r->content } // '') =~ /currently busy/i;
+    }
+    return 0;
+}
+
+# Retry-After in seconds when the server names one (0 = "now", which is what a
+# shed sends), else 0.
+sub _netRetryAfter {
+    for my $r (@_) {
+        next unless ref $r;
+        my $ra = eval { $r->header('Retry-After') };
+        return $1 + 0 if defined $ra && $ra =~ /^\s*(\d+(?:\.\d+)?)\s*$/;
+    }
+    return 0;
+}
+
 sub _netIsRateLimited {
     my ($resp, $err) = @_;
+    return 0 if _netIsShed($resp);      # busy, not throttled
     if (ref $resp && $resp->can('code')) {
         my $code = $resp->code // 0;
         return 1 if $code == 503 || $code == 429;
@@ -267,7 +311,7 @@ sub netQueueWait {
 sub _netGet {
     my ($url, $onOk, $onErr, %opt) = @_;
     my $job = { url => $url, ok => ($onOk || sub {}), err => ($onErr || sub {}),
-                timeout => ($opt{timeout} || 15) };
+                timeout => ($opt{timeout} || 15), tries => 0 };
     my $b = _netBucket($url);
     unless ($b) { _netSend(undef, $job); return }
     push @{ $NET{$b}{queue} }, $job;
@@ -337,6 +381,25 @@ sub _netSend {
         },
         sub {
             my $already = $settled;
+            # A SHED IS RETRIED, NOT REPORTED. It is MusicBrainz being busy for
+            # a moment, it recovers on the first retry, and the caller never
+            # needs to know. Bounded, so a genuinely sick server still fails
+            # the request rather than spinning: after NET_SHED_RETRIES it falls
+            # through and is reported like any other error.
+            if ($b && !$already && _netIsShed($_[2], $_[0])
+                    && ++$job->{tries} <= NET_SHED_RETRIES) {
+                my $s    = $NET{$b};
+                my $wait = _netRetryAfter($_[2], $_[0]) || NET_SHED_WAIT;
+                my $at   = Time::HiRes::time() + $wait;
+                $s->{nextAt} = $at if $at > $s->{nextAt};
+                # Back to the FRONT: this job was already waiting its turn, and
+                # the caller's chain is stalled behind it.
+                unshift @{ $s->{queue} }, $job;
+                _dbg("$b shed $job->{url} - retry $job->{tries}/"
+                     . NET_SHED_RETRIES . " in ${wait}s");
+                $release->();        # frees the slot and pumps; job is queued
+                return;
+            }
             _netNoteLimit($b) if $b && _netIsRateLimited($_[0], $_[1]);
             $release->();
             $job->{err}->(@_) unless $already;

@@ -68,8 +68,10 @@ BEGIN {
 package T::Null;  our $AUTOLOAD; sub AUTOLOAD { return } sub DESTROY { }
 package T::HTTP;
 sub get { my ($s, $url) = @_; $s->{url} = $url; push @main::SENT, $s; return $s }
-sub code  { return $_[0]{code}  // 0 }
-sub error { return $_[0]{error} // '' }
+sub code    { return $_[0]{code}  // 0 }
+sub error   { return $_[0]{error} // '' }
+sub content { return $_[0]{body}  // '' }
+sub header  { return $_[0]{hdr}{ $_[1] } }
 package main;
 
 use File::Temp ();
@@ -132,6 +134,19 @@ sub failWith {
     return ok(0, "expected a request to fail with $code, but none was sent") unless ref $r;
     $r->{code} = $code; $r->{error} = "HTTP $code";
     $r->{err}->($r, "HTTP $code");
+}
+# A SHED, verbatim off the wire (probed 2026-09-20). Note `Remaining` is well
+# short of `Limit`: we were not over anything, their cluster was busy.
+sub shedWith {
+    my ($r, %o) = @_;
+    return ok(0, 'expected a request to shed, but none was sent') unless ref $r;
+    $r->{code}  = 503;
+    $r->{error} = 'HTTP 503';
+    $r->{body}  = '{"error": "The MusicBrainz web server is currently busy. Please try again later."}';
+    $r->{hdr}   = { 'X-RateLimit-Who' => 'search-shed', 'X-RateLimit-Zone' => 'search',
+                    'X-RateLimit-Limit' => 1900, 'X-RateLimit-Remaining' => 269,
+                    'Retry-After' => (defined $o{after} ? $o{after} : 0) };
+    $r->{err}->($r, 'HTTP 503', $r);
 }
 
 my $MIRROR = 'http://mirror:5000/ws/2/';
@@ -301,6 +316,81 @@ ok(scalar(@SENT == $before + 1), 'the mirror still sends while public is backed 
     ok(scalar($probe && $probe !~ /musicbrainz/i),
        '... and that probe never reaches MusicBrainz');
 }
+
+# ---------------------------------------------------------------------------
+# 10. A SHED IS RETRIED, NOT REPORTED, AND DOES NOT MOVE THE BACKOFF CURVE
+#     (measured 2026-09-20). MusicBrainz answers a rate limit AND a busy search
+#     cluster with the same 503; only the headers separate them. A shed carries
+#     `X-RateLimit-Who: *-shed` and a Remaining well short of Limit — we were
+#     not over anything. Probed from a cold IP: 4 sheds, all 4 recovered on the
+#     FIRST retry 0.4s later, and one arrived after an 18.6s IDLE gap, which no
+#     rate limiter could produce. Treating it as a limit stopped the queue for
+#     5s escalating to 30 and failed the caller's request for nothing.
+# ---------------------------------------------------------------------------
+reset_all();
+my $shedErr = 0;
+$get->($PUBLIC . 'search1', sub {}, sub { $shedErr++ });
+shedWith($SENT[0]);
+ok(scalar($shedErr == 0), 'a shed is not reported to the caller');
+ok(scalar(bucket()->{delay} == 0), '... and does not start the backoff curve');
+ok(scalar(bucket()->{inflight} == 0), '... the slot is freed');
+ok(scalar(@{ bucket()->{queue} } == 1), '... and the job is requeued, not dropped');
+advance($now + 2);
+ok(scalar(@SENT == 2 && $SENT[1]{url} =~ /search1$/), '... then sent again');
+finish($SENT[1]);
+ok(scalar($shedErr == 0 && bucket()->{delay} == 0),
+   'a shed that succeeds on retry is invisible end to end');
+
+# It is BOUNDED: a server that sheds for ever still fails the request.
+reset_all();
+my $errs2 = 0;
+$get->($PUBLIC . 'sick', sub {}, sub { $errs2++ });
+for my $i (1 .. 8) { shedWith($SENT[-1]) if @SENT; advance($now + 2) }
+my $R = $A->can('NET_SHED_RETRIES')->();
+ok(scalar($errs2 == 1), "an endless shed is reported once, after NET_SHED_RETRIES ($R)");
+ok(scalar(@SENT == $R + 1), "... having been tried " . ($R + 1) . ' times in all');
+ok(scalar(bucket()->{inflight} == 0), '... and the queue is left free, not wedged');
+# The shed guard inside _netIsRateLimited is load-bearing ONLY here: while
+# retries remain the shed branch returns before the backoff is ever consulted,
+# so this is the one path that can move the curve. An anti-test caught this
+# assertion missing.
+ok(scalar(bucket()->{delay} == 0),
+   '... and even an exhausted shed never moves the backoff curve');
+
+# CONTROL: a real refusal still backs off exactly as before.
+reset_all();
+$get->($PUBLIC . 'a', sub {}, sub {});
+failWith($SENT[0], 429);
+ok(scalar(bucket()->{delay} == $B0), 'control: a 429 with no shed headers still backs off');
+ok(scalar($A->can('_netIsShed')->(undef) == 0), 'control: nothing is not a shed');
+
+# THE TWO SIGNALS ARE REDUNDANT ON PURPOSE — the header survives a change of
+# wording, the body survives a change of header. The fixture above sets both,
+# so it cannot tell which one fired: a mutant that deleted the header check
+# passed it. Each is pinned alone here.
+{
+    my $isShed = $A->can('_netIsShed');
+    my $hdrOnly = bless { code => 503, hdr => { 'X-RateLimit-Who' => 'search-shed' } }, 'T::HTTP';
+    my $bodyOnly = bless { code => 503, hdr => {},
+        body => '{"error": "The MusicBrainz web server is currently busy."}' }, 'T::HTTP';
+    my $plain503 = bless { code => 503, hdr => {}, body => 'gateway error' }, 'T::HTTP';
+    ok(scalar($isShed->($hdrOnly)),  'the X-RateLimit-Who header alone identifies a shed');
+    ok(scalar($isShed->($bodyOnly)), 'the "currently busy" body alone does too');
+    ok(scalar(!$isShed->($plain503)), '... and an ordinary 503 is not one');
+}
+
+# Retry-After is honoured as a floor when the server names one.
+reset_all();
+$get->($PUBLIC . 'later', sub {}, sub {});
+shedWith($SENT[0], after => 4);
+# PAST THE ORDINARY GAP, SHORT OF THE RETRY-AFTER. At +1s the 1.1s queue gap
+# alone would still hold it, so the old probe there passed whether Retry-After
+# was read or not — the mutant that ignored it survived.
+advance($now + 2);
+ok(scalar(@SENT == 1 && $GAP < 2),
+   'a Retry-After of 4s holds the retry past the ordinary gap');
+advance($now + 3);
+ok(scalar(@SENT == 2), '... and releases it once it has passed');
 
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

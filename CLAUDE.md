@@ -58,6 +58,7 @@ because line numbers rot on the next edit.
 | The 4 watchdog timers still using core `time()` | A2 | `four WATCHDOG timers still built from core` |
 | A cross-plugin shared MB rate limiter (DSC + LBF) | A2 | `A CROSS-PLUGIN shared rate limiter` |
 | LBF's mixed clock in its own MB backoff | A2 | `is NOT a finding — no writer` |
+| A 503 from MusicBrainz meaning we are rate limited | A3 | `X-RateLimit-Who` |
 | `_probeArtistImage` reading the wrong error-callback argument | A3 | `the error callback's third argument` |
 | `_idGroup` could block a group from its own id-tagged copy | A3 | `_idGroup cannot block a group` |
 | `getAPIHandler(undef)` killing the service image tier | A3 | `getSomeUserId` |
@@ -262,6 +263,7 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 
 | Belief | Verdict | The evidence |
 |---|---|---|
+| A 503 from MusicBrainz means we are over the rate limit and must back off | **WRONG — it is usually LOAD SHEDDING** (measured 2026-09-20) | MusicBrainz answers both with 503; only the headers separate them. A shed carries **`X-RateLimit-Who`** ending `-shed` (e.g. `search-shed`), a `Zone`, `Retry-After: 0`, and a body of "The MusicBrainz web server is currently busy" — with `Remaining` WELL SHORT of `Limit` (269 of 1900 observed), i.e. we were not over anything. Probed from a cold IP that had sent nothing: 4/8 search requests shed at 1.1s spacing, and one on Simon's server arrived after an 18.6s IDLE gap, which no rate limiter can produce. All 4 recovered on the FIRST retry 0.4s later. So: retry a shed, do NOT back off, and do not space requests further apart to "fix" it. Pinned in `t_netqueue.pl` §10. |
 | `_probeArtistImage` reads `Location` off the wrong argument, so the Deezer placeholder probe can never fire | **WRONG** (raised 2026-09-19, and once before) | `Slim::Networking::SimpleAsyncHTTP` invokes **the error callback's third argument** as the response: `$self->ecb->( $self, $error, $http->response )` (read in the 9.0 source). `my (undef, $error, $res) = @_` is therefore correct, and `$res->header('Location')` is an `HTTP::Response` method. The 302-in-the-error-callback behaviour under `maxRedirect => 0` was measured live in 0.51.0 on the real Mothers/Pink Floyd/B52's urls. |
 | `_idGroup` (0.51.12) could keep a release group from matching a copy whose id names THAT group | **WRONG** | `_idGroup cannot block a group` from its own copy: it is only consulted INSIDE the `unless (_mbidMatch(...))` branch, i.e. only after the id has already failed to name this group. Symmetric by construction, and pinned by the "control: its own group still takes it by id" assertion in `t_size.pl` §5. |
 | `artistImage(undef, ...)` from the ImageProxy handler cannot reach the services, because `getAPIHandler(undef)` has no client to hang an API instance off | **WRONG** | All three plugins handle a clientless call the same way, read in their own sources 2026-09-20: `$clientOrId ||= ...->getSomeUserId()` (Qobuz) / `userId => ...->getSomeUserId()` (TIDAL, Deezer), then construct an API object from that user id. A handler comes back whenever any account is signed in, so tier 3 works from the proxy. Re-raise only for a service whose `getAPIHandler` genuinely requires `ref $client`. |
@@ -944,6 +946,42 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   likewise deliberately LBF-only and outside the shared engine.
 
 ## Development Log
+
+### 0.51.18 (2026-09-20) — a MusicBrainz 503 is TWO different things — NOT YET BUILT
+- **Field (Simon's acceptance run).** With `mb_base_url` pointed at the public API, cold artist pages
+  earned a 503 roughly once a minute. The queue was not at fault: the log shows a textbook 1.0-1.2s
+  stream sustained for 45s, and the refusals landed only on the artist SEARCH.
+- **My first two diagnoses were wrong, in order.** (1) "the queue is mispacing" — disproved by the
+  trace. (2) "MusicBrainz's search endpoint needs ~3s per client" — measured from a cold IP as 4/8
+  refused at 1.1s, 2/6 at 2.0s, 0/6 at 3.0s, and I proposed a 3.5s search gap on that basis.
+  **Simon: "are we sure we are using the correct endpoint at MB end as this seems to contradict
+  things."** He was right, and the headers say so:
+  ```
+  X-RateLimit-Who: search-shed      X-RateLimit-Zone: search
+  X-RateLimit-Limit: 1900           X-RateLimit-Remaining: 269
+  Retry-After: 0
+  {"error": "The MusicBrainz web server is currently busy. Please try again later."}
+  ```
+  `Remaining: 269` of 1900 — **we were never near a limit**. It is LOAD SHEDDING, independent of our
+  rate, which is also why one arrived after an 18.6s IDLE gap (a fact I had already observed and
+  talked past). The 3.5s gap was cancelled; it would have slowed every cold page for nothing.
+- **`_netIsShed` + a bounded retry.** A shed is retried at the FRONT of the queue, up to
+  `NET_SHED_RETRIES` (3), honouring `Retry-After` as a floor (`NET_SHED_WAIT` 0.5s when it is 0), and
+  the caller never hears about it. Only a real refusal (429, or a 503 without the shed markers) moves
+  the backoff curve — and it stays put even when a shed EXHAUSTS its retries, because a shed is not
+  about our rate. **Measured remedy: 4 sheds from a cold IP, all 4 recovered on the FIRST retry 0.4s
+  later.** Detection is deliberately redundant (the `X-RateLimit-Who` header OR the "currently busy"
+  body), so a change of wording or of header does not blind it.
+- **`t_netqueue.pl` 29 -> 46.** Anti-tested with six mutants; the round caught **three vacuous
+  assertions of my own**: the shed guard in `_netIsRateLimited` is load-bearing only on the exhausted
+  path (the retry branch returns before the backoff is consulted), the `Retry-After` probe sat at +1s
+  where the ordinary 1.1s gap holds the retry anyway, and the shed fixture set BOTH signals so
+  deleting either detection still passed. Each is now pinned alone.
+- **UNVERIFIED LIVE.** The suite proves the logic; only a run on the server proves the diagnosis was
+  right about Simon's traffic. The acceptance bar moved with the finding: zero 503s is not achievable
+  because MusicBrainz issues them for its own reasons — the bar is **zero 503s reaching the page**,
+  with sheds visible only as `shed ... retry 1/3` debug lines.
+
 
 ### 0.51.17 (2026-09-20) — one outbound request queue
 - **The leak.** `_mbGap` decided pacing from the CONFIGURED base, so on a mirror install it returned
