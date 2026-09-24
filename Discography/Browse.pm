@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.54.8';
+use constant CACHE_VERSION => '0.54.9';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -2994,19 +2994,24 @@ sub _pageRow {
 # both. It flips IN PLACE: the row sets the ctx flag to an ABSOLUTE target
 # (idempotent under a re-walk) and nextWindow refreshes the artist's own
 # command, whose same-artist fresh entry keeps `view` (like the bio's flag).
+# The target rides in the ID too (act:view:<to>, like bio:more / page:<KEY>:<n>):
+# a tap is dispatched by rebuilding the page from the SERVER's current view, so a
+# fixed id would run the rebuilt row and flip relative to that state. A stale tap
+# (double tap, a second window) now misses _findRow and changes nothing.
 sub _viewToggleItem {
     my ($client, $opts, $view) = @_;
     my $singles = ($view // '') eq 'singles' ? 1 : 0;
     my $now  = cstring($client, $singles ? 'PLUGIN_DISCOGRAPHY_SINGLES_EPS' : 'PLUGIN_DISCOGRAPHY_ALBUMS');
     my $next = cstring($client, $singles ? 'PLUGIN_DISCOGRAPHY_ALBUMS'      : 'PLUGIN_DISCOGRAPHY_SINGLES_EPS');
+    my $to   = $singles ? 'albums' : 'singles';
     return {
         name        => sprintf(cstring($client, 'PLUGIN_DISCOGRAPHY_SHOWING'), $now, $next),
         type        => 'link',
         image       => IMG_BASE . 'dsc_MTL_svg_' . ($singles ? 'release-single' : 'release-album') . '.png',
         nextWindow  => 'refresh',
-        id          => 'act:view',
-        itemActions => _listItemActions($opts, 'act:view'),
-        passthrough => [{ to => $singles ? 'albums' : 'singles' }],
+        id          => "act:view:$to",
+        itemActions => _listItemActions($opts, "act:view:$to"),
+        passthrough => [{ to => $to }],
         url         => sub {
             my ($c, $cb, $a, $p) = @_;
             $lastCtx{ _cid($c) }{view} = ($p->{to} // '') eq 'singles' ? 'singles' : 'albums';

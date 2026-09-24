@@ -118,6 +118,7 @@ sub build {
 }
 sub ids   { map { $_->{id} // () } @{ $_[0] } }
 sub has   { my ($items, $id) = @_; scalar grep { ($_->{id} // '') eq $id } @$items }
+sub togs  { scalar grep { ($_->{id} // '') =~ /^act:view/ } @{ $_[0] } }
 sub row   { my ($items, $id) = @_; (grep { ($_->{id} // '') eq $id } @$items)[0] }
 
 # 1. Albums view (the default).
@@ -126,13 +127,13 @@ ok(scalar(has($a, 'sect:ALBUMS') && has($a, 'sect:LIVE')), '1: Albums view shows
 ok(scalar(!has($a, 'sect:SINGLES') && !has($a, 'sect:EPS')), '1: Albums view hides the Singles and EPs sections');
 ok(scalar(has($a, 'sect:BIO') && has($a, 'sect:BANDS') && has($a, 'sect:SIMILAR')),
    '1: Albums view keeps the bio and the band/similar links');
-my $tog = row($a, 'act:view');
+my $tog = row($a, 'act:view:singles');
 ok(scalar($tog && $tog->{name} eq 'Showing Albums (tap for Singles & EPs)'), '1: toggle reads "Showing Albums (tap for Singles & EPs)"');
 my @opt = ids($a);
 my ($oi) = grep { ($opt[$_] // '') eq 'sect:OPT' } 0 .. $#opt;
-ok(scalar(defined $oi && ($opt[$oi + 1] // '') eq 'act:view'), '1: the toggle is the first Options row');
+ok(scalar(defined $oi && ($opt[$oi + 1] // '') eq 'act:view:singles'), '1: the toggle is the first Options row');
 ok(scalar(($tog->{nextWindow} // '') eq 'refresh'), '1: the toggle flips in place (nextWindow refresh)');
-ok(scalar(($tog->{itemActions}{items}{fixedParams}{item} // '') eq 'act:view'), '1: the toggle tap is param-addressed');
+ok(scalar(($tog->{itemActions}{items}{fixedParams}{item} // '') eq 'act:view:singles'), '1: the toggle tap is param-addressed, target in the id');
 ok(scalar(!grep { ($_->{id} // '') eq 'str:Qobuz:q-creep' } @$a),
    "1: a streaming album claimed by a SINGLE does not resurface under Also on streaming");
 ok(scalar(grep { ($_->{id} // '') eq 'str:Qobuz:q-pablo' } @$a), '1: an unclaimed one still does');
@@ -150,7 +151,7 @@ ok(scalar(!has($s, 'sect:ALBUMS') && !has($s, 'sect:LIVE')),
 ok(scalar(!has($s, 'sect:BIO') && !has($s, 'sect:BANDS') && !has($s, 'sect:SIMILAR') && !has($s, 'sect:STREAM')),
    '2: Singles view is a true tab: no bio, extras or links');
 ok(scalar(has($s, 'sect:OPT') && has($s, 'act:refresh') && has($s, 'act:search')), '2: Options is still there');
-my $tog2 = row($s, 'act:view');
+my $tog2 = row($s, 'act:view:albums');
 ok(scalar($tog2 && $tog2->{name} eq 'Showing Singles & EPs (tap for Albums)'), '2: toggle now reads "Showing Singles & EPs (tap for Albums)"');
 ok(scalar(($tog2->{image} // '') =~ /release-single/), "2: the toggle's icon shows the current view");
 ok(scalar(grep { ($_->{name} // '') eq 'Creep' } @$s), '2: Creep is on the Singles view');
@@ -165,15 +166,15 @@ ok(scalar(has(build(\@full), 'sect:ALBUMS')), '3: tapping again returns to Album
 my @albumsOnly = (rg('OK Computer', 'Album'), rg('Amnesiac', 'Album'));
 $tog->{url}->(undef, sub { }, {}, $tog->{passthrough}[0]);   # stored view = singles
 my $ao = build(\@albumsOnly);
-ok(scalar(has($ao, 'sect:ALBUMS') && !has($ao, 'act:view')), '4: albums-only artist: Albums shown, no toggle (even with Singles stored)');
+ok(scalar(has($ao, 'sect:ALBUMS') && !togs($ao)), '4: albums-only artist: Albums shown, no toggle (even with Singles stored)');
 $tog2->{url}->(undef, sub { }, {}, $tog2->{passthrough}[0]); # stored view = albums
 my $so = build([ rg('Lift', 'Single'), rg('Man of War', 'Single') ]);
-ok(scalar(has($so, 'sect:SINGLES') && !has($so, 'act:view')), '4: singles-only artist: opens on Singles, no toggle');
+ok(scalar(has($so, 'sect:SINGLES') && !togs($so)), '4: singles-only artist: opens on Singles, no toggle');
 ok(scalar(has($so, 'sect:BIO') && has($so, 'sect:BANDS') && has($so, 'sect:SIMILAR')),
    '4: a singles-only artist keeps its bio and links (no Albums view to hold them, no toggle to reach one)');
 $tog2->{url}->(undef, sub { }, {}, $tog2->{passthrough}[0]);
 my $eo = build([ rg('Airbag EP', 'EP'), rg('Lift', 'Single') ]);
-ok(scalar(has($eo, 'sect:EPS') && has($eo, 'sect:SINGLES') && !has($eo, 'act:view') && has($eo, 'sect:BIO')),
+ok(scalar(has($eo, 'sect:EPS') && has($eo, 'sect:SINGLES') && !togs($eo) && has($eo, 'sect:BIO')),
    '4: an EPs-and-singles-only artist opens on that view, no toggle, keeps its bio');
 
 # 5. The fresh-entry ctx rebuild keeps `view` for the same artist (source check:
@@ -183,6 +184,64 @@ ok(scalar(has($eo, 'sect:EPS') && has($eo, 'sect:SINGLES') && !has($eo, 'act:vie
     my $src = do { local $/; <$fh> };
     ok(scalar($src =~ /\$same \? \([^)]*view\s*=>\s*\$prev->\{view\}[^)]*\) : \(\)/s),
        '5: a same-artist fresh entry keeps the view flag');
+}
+
+# 6. A REAL tap: Material sends item=<the toggle's own item param>; topLevel runs
+#    _listItemDispatch, which rebuilds the page from the SERVER's current view and
+#    runs the row _findRow finds. A stale tap (double tap before the refresh lands,
+#    or a second Material window on the same player) must land where the button
+#    promised, never flip relative to the server's state (the absolute-target rule).
+{
+    no warnings 'redefine'; no strict 'refs';
+    local *{"${B}::_discographyView"} = sub { my ($c, $cb) = @_; $cb->({ items => build(\@full) }) };
+    my $view = sub { my $p = build(\@full); has($p, 'sect:ALBUMS') ? 'albums' : has($p, 'sect:SINGLES') ? 'singles' : '?' };
+    my $togOf = sub { (grep { (($_->{itemActions} || {})->{items}{fixedParams}{item} // '') =~ /^act:view/ } @{ $_[0] })[0] };
+    my $tapId = sub { (($togOf->($_[0]) || {})->{itemActions} || {})->{items}{fixedParams}{item} };
+    my $got;
+    my $dispatch = sub { $got = undef; $B->can('_listItemDispatch')->(undef, sub { $got = shift }, { %$opts }, $_[0]) };
+
+    ok(scalar($view->() eq 'albums'), '6: starts on Albums');
+    my $fromAlbums  = $tapId->(build(\@full));
+    ok(scalar(defined $fromAlbums && $togOf->(build(\@full))->{id} eq $fromAlbums),
+       "6: the tap's item param IS the toggle row's id (the dispatch finds the row it came from)");
+    $dispatch->($fromAlbums);
+    ok(scalar($view->() eq 'singles'), '6: a tap from the Albums page opens Singles');
+    ok(scalar(ref $got eq 'HASH'), '6: the dispatch answered (the refresh then re-renders)');
+    my $fromSingles = $tapId->(build(\@full));
+    ok(scalar(defined $fromSingles && $fromSingles ne $fromAlbums),
+       '6: the two pages send DIFFERENT taps (the target rides in the id)');
+
+    $dispatch->($fromAlbums);                       # the same Albums-page tap again
+    ok(scalar($view->() eq 'singles'), '6: a stale second tap from the Albums page STAYS on Singles (no flip back)');
+    ok(scalar(ref $got eq 'HASH'), '6: ...and still answers, so the refresh lands');
+
+    $dispatch->($fromSingles);
+    ok(scalar($view->() eq 'albums'), '6: a tap from the Singles page returns to Albums');
+    $dispatch->($fromSingles);
+    ok(scalar($view->() eq 'albums'), '6: a stale second tap from the Singles page STAYS on Albums');
+
+    $dispatch->($fromAlbums); $dispatch->($fromAlbums); $dispatch->($fromAlbums);
+    ok(scalar($view->() eq 'singles'), '6: three taps from one Albums page = Singles (idempotent)');
+    $dispatch->($fromSingles);                      # leave it on Albums
+
+    # A stale toggle tap on an artist with no toggle: harmless, answers, view kept.
+    local *{"${B}::_discographyView"} = sub { my ($c, $cb) = @_;
+        $cb->({ items => build([ rg('OK Computer', 'Album'), rg('Amnesiac', 'Album') ]) }) };
+    $dispatch->($fromAlbums);
+    ok(scalar(ref $got eq 'HASH' && !@{ $got->{items} || [] }), '6: a toggle tap where there is no toggle answers empty');
+}
+ok(scalar(has(build(\@full), 'sect:ALBUMS')), '6: ...and changes nothing');
+
+# 7. Every param-addressed row on both views: the tap finds ITS OWN row, and no two
+#    rows share an id (a duplicate would make _findRow run the first one).
+for my $v (['albums', $tog2], ['singles', $tog]) {
+    $v->[1]{url}->(undef, sub { }, {}, $v->[1]{passthrough}[0]);
+    my $p = build(\@full);
+    my @bad = grep { my $i = (($_->{itemActions} || {})->{items}{fixedParams} || {})->{item};
+                     defined $i && ($_->{id} // '') ne $i } @$p;
+    ok(scalar(!@bad), "7: $v->[0] view: every row's tap names its own id");
+    my %seen; my @dup = grep { $seen{$_}++ } ids($p);
+    ok(scalar(!@dup), "7: $v->[0] view: row ids are unique (" . join(',', @dup) . ')');
 }
 
 print "\n$pass passed, $fail failed\n";

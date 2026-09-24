@@ -322,10 +322,10 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   not an omission; on a touch screen the role is simply not shown. Pinned in `tools/t_worksbest.pl`.
 
 - **THE ARTIST PAGE'S ALBUMS | SINGLES SPLIT IS ONE TOGGLE ROW, AND SINGLES IS A TRUE TAB** (`_viewToggleItem`,
-  `act:view`, `$singlesTab`; Simon, 2026-09-24). Not real tabs: Material has no side-by-side layout for a
+  `act:view:<to>`, `$singlesTab`; Simon, 2026-09-24). Not real tabs: Material has no side-by-side layout for a
   plugin list (LBF's ledger measured it). The Singles view showing no bio/extras/links is the design; a
   singles-only artist keeps them (no toggle, no Albums view). The Singles view holds EPs too, as its own
-  section (Simon, 2026-09-24, "Singles & EPs"); Live etc. stay on Albums until asked for. The choice is per artist per player (ctx), not a pref. Pinned in `tools/t_view.pl`.
+  section (Simon, 2026-09-24, "Singles & EPs"); Live etc. stay on Albums until asked for. The choice is per artist per player (ctx), not a pref. The TARGET rides in the row id (`act:view:singles` / `act:view:albums`, review 2026-09-24): a tap is dispatched by rebuilding the page from the server's CURRENT view, so a fixed id flipped relative to that state (double tap, second window). A stale tap now misses `_findRow` and changes nothing. Pinned in `tools/t_view.pl`.
 
 ### A3. DISPROVEN — a review WILL re-derive these from the code; each was measured
 
@@ -1033,7 +1033,25 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
-### 0.54.8 (2026-09-24) — EPs move into the Singles view — BUILT, not installed
+### 0.54.9 (2026-09-24) — review fix: the view toggle carries its target in its id — BUILT, not installed
+- Zip sha1 `70703431e0042774a060b511dd443fa019a6d946`; CACHE_VERSION 0.54.9; repo.xml bumped with it.
+- **Review of 0.54.8 (`/code-review`, confirmed by reading the dispatch):** the toggle's id was the fixed `act:view`.
+  `_listItemDispatch` rebuilds the page from the SERVER's current view before `_findRow`, so the row it ran was the
+  rebuilt one and the flip was relative to the server, not the page tapped from. A double tap before the refresh landed,
+  or a second Material window on the same player, went the wrong way. The comment and the 0.54.7 entry claimed an
+  absolute target; the code did not deliver it (the paging rows' absolute-target rule, `Paging rows carry an ABSOLUTE`).
+- **Fix:** id + tap `item` = `act:view:<to>` (like `bio:more`/`bio:less`, `page:<KEY>:<n>`). A stale tap misses `_findRow`
+  -> `_runRow` answers empty -> the refresh shows the current view, which is where the tap was going.
+- **Carriers checked:** `_findRow` is an exact `eq` (nothing pattern-matches ids); `_cleanParam` passes `act:view:*`; the
+  row url still sets the ABSOLUTE `to` from passthrough (positional walks unchanged); topLevel's same-artist `view` keep
+  unchanged; no other file names `act:view`. A stale tap on an artist with no toggle answers empty and changes nothing.
+- **`tools/t_view.pl` 24 -> 40:** taps now go through the REAL `_listItemDispatch` -> `_findRow` -> `_runRow` (was: the
+  row's coderef called directly, which could not see the bug); stale second taps from each page, idempotent triple tap,
+  no-toggle artist, and every row's tap naming its own unique id on both views. Written FIRST and run red on 0.54.8 (3
+  red). Anti-tested on scratch copies: fixed id restored (section 1 red, suite dies), stale tap `item` (8 red). All 40
+  suites green; `syntax_check.sh` clean.
+
+### 0.54.8 (2026-09-24) — EPs move into the Singles view — INSTALLED + VERIFIED LIVE
 - Zip sha1 `dc580cc1658c85d90bb2a73e3f6778c6a55dbce0`; CACHE_VERSION 0.54.8; repo.xml bumped with it. Also carries 0.54.7 (the Albums | Singles toggle), never installed on its own.
 - **Simon (0.54.7 built, not yet installed): "move EPs into singles".** Chose its OWN EPs section in that
   view (over one merged "Singles & EPs" section). `%SINGLE_FAMILY` = SINGLES + EPS drives the toggle's
