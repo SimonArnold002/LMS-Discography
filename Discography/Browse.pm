@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.19';
+use constant CACHE_VERSION => '0.51.20';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -481,13 +481,29 @@ sub _proseBlock {
 # with setext headings; prose sources never column-wrap, so a lone "\n" there IS
 # a break. TWO signals, BOTH required — no line past BIO_WRAP_MAX_COL, and more
 # than half the non-final lines ending mid-sentence — plus a floor of
-# BIO_WRAP_MIN_LINES. A false positive costs one joined paragraph, never a
-# broken render.
+# BIO_WRAP_MIN_LINES.
+#
+# A FALSE POSITIVE IS NOT HARMLESS: it joins lines AND lets _bioLooksLikeHeading
+# promote any short unpunctuated line to a bold heading. (This comment used to
+# say "one joined paragraph, never a broken render" — review 2026-09-24 showed
+# otherwise.)
+#
+# SETEXT HEADINGS ARE STRUCTURE, NOT PROSE, so a setext underline and the title
+# it underlines are left out of the count. Counted, they are exactly the lines
+# the test reads as wrapping: short, unpunctuated. A one-paragraph Wikipedia
+# stub from MAI cleans to four lines — the sentence, "(Source: Wikipedia)",
+# "More online sources" and its dashes — which cleared the floor and the
+# mid-sentence test, and "(Source: Wikipedia)" rendered as a bold heading.
+# The underline itself is still consumed by _bioBlocks whatever this returns.
 use constant BIO_WRAP_MAX_COL   => 100;
 use constant BIO_WRAP_MIN_LINES => 4;
 sub _bioHardWrapped {
     my ($lines) = @_;
-    my @l = grep { length } @$lines;
+    my $rule = qr/^[-=_~*]{3,}$/;      # the same underline test as _bioBlocks
+    my @l = grep { length }
+            map  { ($lines->[$_] =~ $rule
+                    || ($_ < $#$lines && $lines->[$_ + 1] =~ $rule)) ? () : $lines->[$_] }
+            0 .. $#$lines;
     return 0 if @l < BIO_WRAP_MIN_LINES;
 
     my $mid = 0;
@@ -1645,6 +1661,7 @@ sub _fetchArtistBio {
             for my $it (@$items) {
                 next unless ref $it eq 'HASH';
                 my $t = $it->{name};
+                if (_maiNotFound($client, $t)) { _dbg("bio '$artist': MAI not-found answer"); next }
                 if (defined(my $c = _cleanProse($t))) { $text = $c; last }
             }
             _dbg("bio '$artist': " . (defined $text ? 'len=' . length $text : 'empty'));
@@ -3819,6 +3836,37 @@ sub _cleanProse {
     return _proseHasBody($text) ? $text : undef;
 }
 
+# Is this MAI item its NOT-FOUND answer rather than a biography or review?
+#
+# READ IN MAI's SOURCE (michaelherger/MusicArtistInfo, 2026-09-24): with nothing
+# to offer, getBiography and getAlbumReview do NOT call back empty — they hand
+# over ONE item whose `name` is the error text, which is the localised string
+# PLUGIN_MUSICARTISTINFO_NOT_FOUND ("I'm sorry, didn't find any relevant
+# information.") and, for a web client, is wrapped as "<p>…</p>" + the "More
+# online sources" link list (AlbumInfo::renderReview, ArtistInfo::_getBioItems).
+# MEASURED on the live server: 10 of 12 albums sampled answered this way. Until
+# this check, that sentence was rendered AS the review and the Qobuz fallback
+# never ran (present since reviews were added in 0.7.0).
+#
+# The test is MAI's OWN: its CLI wrapper classifies an item as an error when the
+# text starts with that string (ArtistInfo::getBiographyCLI, AlbumInfo). We strip
+# the markup first, which MAI's check does not, so the web-wrapped form is caught
+# too. The item TYPE is not used: a review error is `text` and a real review
+# `textarea`, but a bio error goes through the same textarea path as a real bio.
+# cstring($client) resolves the same language MAI rendered with.
+sub _maiNotFound {
+    my ($client, $raw) = @_;
+    return 0 unless defined $raw && !ref $raw && length $raw;
+    my $nf = eval {
+        Slim::Utils::Strings::stringExists('PLUGIN_MUSICARTISTINFO_NOT_FOUND')
+            ? cstring($client, 'PLUGIN_MUSICARTISTINFO_NOT_FOUND') : '';
+    } // '';
+    return 0 unless length $nf;
+    (my $plain = $raw) =~ s/<[^>]+>//g;
+    $plain =~ s/^\s+//;
+    return index($plain, $nf) == 0 ? 1 : 0;
+}
+
 sub _fetchAlbumReview {
     my ($client, $artist, $album, $rgMbid, $sections, $cb) = @_;
 
@@ -3863,6 +3911,7 @@ sub _fetchAlbumReview {
             for my $it (@$items) {
                 next unless ref $it eq 'HASH';
                 my $t = $it->{name};
+                if (_maiNotFound($client, $t)) { _dbg("review '$album': MAI not-found answer"); next }
                 if (defined(my $c = _cleanProse($t))) { $text = $c; last }
             }
             if (defined $text && length $text) {

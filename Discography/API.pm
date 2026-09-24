@@ -57,7 +57,7 @@ my $prefs = preferences('plugin.discography');
 # instance for a namespace and ignores later args). tools/syntax_check.sh
 # asserts all three agree and match install.xml.
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.19';
+use constant CACHE_VERSION => '0.51.20';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 # MB's canonical artist name, remembered in-process as well as cached — the

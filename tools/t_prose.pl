@@ -26,7 +26,7 @@ use strict;
 use warnings;
 use FindBin;
 
-our (%CACHE, $MAI_BIO, $MAI_REVIEW, @MAI_CALLS);
+our (%CACHE, $MAI_BIO, $MAI_REVIEW, @MAI_CALLS, $NO_MAI_STRINGS);
 
 BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
@@ -43,7 +43,13 @@ BEGIN {
     # A real (in-memory) cache, so the fetch sites' key and stored shape can be
     # asserted. DbCache stores OCTETS; _cacheSetText encodes before set.
     *{'Slim::Utils::Cache::new'}         = sub { bless {}, 'T::Cache' };
-    *{'Slim::Utils::Strings::cstring'}   = sub { $_[1] };
+    # MAI's NOT_FOUND string, English, as MAI's strings.txt carries it and as the
+    # live server returned it (2026-09-24). $main::NO_MAI_STRINGS simulates MAI's
+    # strings being absent.
+    *{'Slim::Utils::Strings::cstring'}   = sub {
+        $_[1] eq 'PLUGIN_MUSICARTISTINFO_NOT_FOUND'
+            ? "I'm sorry, didn't find any relevant information." : $_[1] };
+    *{'Slim::Utils::Strings::stringExists'} = sub { !$main::NO_MAI_STRINGS };
     *{'Slim::Utils::PluginManager::isEnabled'} = sub { 1 };
     *{'Plugins::Discography::Plugin::dbg'} = sub { };
     # Browse.pm builds a table with it at load time (as t_detailshared.pl).
@@ -289,6 +295,77 @@ sub bodies { map { $_->{text} } grep { !$_->{heading} } @_ }
     f('_fetchAlbumReview', undef, 'Lambchop', 'Nixon', 'rg-y', [], sub { $none = shift });
     ok(scalar(!defined $none && defined $CACHE{'dsc:rev:2:rg-y'} && $CACHE{'dsc:rev:2:rg-y'} eq ''),
        '7: nothing anywhere = undef, cached as confirmed-none');
+}
+
+# ---------------------------------------------------------------------------
+# 9. A one-paragraph STUB (review 2026-09-24): "(Source: Wikipedia)" must not
+#    become a bold heading. Its "More online sources" title + underline were
+#    counted as wrapped prose and tipped _bioHardWrapped. The CONTROL is a real
+#    hard-wrapped plain-text MAI bio (captured, html:0) that must stay detected.
+# ---------------------------------------------------------------------------
+{
+    my $stub = '<p>Foo are an indie band from Leeds.</p><div>(Source: Wikipedia)</div>'
+             . '<h4>More online sources</h4><ul><li><a href="x">AllMusic</a></li></ul>';
+    my @p = f('_bioParagraphs', f('_cleanBio', $stub));
+    ok(scalar(@p == 2 && !$p[0]{heading} && !$p[1]{heading} && $p[1]{text} eq '(Source: Wikipedia)'),
+       '9: a one-paragraph stub renders the attribution as body, not a bold heading');
+    my ($rows) = f('_proseSection', f('_cleanBio', $stub), 0);
+    ok(scalar(!grep { $_->{name} =~ /font-weight:bold/ } @$rows), '9: ... and no row of it is bold');
+
+    my $plain = fixture('mai_bio_lambchop_plaintext.txt');
+    my @l = map { my $t = $_; $t =~ s/^\s+|\s+$//g; $t } split /\n/, $plain, -1;
+    ok(scalar(f('_bioHardWrapped', \@l)), '9: CONTROL - MAI\'s hard-wrapped plain-text bio is still detected');
+    # Measured output (identical before and after the fix). The plain render has
+    # no "(Source: Wikipedia)" line, so 12 blocks; and "Summary of members as
+    # credited on studio albums (1994–present)" — a lone unpunctuated line — is a
+    # bare-line heading here, LBF's deliberate rule for hard-wrapped text.
+    my @pp = f('_bioParagraphs', $plain);
+    my %h  = map { $_ => 1 } heads(@pp);
+    ok(scalar($h{'Description and history'} && $h{'Personal lives'} && $h{'Personnel'}),
+       '9: CONTROL - its setext headings still render as headings');
+    ok(scalar(@pp == 12 && $pp[0]{text} =~ /^Lambchop, originally Posterchild.*Nashville, Tennessee, formed in 1986\./),
+       '9: CONTROL - hard-wrapped lines are still rejoined into paragraphs');
+}
+
+# ---------------------------------------------------------------------------
+# 10. MAI's NOT-FOUND answer is not a biography or a review (review 2026-09-24).
+#     MAI calls back with ONE item carrying the localised "I'm sorry..." text,
+#     web-wrapped in <p> + the link list (captured fixture). It used to render AS
+#     the review and block the Qobuz fallback.
+# ---------------------------------------------------------------------------
+{
+    my $nf = fixture('mai_review_notfound_kraftwerk_computerworld.html');
+    ok(scalar(f('_maiNotFound', undef, $nf)), '10: the captured web-wrapped not-found answer is recognised');
+    ok(scalar(f('_maiNotFound', undef, "I'm sorry, didn't find any relevant information.")),
+       '10: the plain (non-web) form is recognised');
+    ok(scalar(!f('_maiNotFound', undef, $NIXON)),    '10: a real review is not');
+    ok(scalar(!f('_maiNotFound', undef, $LAMBCHOP)), '10: a real biography is not');
+    ok(scalar(!f('_maiNotFound', undef,
+        "<p>The singer said I'm sorry, didn't find any relevant information. Then left.</p>")),
+       '10: the phrase INSIDE real text is not (prefix only, as MAI\'s own check)');
+    { local $NO_MAI_STRINGS = 1;
+      ok(scalar(!f('_maiNotFound', undef, $nf)), '10: with MAI\'s strings absent nothing is treated as not-found'); }
+
+    %CACHE = (); @MAI_CALLS = ();
+    $MAI_REVIEW = $nf;
+    my $sections = [ { items => [ { _desc => '<p>Kraftwerk go pocket calculator.</p>' } ] } ];
+    my $got;
+    f('_fetchAlbumReview', undef, 'Kraftwerk', 'Computer World', 'rg-cw', $sections, sub { $got = shift });
+    ok(scalar(defined $got && $got eq 'Kraftwerk go pocket calculator.'),
+       '10: MAI not-found -> the Qobuz description is used');
+
+    %CACHE = ();
+    my $none = 'unset';
+    f('_fetchAlbumReview', undef, 'Kraftwerk', 'Computer World', 'rg-cw2', [], sub { $none = shift });
+    ok(scalar(!defined $none && ($CACHE{'dsc:rev:2:rg-cw2'} // 'x') eq ''),
+       '10: MAI not-found and no Qobuz text -> no review section, cached as confirmed-none');
+
+    %CACHE = ();
+    $MAI_BIO = $nf;
+    my $bio = 'unset';
+    f('_fetchArtistBio', undef, 'Nobody Band', undef, sub { $bio = shift });
+    ok(scalar(!defined $bio && ($CACHE{'dsc:bio:2:nobody band'} // 'x') eq ''),
+       '10: a not-found BIO gives no bio section, cached as confirmed-none');
 }
 
 # ---------------------------------------------------------------------------

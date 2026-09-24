@@ -61,6 +61,7 @@ because line numbers rot on the next edit.
 | A 503 from MusicBrainz meaning we are rate limited | A3 | `X-RateLimit-Who` |
 | `_probeArtistImage` reading the wrong error-callback argument | A3 | `the error callback's third argument` |
 | `_idGroup` could block a group from its own id-tagged copy | A3 | `_idGroup cannot block a group` |
+| MAI calls back EMPTY when it has no bio/review | A3 | `MAI's NOT-FOUND answer is an item` |
 | `getAPIHandler(undef)` killing the service image tier | A3 | `getSomeUserId` |
 | Deezer's artist-albums payload has no track count, so no size | A3 | `Deezer states record_type` |
 | `length $e->[0] >= 2` parsing as `length($e->[0] >= 2)` | A3 | `a named unary binds tighter` |
@@ -292,6 +293,7 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 | `_probeArtistImage` reads `Location` off the wrong argument, so the Deezer placeholder probe can never fire | **WRONG** (raised 2026-09-19, and once before) | `Slim::Networking::SimpleAsyncHTTP` invokes **the error callback's third argument** as the response: `$self->ecb->( $self, $error, $http->response )` (read in the 9.0 source). `my (undef, $error, $res) = @_` is therefore correct, and `$res->header('Location')` is an `HTTP::Response` method. The 302-in-the-error-callback behaviour under `maxRedirect => 0` was measured live in 0.51.0 on the real Mothers/Pink Floyd/B52's urls. **The same signature is what `_netIsRateLimited` got WRONG (fixed 2026-09-24): it read the response off `$_[0]`, and because the accessors are `eval`-wrapped it answered "not a shed" in silence rather than dying. When a probe here takes the callback's arguments, it must take ALL of them.** |
 | `_idGroup` (0.51.12) could keep a release group from matching a copy whose id names THAT group | **WRONG** | `_idGroup cannot block a group` from its own copy: it is only consulted INSIDE the `unless (_mbidMatch(...))` branch, i.e. only after the id has already failed to name this group. Symmetric by construction, and pinned by the "control: its own group still takes it by id" assertion in `t_size.pl` §5. |
 | `artistImage(undef, ...)` from the ImageProxy handler cannot reach the services, because `getAPIHandler(undef)` has no client to hang an API instance off | **WRONG** | All three plugins handle a clientless call the same way, read in their own sources 2026-09-20: `$clientOrId ||= ...->getSomeUserId()` (Qobuz) / `userId => ...->getSomeUserId()` (TIDAL, Deezer), then construct an API object from that user id. A handler comes back whenever any account is signed in, so tier 3 works from the proxy. Re-raise only for a service whose `getAPIHandler` genuinely requires `ref $client`. |
+| MAI's `getBiography` / `getAlbumReview` call back with an EMPTY list when they have nothing, so "no items" means "no text" | **WRONG** (read in MAI's source + measured live, 2026-09-24) | **MAI's NOT-FOUND answer is an item**: ONE item whose `name` is the localised `PLUGIN_MUSICARTISTINFO_NOT_FOUND` ("I'm sorry, didn't find any relevant information."), for a web client wrapped `<p>…</p>` + the "More online sources" links (`AlbumInfo::renderReview`, `ArtistInfo::_getBioItems`). 10 of 12 albums sampled live answered this way; it rendered AS the review and blocked the Qobuz fallback from 0.7.0 to 0.51.19. The item TYPE does not separate them for bios (both `textarea`). `Browse::_maiNotFound` uses MAI's own test (text starts with that string) after stripping markup. Pinned in `t_prose.pl` §10. |
 | Deezer's artist-albums payload carries no track count, so a Deezer copy has no size and the single gate cannot act on it | **WRONG** | `/artist/<id>/albums` omits `nb_tracks` but **Deezer states record_type** on every row, which `_candSize` reads when there are no counts; `/search/album` carries BOTH (`nb_tracks` + `record_type`, verified live 2026-09-19). Pinned in `t_size.pl` §1. |
 | `length $e->[0] >= 2` in `_editionTitles`/`matchesFor` parses as `length($e->[0] >= 2)` | **WRONG** | In Perl **a named unary binds tighter** than a comparison operator, so it is `length($e->[0]) >= 2`, which is the intent. Same shape appears in the alias pass and has been correct since 0.48.0. |
 | Moving the collaboration vetting off the render path (0.51.15) costs a visit on a cold artist | **PARTLY RIGHT — and my 2026-09-19 "WRONG" verdict was itself wrong** | Re-measured 2026-09-20 on 0.51.16 after a CACHE_VERSION bump, which is the ONLY truly cold state: Brian Eno's Collaborations section is **absent on the first entry and present on the second** (same two links). The 2026-09-19 measurement used `["discography","clearcache","mbid:..."]`, and **clearing by mbid and clearing by name touch DISJOINT key sets** — by mbid it reports `rg,official,bands,collabs,rgcount,empty`, by name `mbid,bio,candnames,candidates`. So the name->mbid resolution, the bio and the streaming candidates stayed warm, the serial chain was short enough to finish before the render, and the section made the first entry. **`clearcache` is not cold.** To test a cold artist, bump CACHE_VERSION or clear by BOTH name and mbid. |
@@ -974,6 +976,42 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
+### 0.51.20 (2026-09-24) — review of 0.51.19: stub bios, and MAI's "not found" shown as the review — BUILT, NOT installed
+- Zip sha1 `b5408afcee983eb8c4567f4afc5edb7f99dcbdfc`; CACHE_VERSION 0.51.20 (clears the sorry-text
+  reviews 0.51.19 cached as found).
+- **Finding 1 (`/code-review`, reproduced): a one-paragraph stub renders "(Source: Wikipedia)" as a bold
+  heading** — in LBF too (same parser, reproduced there; LBF NOT changed yet, Simon: fix here first).
+  `_cleanBio` turns MAI's trailing "More online sources" into a setext title + dashes; `_bioHardWrapped`
+  counted those two lines as prose, the stub cleared the 4-line floor and the mid-sentence test, and
+  `_bioLooksLikeHeading` promoted the attribution. **Fix:** `_bioHardWrapped` leaves a setext underline
+  AND the title it underlines out of the count (structure, not wrapped prose). Its comment also claimed
+  a false positive "costs one joined paragraph" — wrong, it also licenses bare-line headings; corrected.
+- **Finding 2 (found while building the regression corpus — pre-existing since 0.7.0, and the bigger
+  one): MAI's NOT-FOUND answer rendered as the review.** See A3 `MAI's NOT-FOUND answer is an item`.
+  **Fix:** `_maiNotFound` (MAI's own prefix test on the markup-stripped text, localised via
+  `cstring($client)`, guarded by `stringExists`) skips that item in both fetch loops — a review then
+  falls back to Qobuz, a bio to "no bio section"; both cache '' (confirmed none) at the empty TTL.
+  NB 0.51.19 cached such sorry-text as a FOUND review (30d) — cleared by the next build's
+  CACHE_VERSION bump, so no key bump.
+- **Evidence it breaks nothing:** a regression corpus of 44 live MAI answers (15 bios + 12 reviews, in
+  BOTH html:1 and plain-text html:0 forms) + the fixtures + synthetic cases, run through the committed
+  parser and the new one side by side, cleaned AND raw: **105 of 106 outputs byte-identical; the one
+  change is the stub.** All 15 genuinely hard-wrapped plain-text bios are still detected (and the 2
+  unwrapped Last.fm texts still not). `_maiNotFound` over the corpus flags exactly the 10 "sorry"
+  answers and none of the 34 real texts.
+- **`t_prose.pl` 53 -> 67** (new fixtures: MAI's captured not-found answer; Lambchop's hard-wrapped
+  plain-text bio as the CONTROL). Anti-tested six ways — wrap exclusion off (2 red, control stays green),
+  review check off (2), bio check off (1), no markup strip (4), substring instead of prefix (1),
+  `stringExists` ignored (1). Two harness bugs of mine caught on the way: a `render` that `shift`ed away
+  each text's first block (so first-block changes were invisible), and a probe whose stubs predated the
+  `cstring` fix and flagged nothing. All 34 suites green; `syntax_check.sh` clean.
+- **Known, left as-is (inherited from LBF, no writer named):** a `***`/`---` divider line between
+  paragraphs marks the paragraph above as a heading. And in hard-wrapped plain text a lone short line
+  ("Summary of members as credited on studio albums (1994–present)") becomes a bare-line heading — LBF's
+  deliberate rule; Discography normally receives HTML.
+- **LIVE VERIFY AFTER INSTALL:** a release MAI has no review for (e.g. Kraftwerk *Computer World*) shows
+  the Qobuz description or no Review section — never "I'm sorry…". Lambchop / Nixon unchanged.
+
 ### 0.51.19 (2026-09-24) — bio and review prose rendered the LBF way — BUILT, NOT installed
 - Zip sha1 `46fe5832d1f392f32d876e5aa6b38bcc7b93b389`; CACHE_VERSION 0.51.19 in all three modules
   (clears every Discography cache on install). No repo.xml yet (pre-release).
@@ -1002,8 +1040,11 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   `%lastCtx` toggle flags (unchanged), the section headers' kid lists (unchanged), row counts vs Material's
   100-row scroller (measured, see A2), the duplicate-title collision (guarded), the Qobuz path
   (`Sources::_decorate` `_desc`, the only writer). **Behaviour change, unmeasured live:** a Qobuz
-  description's single `<br>` now becomes its own paragraph row (LBF's rule for a non-hard-wrapped source)
-  where it used to be joined — no Qobuz description was captured, since MAI answers first on this rig.
+  description's single `<br>` MAY become its own paragraph row (LBF's rule for a non-hard-wrapped source).
+  **CORRECTED by review 2026-09-24:** it depends on the wrap test — four short `<br>`-separated lines
+  read as hard-wrapped and are JOINED into one paragraph, exactly as before; only lines that end on
+  sentence punctuation (or run past 100 columns) split. No Qobuz description was captured, since MAI
+  answers first on this rig.
 - **`tools/t_prose.pl` (new, 53)** on three CAPTURED MAI payloads (`tools/fixtures/`). Anti-tested nine
   ways — no heading rule (19 red), summary from whole text (1), always-ellipsis dropped (1), branch on
   body length (1), no duplicate marker (2), LBF's 20000 cap (5), old bio key (4), body check off (3),
