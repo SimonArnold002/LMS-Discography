@@ -1,0 +1,34 @@
+[SIZE=4][B]Discography plugin: planned use of api.lms-community.org[/B][/SIZE]
+
+Discography shows an artist's full discography (MusicBrainz release groups), matched to the user's library and streaming services. Today it gets everything from MusicBrainz directly, and it doesn't call your API at all. We'd like to move the heaviest part to your API.
+
+[B]Calls we plan to make[/B]
+
+[TABLE]
+[TR][TH]Route[/TH][TH]Used for[/TH][TH]When it fires[/TH][TH]Calls[/TH][TH]Our cache[/TH][TH]Fallback[/TH][/TR]
+[TR][TD][FONT=courier new]/music/artist/<name>/discography?withReleases=1&mbid=<artist mbid>[/FONT][/TD][TD]The whole discography: release groups, types, dates, bootleg status, and the release→group map (to identify the user's own albums)[/TD][TD]First open of an artist page, or the user pressing Refresh[/TD][TD][B]1 per artist[/B][/TD][TD]14 days per install (plus your 30-day Cloudflare cache)[/TD][TD]MusicBrainz, if the call fails or answers for a different mbid[/TD][/TR]
+[TR][TD][FONT=courier new]/music/artist/<name>/aliases?mbid=<artist mbid>[/FONT][/TD][TD]The artist's canonical name and aliases (searching services under an alias, merging duplicate search results)[/TD][TD]Only for names MusicBrainz gives to several artists, or when merging search results[/TD][TD][B]0–1 per artist[/B][/TD][TD]30 days per install[/TD][TD]MusicBrainz[/TD][/TR]
+[/TABLE]
+
+[B]Volume and behaviour[/B]
+[LIST]
+[*]No background scan or scheduled warm. We only call when a user opens an artist page or searches, so traffic follows browsing.
+[*]A cold artist page is 1–2 calls, and a repeat visit within 14 days is 0. For The Beatles this one call (1,039 groups, 387 KB, 5.0s cold, 0.25s cached) replaces about 40 paginated MusicBrainz requests.
+[*]We always pass the artist mbid (from the user's library tags or our own MusicBrainz lookup), so we don't rely on picking the artist by name.
+[*]What stays on MusicBrainz: name → mbid, band membership, collaborations, same-name artist lists, and release link lists.
+[/LIST]
+
+[B]Limits (modelled on MusicArtistInfo)[/B]
+[LIST]
+[*][FONT=courier new]X-LMS-Plugin-ID: Plugins::Discography::Plugin[/FONT] on every call (via [FONT=courier new]apiHeaders[/FONT] where available).
+[*]One request in flight at a time, with no fixed gap.
+[*]On HTTP 429: back off 5s, doubling to a 30s cap, shared across callers and reset on success. Retries are bounded, after which we fall back to MusicBrainz.
+[*]One request helper, so auth can be added in one place if you introduce it.
+[/LIST]
+
+[B]Three things that would help, if possible (none are required)[/B]
+[LIST=1]
+[*][B]Release-group aliases on each /discography entry[/B], e.g. [FONT=courier new]"aliases": ["Radio-Activity"][/FONT] (as MusicBrainz inc=aliases). We use them to match English service titles to original-language MusicBrainz titles (Kraftwerk [I]Radio‐Aktivität[/I], Big Star [I]3rd[/I]). Without them we keep a slower MusicBrainz request for this.
+[*][B]Release titles in the releases map[/B], e.g. [FONT=courier new]"<release-mbid>": {"status": "Official", "title": "..."}[/FONT]. A user's copy is often titled after a later edition rather than the group's first release, and the titles let us match it. Without them we keep a MusicBrainz release browse, up to 40 pages for a big artist.
+[*][B]An mbid the API doesn't recognise[/B]: when a request's [FONT=courier new]?mbid=[/FONT] isn't found, the API seems to ignore it and look the artist up by name instead. For example, [FONT=courier new]/artist/Madness/discography[/FONT] with an unrecognised mbid returns the ska band's discography, even though the request was for a different Madness. This can happen when a user's files carry an old artist mbid (MusicBrainz merged that artist into another one, and MusicBrainz itself redirects the old id) or a mis-tagged one. We'd find a "not found" answer safer than a different artist. We check the returned mbid either way, so this is only a heads-up.
+[/LIST]
