@@ -70,6 +70,7 @@ because line numbers rot on the next edit.
 | A vanished player id closes the connection with NO log line — reads as a crash, is not one | log | `READS EXACTLY LIKE A SERVER CRASH` |
 | `pref` CLI refused from a Tailscale/CGNAT address, so `acceptance.py`'s first check cannot run remotely | log | `restricted to the local network` |
 | LMS restarts + the `inactive database handle` backtrace are UnifiedHiFi's shutdown, not DSC | log | `were NOT Discography` |
+| Bio/review prose is LBF's parser, with FOUR deliberate divergences (cap, U+2028, duplicate names, 380 cut) and one row per block | A2 | `Bio and review prose is LBF's port` |
 
 **Two standing rules that kill most repeat findings:**
 
@@ -258,6 +259,25 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   shape, different reachability. Do not propose porting a fix to LBF, and do not "align" this one
   back to the reference.
 
+- **Bio and review prose is LBF's port** (`Browse::_cleanBio`, `_bioBlocks`, `_bioParagraphs`,
+  `_proseBlock`, `_proseSection`, `_cleanProse`; Simon, 2026-09-24: *"follow how LBF renders them"*).
+  The subs keep their LBF NAMES — including "bio" on code that also renders the album review — so one
+  grep finds both copies; do not rename them. Each divergence below is deliberate and measured:
+  - **`PROSE_MAX` is 100000, not LBF's `BIO_MAX` 20000.** LBF only renders bios; OK Computer's MAI review
+    is 39,776 chars cleaned and LBF's cap would cut it in half. Still a DoS guard, never a visible trim.
+  - **U+2028/U+2029 map to newlines** (the old `_stripHtml` did; Qobuz descriptions are not HTML-only).
+  - **A duplicate row name gets an HTML comment** (`<!--n-->`): on the My Apps path Material keys a
+    non-playable row by title (0.51.1), and a long review can repeat a sub-heading. LBF has no such guard.
+  - **The collapse point is `REVIEW_SUMMARY_CHARS` (380), Discography's own**, not LBF's 150.
+  - **ONE ROW PER BLOCK is not a row-count defect.** Measured 2026-09-24: OK Computer's review = 73 rows
+    (56 under the old split; the +17 are its headings, previously glued into paragraphs), Lambchop's bio
+    13, Nixon's review 12 — a release page stays under Material's 100-row scroller. LBF tried a single
+    wrapper row (0.9.154) and it did not render on every client. Re-raise only with a real release whose
+    detail page crosses 100 rows.
+  - **No web-skin (Default/Classic) handling** — the fleet web-skin port reaches this repo later
+    (LBF's `_webify`); prose rows were already `<div>` markup on those skins before this change.
+  Pinned in `tools/t_prose.pl` (53, captured MAI fixtures in `tools/fixtures/`).
+
 ### A3. DISPROVEN — a review WILL re-derive these from the code; each was measured
 
 **Why this section exists (Simon, 2026-09-19).** A finding that a review "checked and cleared"
@@ -342,7 +362,7 @@ curl -s http://plex:9000/jsonrpc.js -d '{"id":1,"method":"slim.request","params"
 ```
 Discography/
 ├── Plugin.pm       # OPMLBased entry point (tag 'discography', is_app); prefs; canonical `dbg` (API/Browse/Sources delegate); Material custom-action merge-write/clear; Settings under WEBUI; registers the `imageproxy/dsc/artist/<name>` artwork handler
-├── Browse.pm       # topLevel ($VAR guard, %lastCtx stash+expand flags+page counts+visibility snapshot); app-root view (_rootView: _coverCollageRow responsive random-album-cover banner, About prose, search section, "Works best with" live plugin-status badge rows w/ badgeSrc imageproxy normaliser); global artist search (_searchRow type=search item in the app root + Options section, go action overridden w/ search:__TAGGEDINPUT__ fixedParams -> topLevel search-param dispatch GATED on item_id being absent, so a positional walk still reaches the row's own coderef; _artistSearchView w/ 10-min merged cache, only written when every source settled OK, _searchResultRow name-drills); grouped list (bio header, Options/type/library-extras sections, sort+Refresh, _pageSection 30-at-a-time Show more/less, "Also a member of" band links + "Similar artists" name-drill links w/ artist-photo thumbnails, both second-load, similar deduped against bands by _dropBandDupes — Material keys app rows by TITLE, so a repeated name loses a row); artist artwork resolver (artistImageProxy handler for `imageproxy/dsc/artist/<name>`: MAI local files -> MAI online picture w/ Deezer placeholder HEAD probe -> live service photo -> person icon, verdict cached 30d); release detail (review w/ inline expand, version rows w/ Show-other-versions toggle, MB links); _proseRow avatar-column indent
+├── Browse.pm       # topLevel ($VAR guard, %lastCtx stash+expand flags+page counts+visibility snapshot); app-root view (_rootView: _coverCollageRow responsive random-album-cover banner, About prose, search section, "Works best with" live plugin-status badge rows w/ badgeSrc imageproxy normaliser); global artist search (_searchRow type=search item in the app root + Options section, go action overridden w/ search:__TAGGEDINPUT__ fixedParams -> topLevel search-param dispatch GATED on item_id being absent, so a positional walk still reaches the row's own coderef; _artistSearchView w/ 10-min merged cache, only written when every source settled OK, _searchResultRow name-drills); grouped list (bio header, Options/type/library-extras sections, sort+Refresh, _pageSection 30-at-a-time Show more/less, "Also a member of" band links + "Similar artists" name-drill links w/ artist-photo thumbnails, both second-load, similar deduped against bands by _dropBandDupes — Material keys app rows by TITLE, so a repeated name loses a row); artist artwork resolver (artistImageProxy handler for `imageproxy/dsc/artist/<name>`: MAI local files -> MAI online picture w/ Deezer placeholder HEAD probe -> live service photo -> person icon, verdict cached 30d); release detail (review w/ inline expand, version rows w/ Show-other-versions toggle, MB links); _proseRow avatar-column indent; bio/review prose ported from LBF (_cleanBio HTML->structure, _bioParagraphs heading/bullet/paragraph parser, _proseBlock one styled row per block, _proseSection shared collapse/expand shape, _cleanProse the one fetch-side entry point)
 ├── API.pm          # Async MusicBrainz (base = mb_base_url pref, mirror-aware _mbBase/_mbGap): artist MBID (library tag first, MB search score>=90), paginated release-group browse, url-rels links; filterRowsWithContent (dead-end/empty-verdict row filter + alias fold, then the 0.51.3 tag attach: a kept row with no artist_id is claimed by its resolved mbid — AFTER the fold, so survivor choice is unchanged; among several tagged contributors the one OWNING the most albums wins, and an id another kept row already carries is never handed to a second row); peekOfficial/warmOfficial/clearOfficial + _isOfficial (bootleg filter: artist-wide status pass -> {rg=>official?} + {release=>rg} maps, fail-open); peekLocalReleaseMap/warmLocalReleases (targeted release->rg for library albums); peekBands/warmBandMembers (member-of-band); CAA image URLs; caching
 ├── Sources.pm      # Source engine: Q/T/D adapters (artist-FIRST candidate fetch, per-adapter query_enc, shared _renderAlbums + _albumArray envelope unwrap), Local pseudo-source (sync albums query, db:album.id play; localAlbums resolves IDENTITY FIRST — localArtistsByMbid/localArtistIdsByMbid read the library's own Contributor.musicbrainz_id tag, ALL matching contributors, before the name ladder; an explicit artist_id still outranks both UNLESS it performs on no album and the page builder opts in via `Browse::_idFallback` — then tag, then name, name never on a shared-name page); localTracks (the track-link pool: Various Artists compilation tracks ONLY, performance roles checked on the per-role ids from `tags:S` because `titles` ignores role_id, same empty-id fallback gated on owning no album), matcher (fleet-synced), matchesFor/peekPool+peekMatches/claimedLocalIds, LL favurl handshake; global artist search (searchArtists parallel per-service artist-type legs + Local CLI leg, cb(\%bySvc, \%failed) — the 2nd arg names services that ERRORED/TIMED OUT, since a failure settles as an empty list and callers must not persist an incomplete set; mergeArtistHits pure norm-keyed dedupe/rank + relevance gate vs the typed query, rows carry the service's own artist photo); artistImage/_svcArtistImage/isPlaceholderImage (live per-service artist photo via each plugin's OWN url builder, priority order; an exact-name photo ends the walk, a token-subset photo is only a fallback when NO service knows the exact name, and an exact entity without a photo vetoes it; Deezer placeholders in both forms, md5('') and the empty `/images/artist//` hash; 30d cache); serviceStatus takes an OPTIONAL pre-built adapters list (omitted = probe); randomAlbumCovers (app-root banner, sort:random — measured ~20ms/2900 albums, cheap)
 ├── Settings.pm     # Web settings: source priorities (detection), view options (type checkboxes->CSV), release page, integration
@@ -953,6 +973,47 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   likewise deliberately LBF-only and outside the shared engine.
 
 ## Development Log
+
+### 0.51.19 (2026-09-24) — bio and review prose rendered the LBF way — BUILT, NOT installed
+- Zip sha1 `46fe5832d1f392f32d876e5aa6b38bcc7b93b389`; CACHE_VERSION 0.51.19 in all three modules
+  (clears every Discography cache on install). No repo.xml yet (pre-release).
+- **Simon: port LBF's bio/review rendering, "significant work to make it more legible and work across
+  mobile and desktop".** Measured before touching code: MAI returns BOTH the biography and the album
+  review as Wikipedia HTML (`<link>` stylesheet, `<p>`, `<h2>`/`<h3>`, `<ul><li>`, inline `<a>`, a
+  trailing `<h4>More online sources</h4>` over a link list). The old `_stripHtml` kept none of it —
+  run on the live Lambchop bio it produced `Description and historyInitially formed as a three
+  piece…`, `Personal livesSinger Kurt Wagner…`, and a last paragraph of `(Source: Wikipedia)More online
+  sourcesAllMusicAppleBandcampDeezer…`. Nixon's and OK Computer's reviews: the same.
+- **Ported** (names kept, see A2 `Bio and review prose is LBF's port`): `_cleanBio` (headings -> setext
+  blocks, `<li>` -> bullets, inline links unwrapped, link-only list items dropped, `\b` on `<li` so MAI's
+  `<link>` is not a bullet), the parser `_bioHardWrapped`/`_bioLooksLikeHeading`/`_bioBullet`/`_bioBlocks`/
+  `_bioParagraphs`, and `_proseBlock` (headings `font-weight:bold`, never `<b>`; bullets with a hanging
+  indent; 72px avatar-column indent kept).
+- **New, Discography-side:** `_proseSection` renders BOTH sections so their shapes cannot drift — whole
+  text <=380 chars inline with no toggle, else a summary built from the BODY blocks (never the raw text:
+  setext underlines would show as dashes) + Read more, or every block + Show less. `_cleanProse` is the
+  one fetch-side entry point for the MAI bio, the MAI review and the Qobuz fallback; it returns undef
+  when nothing but headings is left, so a links-only MAI answer falls back to Qobuz instead of drawing a
+  lone bold "More online sources". `_stripHtml` deleted (no other caller).
+- **Cache keys `dsc:bio:1` -> `2`, `dsc:rev:1` -> `2`** (and `API::clearArtistCache`'s bio key with it):
+  the cached text is the CLEANED shape. Belt and braces — every build bumps `CACHE_VERSION`, which clears
+  the namespace anyway.
+- **Every carrier checked:** three fetch sites, two render sites, the one cache-clear, the two
+  `%lastCtx` toggle flags (unchanged), the section headers' kid lists (unchanged), row counts vs Material's
+  100-row scroller (measured, see A2), the duplicate-title collision (guarded), the Qobuz path
+  (`Sources::_decorate` `_desc`, the only writer). **Behaviour change, unmeasured live:** a Qobuz
+  description's single `<br>` now becomes its own paragraph row (LBF's rule for a non-hard-wrapped source)
+  where it used to be joined — no Qobuz description was captured, since MAI answers first on this rig.
+- **`tools/t_prose.pl` (new, 53)** on three CAPTURED MAI payloads (`tools/fixtures/`). Anti-tested nine
+  ways — no heading rule (19 red), summary from whole text (1), always-ellipsis dropped (1), branch on
+  body length (1), no duplicate marker (2), LBF's 20000 cap (5), old bio key (4), body check off (3),
+  bare `<b>` heading (4); control green. **One vacuous assertion caught by that run:** Lambchop's first
+  380 chars hold no heading, so the summary test could not tell body from whole — a Nixon-shaped case was
+  added. All 34 suites green; `syntax_check.sh` clean. No matcher sub touched.
+- **LIVE VERIFY AFTER INSTALL** (needs `show_bio` ON — it is off on the rig): Lambchop's page, Read more
+  -> "Description and history" / "Personal lives" / "Personnel" as bold lines, no link list at the end.
+  Nixon's release page -> Read full review -> four bold section titles. Check on the phone as well as
+  the desktop.
 
 ### 0.51.18 (2026-09-20) — a MusicBrainz 503 is TWO different things — BUILT + INSTALLED 2026-09-24, pushed to dev
 - **Field (Simon's acceptance run).** With `mb_base_url` pointed at the public API, cold artist pages

@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.18';
+use constant CACHE_VERSION => '0.51.19';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -338,6 +338,366 @@ sub _proseRow {
               . _escHtml($text) . '</div>',
         type => 'text',
     };
+}
+
+# ---------------------------------------------------------------------------
+# BIO / REVIEW PROSE — PORTED FROM LBF (ListenBrainzFreshReleases, 1.0.x).
+#
+# `_cleanBio` (LBF API.pm) and `_bioHardWrapped` / `_bioLooksLikeHeading` /
+# `_bioBullet` / `_bioBlocks` / `_bioParagraphs` / `_proseBlock` (LBF Browse.pm)
+# are copied with their LBF NAMES KEPT, so a fix on either side can be found
+# with one grep across the two repos. LBF's ledger holds the history behind each
+# rule (0.9.150-0.9.157, 1.0.13); the comments below keep the reasons that bite.
+# They run for the MAI album review and the Qobuz description too, not just the
+# bio — the "bio" in the names is LBF's.
+#
+# MEASURED on the live server before porting (2026-09-24): MAI hands BOTH the
+# biography and the albumreview over as Wikipedia HTML — `<link>` stylesheet,
+# <p>, <h2>/<h3>, <ul><li>, inline <a>, and a trailing "More online sources"
+# <h4> over a list of links. The old `_stripHtml` kept none of that: every
+# section title was glued to the paragraph after it ("Description and
+# historyInitially formed ...") and the link list ended the text as one run
+# ("(Source: Wikipedia)More online sourcesAllMusicAppleBandcamp...").
+#
+# DIVERGENCES FROM LBF, each deliberate:
+#   * PROSE_MAX is 100000, not LBF's BIO_MAX 20000. LBF only ever sees bios;
+#     a review is far longer — OK Computer's is 39,776 chars cleaned, which
+#     LBF's cap would have cut in half. Still a DoS guard, never a visible trim.
+#   * `_cleanBio` also maps U+2028/U+2029 to newlines (the old `_stripHtml` did,
+#     and Qobuz descriptions are not HTML-only).
+#   * `_proseBlock` makes a DUPLICATE row name unique (see there); it carries no
+#     `_lbfProse` tag, because Discography has no web-skin pass to read one.
+#   * The collapse threshold is REVIEW_SUMMARY_CHARS (380), Discography's own,
+#     not LBF's BIO_PREVIEW (150). PROSE_REGROUP_MIN keeps LBF's 150 for the
+#     one-long-chunk regroup rule, which is a different decision.
+# ---------------------------------------------------------------------------
+use constant PROSE_MAX         => 100000;  # pure DoS guard; never trims a real text
+use constant PROSE_REGROUP_MIN => 150;     # LBF BIO_PREVIEW, in its _bioParagraphs role
+use constant PROSE_BULLET_IND  => '1.2em'; # hanging indent for a wrapped bullet
+
+# HTML -> plain text that KEEPS the structure `_bioBlocks` parses: a heading
+# becomes a setext block ("title\n----------"), a list item a "* " bullet, a
+# block element a blank line. Entities are DECODED, so the text must be escaped
+# again wherever it is put into markup (`_proseRow` / `_proseBlock` do).
+sub _cleanBio {
+    my ($s) = @_;
+    return '' unless defined $s && length $s;
+    # LINKS: DELETE ONLY WHERE THE LINK IS THE WHOLE POINT, UNWRAP EVERYWHERE ELSE.
+    # Wikipedia HTML is full of INLINE links inside sentences; a blanket delete
+    # removes words mid-sentence. Order matters:
+    #   1. a list item that is NOTHING BUT a link is a link list (MAI's "More
+    #      online sources"), so the item goes — the heading left trailing over
+    #      nothing is then dropped by _bioParagraphs;
+    #   2. Last.fm's trailing link goes, matched on its own text;
+    #   3. anything still standing is an inline link. Unwrap it.
+    # [^<]* IS LOAD-BEARING (not `.*?`): a lazy match still grows, crossed
+    # </li><li> under /s and deleted every item between two links (LBF 0.9.160).
+    $s =~ s{<li\b[^>]*>\s*<a\b[^>]*>[^<]*</a>\s*</li>}{}gis;
+    $s =~ s{<a\b[^>]*>\s*Read more on Last\.fm\s*</a>}{}gis;
+    $s =~ s{<a\b[^>]*>(.*?)</a>}{$1}gis;
+    # Any element the removals above emptied would otherwise become a bare bullet
+    # or a blank paragraph.
+    $s =~ s{<(li|p)[^>]*>\s*</\1>}{}gis;
+    $s =~ s/\s*\.?\s*User-contributed text is available.*$//is;  # Last.fm CC boilerplate
+    # STRUCTURE FIRST, TAGS SECOND: a heading becomes a SETEXT block, the shape
+    # _bioBlocks already detects in plain-text sources.
+    $s =~ s{<h[1-6][^>]*>\s*(.*?)\s*</h[1-6]>}{"\n\n$1\n" . ('-' x 10) . "\n\n"}gise;
+    # \b IS LOAD-BEARING: without it `<li[^>]*>` also matches the `<link rel=…>`
+    # stylesheet MAI prepends, turning it into a stray bullet.
+    $s =~ s{<li\b[^>]*>}{\n* }gis;     # list items -> the bullet _bioBullet knows
+    $s =~ s{</(?:p|div|ul|ol|li|tr|blockquote|section)>}{\n\n}gis;
+    $s =~ s{<br\s*/?>}{\n}gis;
+    # Remaining tags are INLINE (<b>, <i>, <span>, <link>), so they vanish rather
+    # than becoming a space ("Lambchop , originally Posterchild ,").
+    $s =~ s/<[^>]+>//g;
+    $s =~ s/&amp;/&/gi;
+    $s =~ s/&lt;/</gi;
+    $s =~ s/&gt;/>/gi;
+    $s =~ s/&quot;/"/gi;
+    $s =~ s/&#0?39;|&apos;/'/gi;
+    $s =~ s/&[a-z]+;/ /gi;             # any remaining named entity (&nbsp; ...)
+    $s =~ s/\x{2028}|\x{2029}/\n/g;    # Discography-only: see the header
+    $s =~ s/[ \t]+/ /g;                # collapse spaces/tabs, but keep newlines
+    $s =~ s/ *\n */\n/g;
+    $s =~ s/^[*\x{2022}]\s*$//gm;      # a marker whose item emptied above
+    $s =~ s/\n{3,}/\n\n/g;             # at most one blank line between paragraphs
+    $s =~ s/^\s+|\s+$//g;
+    if (length $s > PROSE_MAX) {
+        $s = substr($s, 0, PROSE_MAX);
+        $s =~ s/\s+\S*$//;             # back off to a word boundary
+        $s .= "\x{2026}";
+    }
+    return $s;
+}
+
+# One styled text row per block — LBF's `_proseBlock`, on Discography's own
+# 72px avatar-column indent (which LBF originally copied from here).
+#
+# ONE ROW PER BLOCK, NOT ONE WRAPPER ROW. LBF tried a single row with its own
+# typography (0.9.154) and it did not render as intended on every client; this
+# shape demonstrably does, on desktop and iOS. The row-count hazard (Material's
+# 100-item fixed-height scroller draws a tall row over the next) is governed by
+# PARSING, not by the shape: measured 2026-09-24, OK Computer's review is 73
+# blocks (56 rows under the old split — the extra 17 are its headings, which
+# used to be glued into paragraphs), Lambchop's bio 13, Nixon's review 12.
+#
+# HEADINGS USE AN EXPLICIT WEIGHT, NEVER A BARE <b>: Material's row title is
+# `font-weight:200 !important`, and `bolder` from 200 lands on 400 — identical
+# to the body on a desktop font stack without a 200 face (LBF 0.9.155).
+#
+# DUPLICATE NAMES ARE MADE UNIQUE. On the My Apps path Material keys a
+# NON-playable row by `parent.id + "." + title` and renders `:key="item.id"`,
+# so two identical rows on one level show as ONE (Discography 0.51.1, the
+# Zappa "Mothers of Invention" row). A review can repeat a sub-heading
+# ("Personnel" under two sections). An HTML comment changes the title and
+# renders as nothing.
+sub _proseBlock {
+    my (@paras) = @_;
+    return () unless @paras;
+
+    my (@rows, %seen);
+    for my $p (map { ref $_ ? $_ : { text => $_, heading => 0, bullet => 0 } } @paras) {
+        my $text  = _escHtml($p->{text});
+        my $style = 'margin-left:' . PROSE_INDENT;
+
+        if ($p->{heading}) {
+            $style .= ';font-weight:bold';
+        }
+        elsif ($p->{bullet}) {
+            $style .= ';padding-left:' . PROSE_BULLET_IND
+                    . ';text-indent:-'  . PROSE_BULLET_IND;
+            $text   = "\x{2022}\x{00A0}$text";
+        }
+        my $name = "<div style='$style'>$text</div>";
+        my $dup  = $seen{$name}++;              # 0 on first sight, then 1, 2, ...
+        $name   .= "<!--$dup-->" if $dup;
+        push @rows, { name => $name, type => 'text' };
+    }
+    return @rows;
+}
+
+# Is this text HARD-WRAPPED at a fixed column, rather than carrying deliberate
+# line breaks? A plain-text render (MAI's non-HTML output) wraps at ~72 columns
+# with setext headings; prose sources never column-wrap, so a lone "\n" there IS
+# a break. TWO signals, BOTH required — no line past BIO_WRAP_MAX_COL, and more
+# than half the non-final lines ending mid-sentence — plus a floor of
+# BIO_WRAP_MIN_LINES. A false positive costs one joined paragraph, never a
+# broken render.
+use constant BIO_WRAP_MAX_COL   => 100;
+use constant BIO_WRAP_MIN_LINES => 4;
+sub _bioHardWrapped {
+    my ($lines) = @_;
+    my @l = grep { length } @$lines;
+    return 0 if @l < BIO_WRAP_MIN_LINES;
+
+    my $mid = 0;
+    for my $i (0 .. $#l) {
+        return 0 if length($l[$i]) > BIO_WRAP_MAX_COL;
+        $mid++ if $i < $#l && $l[$i] !~ /[.!?:;\x{2026}]$/;
+    }
+    return $mid * 2 > $#l ? 1 : 0;
+}
+
+# A section heading that carries NO underline: ONE source line, well short of
+# the wrap column, not ending on sentence punctuation (':' allowed —
+# "Discography:" is a heading). ONLY SOUND ON A HARD-WRAPPED SOURCE, which is
+# why _bioBlocks gates it on that; bullets are excluded by the caller.
+use constant BIO_HEADING_MAX_COL => 80;
+
+# How many CONSECUTIVE bare-line headings mean "this is a list, not a stack of
+# section titles" — see _bioParagraphs.
+use constant BIO_HEADING_RUN_MAX => 3;
+sub _bioLooksLikeHeading {
+    my ($lines) = @_;
+    return 0 unless @$lines == 1;
+    return 0 if length($lines->[0]) > BIO_HEADING_MAX_COL;
+    return $lines->[0] =~ /[.!?;,]$/ ? 0 : 1;
+}
+
+# A LIST ITEM: "*", a real bullet, a middot, a dash or an en dash, followed by
+# REQUIRED whitespace (so a hyphenated word cannot open a list). Returns
+# ($marker, $text) so _bioBlocks can demand a neighbour for a dash — a hard wrap
+# can push a dashed parenthetical to column 0, which is not a list.
+sub _bioBullet {
+    my ($line) = @_;
+    return unless $line =~ /^([*\x{2022}\x{00B7}\-\x{2013}])\s+(\S.*)$/;
+    return ($1, $2);
+}
+
+# THE ONE STRUCTURE PARSER. Returns { text, heading, bullet, setext } per block.
+#
+# $wrapped (from _bioHardWrapped) changes exactly two things, and NOTHING else
+# may be made conditional on it: how a lone newline is read (a wrap artefact to
+# rejoin, or a real break), and whether a bare short line may be promoted to a
+# heading. A SETEXT UNDERLINE IS UNAMBIGUOUS IN ANY SOURCE — always consumed,
+# and it may reach BACKWARDS to the block already pushed (LBF 0.9.153).
+sub _bioBlocks {
+    my ($bio, $wrapped) = @_;
+
+    my @lines = split /\n/, ($bio // ''), -1;
+    s/^\s+|\s+$//g for @lines;
+
+    # CORROBORATION PRE-PASS: "*", a bullet and a middot open a list on their
+    # own; a dash only when a neighbouring non-blank line is marked too.
+    # `my ($mk) = ...`, NOT `(_bioBullet($_))[0]`: a slice of an empty list is
+    # an empty list, and every index after an unmarked line would shift.
+    my @marker = map { my ($mk) = _bioBullet($_); $mk } @lines;
+    my @isBullet;
+    for my $i (0 .. $#lines) {
+        next unless defined $marker[$i];
+        if ($marker[$i] =~ /^[*\x{2022}\x{00B7}]$/) { $isBullet[$i] = 1; next }
+        for my $j (grep { $_ >= 0 && $_ <= $#lines } ($i - 1, $i + 1)) {
+            next unless length $lines[$j];
+            $isBullet[$i] = 1 if defined $marker[$j];
+        }
+    }
+
+    my (@out, @cur, $bullet);
+    my $flush = sub {
+        my ($underlined) = @_;
+        if (!@cur) {
+            # An underline with nothing pending marks the block it followed.
+            if ($underlined && @out && !$out[-1]{bullet}) {
+                $out[-1]{heading} = 1;
+                $out[-1]{setext}  = 1;
+            }
+            return;
+        }
+        my $text = join(' ', @cur);
+        $text =~ s/\s+/ /g;
+        $text =~ s/^\s+|\s+$//g;
+        # `setext` records WHY a block is a heading: the source's own mark, as
+        # opposed to the bare-line inference. _bioParagraphs acts on the difference.
+        push @out, {
+            text    => $text,
+            bullet  => $bullet ? 1 : 0,
+            setext  => (!$bullet && $underlined) ? 1 : 0,
+            heading => (!$bullet
+                        && ($underlined || ($wrapped && _bioLooksLikeHeading(\@cur))))
+                       ? 1 : 0,
+        } if length $text;
+        @cur    = ();
+        $bullet = 0;
+    };
+    for my $i (0 .. $#lines) {
+        my $line = $lines[$i];
+        if ($line =~ /^[-=_~*]{3,}$/) { $flush->(1); next }
+        if (!length $line)            { $flush->(0); next }
+
+        if ($isBullet[$i]) {
+            $flush->(0);          # a marker always opens a new block
+            $bullet = 1;
+            (undef, $line) = _bioBullet($line);
+        }
+        push @cur, $line;
+        # Unwrapped: the newline that ends this line is the author's, so close.
+        # Wrapped: it is the renderer's, so the next line joins on.
+        $flush->(0) unless $wrapped;
+    }
+    $flush->(0);
+    return @out;
+}
+
+# Split cleaned text into display blocks: structure from _bioBlocks (NEVER gated
+# on the wrap test), then three corrections — a run of bare-line "headings" is a
+# list, a document of nothing but inferred headings was misread, and a trailing
+# SETEXT heading with nothing under it goes (MAI's "More online sources"). If
+# all that yields ONE long chunk, sentences are regrouped — presentation only.
+use constant BIO_SENTENCES_PER_PARA => 3;
+sub _bioParagraphs {
+    my ($bio) = @_;
+    $bio //= '';
+
+    my @lines = map { my $t = $_; $t =~ s/^\s+|\s+$//g; $t } split /\n/, $bio, -1;
+    my @paras = _bioBlocks($bio, _bioHardWrapped(\@lines));
+
+    # A RUN OF CONSECUTIVE BARE-LINE HEADINGS IS A LIST. A setext heading is the
+    # source's own mark and is never second-guessed; only inferences are demoted.
+    my $i = 0;
+    while ($i < @paras) {
+        if ($paras[$i]{heading} && !$paras[$i]{setext}) {
+            my $j = $i;
+            $j++ while $j < @paras && $paras[$j]{heading} && !$paras[$j]{setext};
+            $paras[$_]{heading} = 0 for ($j - $i >= BIO_HEADING_RUN_MAX) ? ($i .. $j - 1) : ();
+            $i = $j;
+        }
+        else { $i++ }
+    }
+
+    # NOTHING BUT (inferred) HEADINGS = misread; demote. Each grep bound to its
+    # own scalar — `grep BLOCK LIST` slurps what follows it.
+    my $bodyCount   = scalar grep { !$_->{heading} } @paras;
+    my $setextCount = scalar grep {  $_->{setext}  } @paras;
+    if (@paras && !$bodyCount && !$setextCount) {
+        $_->{heading} = 0 for @paras;
+        $bodyCount = scalar @paras;
+    }
+
+    # A heading with nothing under it is not a section. TWO FLOORS: only while
+    # some body remains (else Read more would open an empty section), and only a
+    # SETEXT heading (deleting on an inference is what lost LBF's discography).
+    pop @paras while $bodyCount && @paras && $paras[-1]{heading} && $paras[-1]{setext};
+
+    return @paras if @paras != 1
+                  || $paras[0]{heading}
+                  || $paras[0]{bullet}
+                  || length $paras[0]{text} <= PROSE_REGROUP_MIN;
+
+    # Break after . ! ? when the next sentence opens like one (capital or an
+    # opening quote); a stray split only shifts a boundary.
+    my @sent = split /(?<=[.!?])\s+(?=["'\x{201C}\x{2018}(]?[A-Z\x{00C0}-\x{00DE}])/, $paras[0]{text};
+    return @paras if @sent < 2;
+
+    my @out;
+    while (@sent) {
+        my @chunk = splice(@sent, 0, BIO_SENTENCES_PER_PARA);
+        push @out, { text => join(' ', @chunk), heading => 0, bullet => 0, setext => 0 };
+    }
+    return @out;
+}
+
+# Does cleaned text carry anything worth a section? A MAI answer can be nothing
+# but the "More online sources" link list: cleaned, that is one setext heading
+# and no body, which _bioParagraphs keeps (its floor) and would render as a lone
+# bold title. Treated as NO text at fetch time, so the review falls back to
+# Qobuz and neither section is drawn over an empty body.
+sub _proseHasBody {
+    my ($text) = @_;
+    return 0 unless defined $text && length $text;
+    return scalar(grep { !$_->{heading} } _bioParagraphs($text)) ? 1 : 0;
+}
+
+# The rows for a bio or review, and whether it needs a Read more / Show less
+# toggle. Shared by both sections so their shapes cannot drift apart.
+#
+#   * Whole text <= REVIEW_SUMMARY_CHARS: every block, inline, no toggle. A lone
+#     plain paragraph is one `_proseRow` (no structure to style).
+#   * Longer, expanded: every block (`_proseBlock`); caller adds Show less.
+#   * Longer, collapsed: ONE summary row; caller adds Read more.
+#
+# THE SUMMARY IS BUILT FROM THE PARSED BODY BLOCKS, NOT THE RAW TEXT. The raw
+# text carries setext underlines ("title\n----------") that collapsing
+# whitespace would leave in the summary as literal hyphens (LBF 1.0.x). BRANCH
+# SELECTION still measures the WHOLE text: measuring the body alone would send a
+# long text that is mostly headings down the inline branch.
+sub _proseSection {
+    my ($text, $expanded) = @_;
+    my @paras = _bioParagraphs($text);
+    return ([], 0) unless @paras;
+
+    my $whole = join(' ', map { $_->{text} } @paras);
+    if (length $whole <= REVIEW_SUMMARY_CHARS) {
+        return ([ (@paras == 1 && !$paras[0]{heading} && !$paras[0]{bullet})
+                    ? _proseRow($paras[0]{text})
+                    : _proseBlock(@paras) ], 0);
+    }
+    return ([ _proseBlock(@paras) ], 1) if $expanded;
+
+    my $body = join(' ', map { $_->{text} } grep { !$_->{heading} } @paras);
+    my ($summary, $cut) = _reviewSummary(length $body ? $body : $whole);
+    # This branch means more follows even when the body alone fit.
+    $summary .= " \x{2026}" unless $cut;
+    return ([ _proseRow($summary) ], 1);
 }
 
 # A section-header divider (walk-stable: emitted whenever its rows exist, only
@@ -1257,7 +1617,8 @@ sub _fetchArtistBio {
 
     unless (defined $artist && length $artist) { $cb->(undef); return }
 
-    my $key = 'dsc:bio:1:' . lc $artist;
+    # v2 (2026-09-24): the cached text is `_cleanBio` output — see _fetchAlbumReview.
+    my $key = 'dsc:bio:2:' . lc $artist;
     utf8::encode($key) if utf8::is_utf8($key);
     if (defined(my $c = _cacheGetText($key))) {
         $cb->(length $c ? $c : undef);
@@ -1284,7 +1645,7 @@ sub _fetchArtistBio {
             for my $it (@$items) {
                 next unless ref $it eq 'HASH';
                 my $t = $it->{name};
-                if (defined $t && length $t) { $text = _stripHtml($t); last }
+                if (defined(my $c = _cleanProse($t))) { $text = $c; last }
             }
             _dbg("bio '$artist': " . (defined $text ? 'len=' . length $text : 'empty'));
             _cacheSetText($key, $text, (defined $text && length $text) ? BIO_FOUND_TTL : BIO_EMPTY_TTL);
@@ -1926,24 +2287,14 @@ sub _buildList {
     # Artist bio at the very top (the phase-2 artist-view vision, list-native):
     # summary + the same refresh-toggle inline expand the review uses. Awaited
     # in _discographyView, so its row count is fixed for the whole visit.
+    # Rows come from _proseSection (LBF's parser — headings, bullets, paragraphs).
     my @bioRows;
     if (defined $bio && length $bio) {
         my $akey     = lc($opts->{artist} // '');
         my $expanded = $lastCtx{ _cid($client) }{bio}{$akey};
-        my ($summary, $truncated) = _reviewSummary($bio);
+        my ($prose, $truncated) = _proseSection($bio, $expanded);
+        push @bioRows, @$prose;
         if ($expanded && $truncated) {
-            # A setext-underlined section title ("Description and history" over a row
-            # of dashes) is ONE block here, so collapsing whitespace ran the dashes
-            # onto the end of the title. Drop the underline and render the title bold
-            # instead — it is the only thing the underline was ever there to say.
-            push @bioRows,
-                map {
-                    my $t    = $_;
-                    my $head = $t =~ s/\n[-=_~*]{3,}[ \t]*$//s ? 1 : 0;
-                    $t =~ s/\s+/ /g;
-                    _proseRow($t, $head ? ';font-weight:bold' : undef);
-                }
-                grep { /\S/ } split /\n{2,}/, $bio;
             push @bioRows, {
                 name        => cstring($client, 'PLUGIN_DISCOGRAPHY_SHOW_LESS'),
                 type        => 'link',
@@ -1960,7 +2311,6 @@ sub _buildList {
             };
         }
         else {
-            push @bioRows, _proseRow($summary);
             if ($truncated) {
                 push @bioRows, {
                     name        => cstring($client, 'PLUGIN_DISCOGRAPHY_READ_MORE'),
@@ -3459,24 +3809,22 @@ sub _displayType {
 # a cached '' means "confirmed none" (don't re-ask every open).
 # ---------------------------------------------------------------------------
 
-sub _stripHtml {
-    my $s = shift // '';
-    $s =~ s/<br\s*\/?>/\n/gi;
-    $s =~ s/<\/p>/\n\n/gi;
-    $s =~ s/<[^>]+>//g;
-    $s =~ s/&amp;/&/g;  $s =~ s/&quot;/"/g; $s =~ s/&#?39;|&apos;/'/g;
-    $s =~ s/&lt;/</g;   $s =~ s/&gt;/>/g;   $s =~ s/&nbsp;/ /g;
-    $s =~ s/\x{2028}|\x{2029}/\n/g;
-    $s =~ s/[ \t]+/ /g; $s =~ s/ *\n */\n/g;
-    $s =~ s/\n{3,}/\n\n/g;
-    $s =~ s/^\s+|\s+$//g;
-    return $s;
+# Raw MAI/Qobuz text -> cleaned prose (see `_cleanBio`), or undef when nothing
+# worth a section is left (`_proseHasBody`). The ONE entry point for all three
+# fetch sites, so a MAI answer and a Qobuz description are judged the same way.
+sub _cleanProse {
+    my ($raw) = @_;
+    return undef unless defined $raw && !ref $raw && length $raw;
+    my $text = _cleanBio($raw);
+    return _proseHasBody($text) ? $text : undef;
 }
 
 sub _fetchAlbumReview {
     my ($client, $artist, $album, $rgMbid, $sections, $cb) = @_;
 
-    my $key = 'dsc:rev:1:' . $rgMbid;
+    # v2 (2026-09-24): the cached text is `_cleanBio` output (setext headings,
+    # bullets) — v1 held the old flattened `_stripHtml` shape.
+    my $key = 'dsc:rev:2:' . $rgMbid;
     if (defined(my $c = _cacheGetText($key))) {
         $cb->(length $c ? $c : undef);   # '' = confirmed none
         return;
@@ -3488,7 +3836,7 @@ sub _fetchAlbumReview {
             ($desc) = grep { defined && length } map { $_->{_desc} } @{ $sec->{items} };
             last if $desc;
         }
-        $desc = _stripHtml($desc) if defined $desc;
+        $desc = _cleanProse($desc);
         _cacheSetText($key, $desc, (defined $desc && length $desc) ? REVIEW_FOUND_TTL : REVIEW_EMPTY_TTL);
         $cb->( (defined $desc && length $desc) ? $desc : undef );
     };
@@ -3515,7 +3863,7 @@ sub _fetchAlbumReview {
             for my $it (@$items) {
                 next unless ref $it eq 'HASH';
                 my $t = $it->{name};
-                if (defined $t && length $t) { $text = _stripHtml($t); last }
+                if (defined(my $c = _cleanProse($t))) { $text = $c; last }
             }
             if (defined $text && length $text) {
                 _dbg("review '$album': MAI len=" . length $text);
@@ -3596,18 +3944,15 @@ sub _releaseDetail {
         # "Read full review" is a REFRESH TOGGLE: it flips a per-release flag
         # in the player ctx and returns nextWindow=>'refresh' — Material
         # re-fetches this same view, which now renders the full text inline
-        # (one text row per PARAGRAPH, split on blank lines only, single
-        # newlines collapsed so rows wrap cleanly — LBF's full-bio recipe)
-        # with everything below pushed down; "Show less" flips it back.
-        # Walk-safe: the flag only changes via these toggle rows, and each
-        # flip immediately re-renders the very view whose shape it changes.
+        # (_proseSection: LBF's parser, one styled row per heading/bullet/
+        # paragraph) with everything below pushed down; "Show less" flips it
+        # back. Walk-safe: the flag only changes via these toggle rows, and
+        # each flip immediately re-renders the very view whose shape it changes.
         if (defined $review && length $review) {
             my $expanded = $lastCtx{ _cid($client) }{rev}{ $rg->{mbid} };
-            my ($summary, $truncated) = _reviewSummary($review);
+            my ($prose, $truncated) = _proseSection($review, $expanded);
+            push @rows, @$prose;
             if ($expanded && $truncated) {
-                push @rows,
-                    map { (my $t = $_) =~ s/\s+/ /g; _proseRow($t) }
-                    grep { /\S/ } split /\n{2,}/, $review;
                 push @rows, {
                     name        => cstring($client, 'PLUGIN_DISCOGRAPHY_SHOW_LESS'),
                     type        => 'link',
@@ -3624,7 +3969,6 @@ sub _releaseDetail {
                 };
             }
             else {
-                push @rows, _proseRow($summary);
                 if ($truncated) {
                     push @rows, {
                         name        => cstring($client, 'PLUGIN_DISCOGRAPHY_FULL_REVIEW'),

@@ -57,7 +57,7 @@ my $prefs = preferences('plugin.discography');
 # instance for a namespace and ignores later args). tools/syntax_check.sh
 # asserts all three agree and match install.xml.
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.18';
+use constant CACHE_VERSION => '0.51.19';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 # MB's canonical artist name, remembered in-process as well as cached — the
@@ -2251,7 +2251,7 @@ sub clearArtistCache {
     my @cleared;
     if (defined $name && length $name) {
         $class->clearArtistMbid($name);
-        my $bk = 'dsc:bio:1:' . lc $name;
+        my $bk = 'dsc:bio:2:' . lc $name;   # Browse::_fetchArtistBio's key — keep in step
         utf8::encode($bk) if utf8::is_utf8($bk);
         $cache->remove($bk);
         # The SAME-NAME SET. Without this, clearcache could not shift a wrong
