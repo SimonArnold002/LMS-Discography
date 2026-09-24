@@ -732,8 +732,10 @@ titles stripped to empty** (the rule requires a surviving remainder).
     candidates. A pick is stored as a user override and outranks every automatic tier.
 - The MB-tag fast path ALREADY EXISTS and needs nothing new: `Sources.pm` reads
   `Slim::Schema::Album->musicbrainz_id` (:316) and resolves a Contributor by `musicbrainz_id` (:362).
-  Simon's library is not Picard-tagged, so Tier 0 currently has nothing to feed it — the index IS
-  that missing feed.
+  CORRECTED 2026-09-24 (Simon): many of Simon's files ARE MusicBrainz-tagged, not all. (This line
+  once said the library was "not Picard-tagged", which was wrong.) So Tier 0 answers for the tagged
+  albums, and the index is the feed for the UNTAGGED rest. Any user's library can be mixed the same
+  way, so the index must never assume either case.
 
 ### WHAT IT DOES **NOT** FIX
 
