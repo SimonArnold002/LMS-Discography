@@ -77,6 +77,7 @@ because line numbers rot on the next edit.
 | LMS restarts + the `inactive database handle` backtrace are UnifiedHiFi's shutdown, not DSC | log | `were NOT Discography` |
 | Bio/review prose is LBF's parser, with FOUR deliberate divergences (cap, U+2028, duplicate names, 380 cut) and one row per block | A2 | `Bio and review prose is LBF's port` |
 | The Default / Classic web skins are NOT supported — a finding about how they render is void | A2 | `Default and Classic web skins are not supported` |
+| No badge on a Local-first tile, line2 still naming services, no badge on artist rows — all by design | A2 | `THE SERVICE BADGE NAMES THE SOURCE THAT PLAYS` |
 
 **Two standing rules that kill most repeat findings:**
 
@@ -290,6 +291,17 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   non-header client (`$useH` false, e.g. 0.53.3's `_stripsOn`) stays, as it costs nothing, but
   those skins are not tested. Web-skin support arrives only with the fleet web-skin port (LBF's
   `_webify`), as a scoped piece of work.
+
+- **THE SERVICE BADGE NAMES THE SOURCE THAT PLAYS, and line2 keeps every source** (`Browse::_extid`,
+  `%EMBLEM`, `extid` on `_releaseItem` / `_releaseDetail` version rows / "Also on streaming" rows;
+  Simon, 2026-09-24). Material draws ONE emblem per row, so a tile badges `sections[0]` — the source
+  tile play uses. A Local-first tile therefore has NO badge even though it carries a streaming
+  favurl (the LL handshake): that is the design, not a missing badge, and it settles the 0.48.7
+  "Qobuz badge on an owned Raising Sand" cosmetic. The line2 source list ("Local/Qobuz/Tidal")
+  deliberately STAYS, unlike LL/PFR which dropped their service word: it is the only place every
+  source, Local included, is shown. Artist rows (search, band, collaboration, similar) are NOT badged:
+  their artwork is an artist photo, not a service's album. Needs Material 6.4.10+; older draws nothing.
+  Pinned in `tools/t_extid.pl`.
 
 ### A3. DISPROVEN — a review WILL re-derive these from the code; each was measured
 
@@ -995,6 +1007,37 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
+### 0.54.3 (2026-09-24) — the service shown as Material's badge (extid) — INSTALLED + VERIFIED LIVE
+- Zip sha1 `85fab8e835dbac832087c985f169663f5f8c8282`; CACHE_VERSION 0.54.3; repo.xml bumped with it.
+- **Simon: add the service badges to streaming artwork, as LL 1.0.7 and PFR 1.0.2 did.** Material (upstream
+  `d3f1d9227`, first released in 6.4.10) draws an emblem from a row's `extid`, reading only the text before
+  the first `:` against its `misc/emblems.json`. `Browse::_extid` gives `<svc>:album:<_albumid>` (bare
+  `<svc>:` with no id) for qobuz/tidal/deezer (`_svc` lowercased, all three are emblem keys); Local and any
+  other source get none; an `extid` a node already carries is kept.
+- **Carriers, every one checked:** release tiles (`_releaseItem`: the badge follows `sections[0]`, the
+  source tile play uses; see A2 `THE SERVICE BADGE NAMES THE SOURCE THAT PLAYS`), detail version rows in
+  both the single-version and all-versions layouts (`_releaseDetail`), and "Also on streaming" rows (each
+  copy badged by its own service; the cross-service merge keeps the first, the preferred service's). NOT
+  badged: artist rows, "Also in your library" / "Appearances" (Local), unmatched tiles.
+- **Material templates checked in `lms-material`:** `item.emblem` is drawn in the list, the virtual-scroll
+  list, the grid, and the `grid-scroll` strip, and `browse-resp.js` sets it from `extid` in the item loop
+  BEFORE the tile-strip fold, so strips carry it too.
+- **No cache bump:** set on row COPIES only (`%row = %$it`, `%t = %$it`), never on the cached candidate;
+  no cache holds a rendered row (the one row-level cache is the artist search, untouched). Item count and
+  order unchanged, so walks are unaffected. line2 unchanged everywhere (Simon's choice).
+- Stale comments corrected: the favurl is no longer described as the badge's source (that was the
+  2026-07 local-patch design, superseded by `extid`).
+- **`tools/t_extid.pl` (new, 28)** through the REAL `_extid` / `_releaseItem` / `_releaseDetail`.
+  Anti-tested five ways, each caught by the assertion that names it: no badge (11 red), badge from the
+  first STREAMING section instead of the playing one (1), extid written onto the cached node (2),
+  all-versions rows unbadged (2), a node's own extid ignored (1). **The "Also on streaming" site is NOT
+  in the suite** (it lives inside `_buildList`); it is a three-line copy of the detail-row pattern,
+  verified by reading. `syntax_check.sh` clean; all 37 suites green.
+- **VERIFIED LIVE 2026-09-24 (Simon): "works".**
+- **LIVE CHECK after install (Material 6.4.10+):** a streaming-only tile shows its service badge; an
+  owned album whose Local copy is first in priority shows NONE; the detail page badges each streaming
+  version row, not the Local one; badges show in both the strip and the list layouts.
+
 ### 0.54.0 (2026-09-24) — layout settings: all list, all tiles, or the mix — INSTALLED + VERIFIED LIVE
 - **VERIFIED LIVE 2026-09-24 (Simon, Material 6.4.10.x): "appears to work"** — the layout settings on the rig.
 - Zip sha1 `dddb478adaa016fee1006bdfaa33225852cab5f3`; CACHE_VERSION 0.54.0.
@@ -1045,6 +1088,18 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   keeps `@GROUP_ORDER` unchanged. Order is fixed per build, so item_id walks stay deterministic.
 
 #### Material PR status (tracking kept HERE, not in `docs/material-PR-tile-strips.md`, which is paste-ready)
+- **APPROVED by Craig 2026-09-24; NOT merged yet** (upstream/master still 7a58840c4, no `header-strip`; its
+  ChangeLog's next section is 6.4.11). Release date unknown.
+- **WHEN IT SHIPS — Discography's one change:** replace the `Browse::_useStrips` TEST GATE (four-part 6.4.10.x
+  only) with "version >= the release that carries it" (read the upstream ChangeLog / tag, do NOT assume 6.4.11),
+  keeping four-part dev builds on. Until then a release Material user gets the plain list, whatever the layout
+  settings say. Then a Discography build, and README/CHANGELOG at the main merge.
+- **Dev stays as pushed (Simon, 2026-09-24): "leave, as long as it still works for older Material."** Strip work
+  MAY go to dev on that condition: behind `_useStrips` a release (or older) Material gets the old list unchanged,
+  and the only visible trace is the two layout settings, whose descriptions say tiles need a Material that
+  supports them. CHECKED 2026-09-24: `t_strips.pl` run as Material 6.4.10, 6.4.2 (pre-`header-basic`), 6.3.0
+  and none installed: 9/9 each — plain paged list, never `header-strip`, type order unchanged. Keep that run
+  green before any strip push.
 - Draft NOT submitted. Fork branch `plugin-tile-strips`, based on upstream/master 7a58840c4; the doc's diffs
   matched the branch exactly on 2026-09-24. All 5 commits pushed:
   | commit | what | live-tested |
@@ -1074,6 +1129,13 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   Discography `STRIP_SIZE` 15 -> **30** (the numScrollItems maximum), 0.54.2 BUILT (zip sha1 `98411748217678a2ab66246805aeb2a428e86fc8`), not installed, committed + pushed to dev 2026-09-24 (0.54.1's 15 never committed); Material 6.4.10.7 zip sha1 `1bc7c7a446a7962ec47670837f45469b71139d15` in `~/Downloads`. Superseded note below kept for history.
   **`STRIP_SIZE` 25 -> 15 (Simon, 2026-09-24)**, BUILT as 0.54.1 (zip sha1 `4d5b74d227103939ba5246dc01aa0793fc171e02`), INSTALLED 2026-09-24 with Material 6.4.10.6, uncommitted. Server side VERIFIED over HTTP: Bowie (rig on all tiles) sends strips of 15, 7, 15, 15, 15, 4 = 71 tiles (was 107); the UI checks (More, Search list, no re-fetch at the bottom) are Simon's: matches search on a 1920px desktop; nothing
   is lost, the header's More opens `$all`. `t_strips.pl` pins it (39). Reply to Craig drafted, not posted.
+- **Review of the whole PR 7a58840c4..b8f144b57 (2026-09-24): clean.** Set aside, not defects: (a) `jumpTo` lands
+  short past a strip (row height x index; strips are taller) — Material's own search page does the same, not
+  introduced here; (b) a `header-strip` with NO action leaves tiles past the cap unreachable — no writer (Discography
+  always sets the header url), so it is a CONTRACT: the PR doc now says a strip header must have an action.
+  Checked and cleared: `getElementById` null -> fallback 10; `#browse-view` is not `display:none` when Now Playing
+  is expanded (width is not read as 0); plugin items never set `cancache`, so a cap computed at one width is never
+  reused at another.
 - Review 5 of 78002963a: clean. **Before submitting:** install `~/Downloads/lms-material-6.4.10.5.zip`, recheck
   strips / tile play / More / Singles list / scrolling / Search list, plus the subtitle item count.
 - Checklist: tile tap with no list index, header `actions` (More) and `listSize` VERIFIED LIVE. Subtitle count +

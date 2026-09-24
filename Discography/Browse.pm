@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.54.2';
+use constant CACHE_VERSION => '0.54.3';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -2590,6 +2590,10 @@ sub _buildList {
 
                 my %t = %$it;
                 $t{_svc} = $svc;   # line2 is built after the cross-service merge
+                # The service badge (_extid). The merge below keeps the FIRST
+                # copy, the preferred service's, so the badge names the one that plays.
+                my $extid = _extid(\%t);
+                $t{extid} = $extid if defined $extid;
                 # Self-identifying go (stale-view fix): WITHOUT this the row
                 # sends a positional item_id, the feed is rebuilt, and the click
                 # lands on whatever now sits at that index — field 2026-07-19,
@@ -3719,6 +3723,24 @@ sub _playUrl {
     return $u;
 }
 
+# Material's service badge over a streaming version's artwork (Simon, 2026-09-24; the
+# LL 1.0.7 / PFR 1.0.2 shape). Material (upstream d3f1d9227, first released in 6.4.10)
+# draws an emblem from a row's `extid`, reading only the part before the first ':' and
+# looking it up in its misc/emblems.json, whose keys for our three services are their
+# names lowercased. The album id rides along as '<svc>:album:<id>', the shape Material's
+# own streaming items use. A node that already carries its own extid keeps it. Local has
+# no emblem, so a library copy is never badged. Callers set the result on a row COPY,
+# never on the cached candidate, so no candidate cache-version bump is needed.
+my %EMBLEM = map { $_ => $_ } qw(qobuz tidal deezer);
+sub _extid {
+    my ($it) = @_;
+    return undef unless ref $it eq 'HASH';
+    return $it->{extid} if defined $it->{extid} && !ref $it->{extid} && length $it->{extid};
+    my $pfx = $EMBLEM{ lc($it->{_svc} // '') } or return undef;
+    my $id  = $it->{_albumid};
+    return defined $id && length $id ? "$pfx:album:$id" : "$pfx:";
+}
+
 sub _releaseItem {
     my ($client, $opts, $rg, $sections) = @_;
 
@@ -3726,7 +3748,7 @@ sub _releaseItem {
     my $type = _displayType($client, $rg);
     my $image = Plugins::Discography::API->caaImage($rg->{mbid});
 
-    my ($favurl, $playUrl, $svcTag);
+    my ($favurl, $playUrl, $svcTag, $extid);
     if ($sections && @$sections) {
         $svcTag = join('/', map { $_->{svc} } @$sections);
 
@@ -3739,8 +3761,13 @@ sub _releaseItem {
         my $best = $sections->[0]{items}[0];
         $playUrl = _playUrl($best);
 
-        # favurl (LL add + emblem badge) stays streaming-only — no service
-        # scheme exists for a library album.
+        # The badge names the source the tile PLAYS (Simon, 2026-09-24): a
+        # Local-first tile gets none, even when a streaming favurl rides along
+        # below. One badge cannot show every source; line2 still lists them.
+        $extid = _extid($best);
+
+        # favurl (the LL add handshake) stays streaming-only — no service
+        # scheme exists for a library album. The badge is _extid, not the favurl.
         my ($stream) = grep { $_->{svc} ne 'Local' } @$sections;
         $favurl = $stream->{items}[0]{favorites_url} if $stream;
 
@@ -3756,16 +3783,16 @@ sub _releaseItem {
         $image = $cover if defined $cover && length $cover;
     }
 
-    # Service names stay in line2 as the skin-independent fallback (the emblem
-    # patch adds the corner badge on top — redundant text can go once badges
-    # are verified).
+    # Service names stay in line2 (Simon, 2026-09-24): the badge (_extid) shows
+    # only the playing source, and line2 is the one place every source, Local
+    # included, is listed.
     my $line2 = join(" \x{00B7} ", grep { defined && length } $year, $type, $svcTag);
 
     # Matched tiles are type 'playlist': tap still drills (go -> detail page),
     # but play/add work on the whole tile via the play URL — AND XMLBrowser
     # only forwards favorites_url into presetParams for playable types
     # (verified live: identical favurl on a 'link' tile is dropped, on a
-    # 'playlist' row forwarded), so this is also what makes the badge and the
+    # 'playlist' row forwarded), so this is also what makes the
     # ListenLater Add possible on tiles. Item COUNT is unchanged either way
     # (walk-stable tree; only the type differs as the cache warms).
     #
@@ -3783,6 +3810,7 @@ sub _releaseItem {
         image       => $image,
         (defined $playUrl ? (play => $playUrl)           : ()),
         (defined $favurl  ? (favorites_url => $favurl)   : ()),
+        (defined $extid   ? (extid => $extid)            : ()),
         itemActions => _rgItemActions($opts, $rg->{mbid}, undef, defined $playUrl),
         passthrough => [{ %$opts, rg => $rg }],
         url         => sub {
@@ -4126,6 +4154,9 @@ sub _releaseDetail {
                 my %row = %{ $sections->[0]{items}[0] };
                 $row{line2} = $sections->[0]{svc}
                     . ($row{_track} && $row{_fromAlbum} ? " \x{00B7} from $row{_fromAlbum}" : '');
+                # The service badge, on this copy only (see _extid).
+                my $extid = _extid(\%row);
+                $row{extid} = $extid if defined $extid;
                 # A WORKING play string (Qobuz needs .qbz; the native url coderef
                 # still handles drill + row Play, but tile-play-via-expansion
                 # collects this string).
@@ -4173,6 +4204,8 @@ sub _releaseDetail {
                     # coderef + passthrough), so play/add/insert work natively.
                     $row{line2} = $sec->{svc}
                         . ($row{_track} && $row{_fromAlbum} ? " \x{00B7} from $row{_fromAlbum}" : '');
+                    my $extid = _extid(\%row);
+                    $row{extid} = $extid if defined $extid;
                     # Tile play collects EVERY play-string row in this feed
                     # (XMLBrowser one-level collection) — only the FIRST
                     # (preferred) version gets a WORKING play string (Qobuz

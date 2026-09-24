@@ -49,6 +49,9 @@ on its own page. A strip shows as many tiles as search does for the screen width
 (`numScrollItems()`, 10 to 30), so however many a plugin sends, a page stays the size of a search
 page. The rest are one tap away through More.
 
+So a strip header must have an action (a `url`, as above). The tiles past the cap are reached only
+through its More link. Without one, they can't be reached at all.
+
 ### 1. `browse-resp.js`: mark the header
 
 ```diff
