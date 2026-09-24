@@ -987,6 +987,78 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
+### 0.53.3 (2026-09-24) — strips need a header-capable CLIENT, not just the server — BUILT, not installed
+- Zip sha1 `e0ddb8a38152632b7959ca1cdf1b390a8cb42821`; CACHE_VERSION 0.53.3.
+- **Review finding (code review of 0.53.0–0.53.2):** `_sectionTiles` switched strips on from `_useStrips()` alone,
+  a SERVER fact (installed Material version). A strip shows `STRIP_SIZE` (25) tiles and relies on the header's
+  More for the rest, but a client without `features:h` (`$useH` false: Default/Classic web, CLI, Jive) gets a
+  `text` divider with no url. So on a strip-enabled server those clients lost every tile past the 25th in a
+  section, with no Show more rows. WRITER: any non-Material client against Simon's rig (6.4.10.x installed);
+  no release Material reaches it (the `_useStrips` gate). Not seen in Simon's use because he browses in Material.
+- **Fix:** `_stripsOn($useH)` = `$useH && _useStrips()`; `_stripSection` / `_sectionHeaderType` /
+  `_sectionTiles` take `$useH`, at all three builders (type sections, Also on streaming, `_extraSection`), and
+  the Singles reorder (`@groupOrder`) uses the same gate. Walk-stable: `features` rides every row's
+  itemActions (`_identParams`) and the positional-walk stash, so a client's tree shape never changes between walks.
+- **`tools/t_strips.pl` (new, 17)** drives the REAL `_sectionTiles` / `_sectionHeaderType` / `_stripsOn` under a
+  patched (6.4.10.5) and a release (6.4.10) Material version, re-running itself for the second. Mutation-tested:
+  the old server-only gate turns the 3 no-header assertions red. Syntax gate + all 36 suites green.
+- LIVE CHECK after install: Material unchanged (strips); Default web skin on an artist with 26+ albums
+  shows a paged list with Show more.
+
+### 0.53.2 (2026-09-24) — Singles moved below the other release types — INSTALLED + VERIFIED LIVE
+- **VERIFIED LIVE 2026-09-24 (Simon, Material 6.4.10.2):** Singles sits below the strips, and scrolling to the
+  bottom adds nothing. 6.4.10.2 carries the Material review fix: `listSize` reduced by the rows folded into
+  strips, else Material thought the list unfinished and re-fetched duplicates (Radiohead: 62 items -> 48 rows).
+- Zip sha1 `4112d038069d519d5faeb0009c8566ed5193f969`; CACHE_VERSION 0.53.2.
+- **0.53.1 VERIFIED LIVE (Simon): Singles as a list works.** He then asked for Singles BELOW the other
+  release types. With strips on, `_buildList` walks the strip sections first, then the `%LIST_SECTION` ones
+  (so Singles follows Other releases, ahead of the library/streaming extras). The plain list (no strips)
+  keeps `@GROUP_ORDER` unchanged. Order is fixed per build, so item_id walks stay deterministic.
+
+#### Material PR status (tracking kept HERE, not in `docs/material-PR-tile-strips.md`, which is paste-ready)
+- Draft NOT submitted. Fork branch `plugin-tile-strips`, based on upstream/master 7a58840c4; the doc's diffs
+  matched the branch exactly on 2026-09-24. All 5 commits pushed:
+  | commit | what | live-tested |
+  |---|---|---|
+  | 3c9b7e76a | tile strips | yes, 6.4.10.1 |
+  | 7ed8c44af | `listSize` reduced by the folded rows (review 1) | yes, 6.4.10.2 |
+  | 3c2c519f9 | fold only a whole list + Search list inside strips (review 2) | yes, 6.4.10.3 |
+  | 10e6cfd78 | subtitle count + jumplist positions after the fold (review 3) | no (6.4.10.4 built) |
+  | 78002963a | fold test uses LMS's own count, known, first batch (review 4) | no (6.4.10.5 built) |
+- Review 5 of 78002963a: clean. **Before submitting:** install `~/Downloads/lms-material-6.4.10.5.zip`, recheck
+  strips / tile play / More / Singles list / scrolling / Search list, plus the subtitle item count.
+- Checklist: tile tap with no list index, header `actions` (More) and `listSize` VERIFIED LIVE. Subtitle count +
+  jumplist remap tested in JXA only (Discography sends no textkey, so no jumplist). Old Material + `header-strip`
+  read in code only: a plain clickable row; Discography never sends it there (`_useStrips` gate). Read and found
+  fine: refreshList, back navigation, select/select-all/play-all under a header, "(Scroll for more)", textarea
+  unshift, SCROLL_TO. Known, left alone: an all-image page could hit the numImages forceGrid check by coincidence;
+  no plugin sends image items in strips.
+
+### 0.53.1 (2026-09-24) — Singles stay a LIST under the strips — INSTALLED + VERIFIED LIVE
+- Zip sha1 `baaa275e4ebe889ba8772f7885152bc03d4b1f70`; CACHE_VERSION 0.53.1.
+- **0.53.0 VERIFIED LIVE (Simon, Material 6.4.10.1): strips render and work.** His one change: Singles as a
+  list, the way Material's search keeps tracks as rows under its strips. `%LIST_SECTION` (SINGLES) +
+  `_stripSection($key)`: a listed section keeps an ordinary header, list rows and its Show more paging.
+  `_sectionHeaderType` now takes the section key at all three call sites.
+
+### 0.53.0 (2026-09-24) — TEST BUILD: release sections as tile strips (needs a patched Material) — INSTALLED + VERIFIED LIVE
+- Zip sha1 `c466748ec69286d5fc47d91e87ad26efcd4c6eac`; CACHE_VERSION 0.53.0.
+- **Pairs with the Material PR drafted in `docs/material-PR-tile-strips.md`**, branch `plugin-tile-strips` on
+  Simon's fork (`3c9b7e76a`), test build `~/Downloads/lms-material-6.4.10.1.zip`. A header of type
+  `header-strip` makes Material draw the tiles after it as one sideways row (its search-page layout), so the
+  bio and link rows can share the page with tiles.
+- **`Browse::_useStrips` is a TEST GATE**: strips only on a four-part Material version (`6.4.10.x`, a
+  self-built one). Craig's releases have three parts, so they get the old list byte for byte. Replace with the
+  release that ships the patch once merged.
+- `_sectionTiles` serves all three release-section builders (type sections, `_extraSection`, Also on
+  streaming): strip mode shows the first `STRIP_SIZE` (25) tiles with NO paging rows (they would be drawn as
+  tiles) and the header's own drill (`sect:<KEY>`) opens every tile — Material's existing "More" link on a
+  header with actions. `header-strip` keeps the header's actions, unlike `header-basic`.
+- Band / collaboration / similar sections deliberately stay list rows. No suite added (the gate is a
+  version string, the logic a slice); syntax gate + all 35 suites green.
+- **LIVE CHECK (with 6.4.10.1 installed):** an artist page shows each type section as a strip, bio above;
+  tapping a tile plays / opens it; "More" on a header opens the full section; counts and jump list sane.
+
 ### 0.52.1 (2026-09-24) — settings checkboxes could not be turned OFF — INSTALLED + VERIFIED LIVE
 - **VERIFIED LIVE 2026-09-24 (Simon):** menu entry unticked + saved + restart -> stays off, gone from Material;
   ticked + saved + restart -> back. This also closes 0.52.0's open check (4), pref-off + restart.

@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.52.1';
+use constant CACHE_VERSION => '0.53.3';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -313,6 +313,49 @@ sub _headerType {
         $useBasic = 1;   # dev/test build -> assume new type
     }
     return $_headerTypeCache = $useBasic ? 'header-basic' : 'header';
+}
+
+# Tile strips: a 'header-strip' header makes Material draw the tiles after it
+# as one sideways-scrolling row, the way its own search results look, so the
+# bio and link rows can share the page with tiles. Only a Material carrying the
+# 'plugin-tile-strips' patch understands the type, and no release does yet.
+# TEST GATE: a self-built Material has a fourth version number (6.4.10.1);
+# Craig's releases have three, so they get exactly the old list. Replace with
+# the release that ships the patch once it is merged.
+use constant STRIP_SIZE => 25;
+my $_stripsCache;
+sub _useStrips {
+    return $_stripsCache if defined $_stripsCache;
+    my $ver = eval { Plugins::MaterialSkin::Plugin->getPluginVersion() } // '';
+    return $_stripsCache = ($ver =~ /^6\.4\.10\.\d+$/) ? 1 : 0;
+}
+
+# Sections that stay a LIST even in strip mode, the way Material's search keeps
+# tracks as rows under its tile strips (Simon, 2026-09-24).
+my %LIST_SECTION = (SINGLES => 1);
+
+# Strips need BOTH a patched Material on the server AND a client that draws
+# headers ($useH): the header's More is the only way to the tiles past
+# STRIP_SIZE, and a client without features:h gets a text divider with no url.
+# $useH rides every row's params (and the walk stash), so a client's tree shape
+# is the same on every re-walk.
+sub _stripsOn { $_[0] && _useStrips() }
+
+sub _stripSection { my ($useH, $key) = @_; _stripsOn($useH) && !$LIST_SECTION{ $key // '' } }
+
+sub _sectionHeaderType { _stripSection(@_) ? 'header-strip' : _headerType() }
+
+# A release section's rows: (visible tiles, paging rows, every tile). In strip
+# mode the strip shows the first STRIP_SIZE tiles with no paging rows (they
+# would be drawn as tiles), and the header's More opens every tile.
+sub _sectionTiles {
+    my ($client, $opts, $useH, $key, $tiles) = @_;
+    if (_stripSection($useH, $key)) {
+        my $n = @$tiles < STRIP_SIZE ? scalar @$tiles : STRIP_SIZE;
+        return ([ @$tiles[0 .. $n - 1] ], [], $tiles);
+    }
+    my ($vis, $pgRows) = _pageSection($client, $opts, $key, $tiles);
+    return ($vis, $pgRows, [ @$vis, @$pgRows ]);
 }
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
@@ -2367,7 +2410,15 @@ sub _buildList {
             { id => 'sect:OPT', itemActions => _listItemActions($opts, 'sect:OPT') }),
         @optRows);
 
-    for my $g (@GROUP_ORDER) {
+    # With strips on, the list sections (Singles) follow every strip section
+    # rather than sitting between two strips (Simon, 2026-09-24). The plain
+    # list keeps the type order unchanged.
+    my @groupOrder = _stripsOn($useH)
+        ? ((grep { !$LIST_SECTION{ $_->[0] } } @GROUP_ORDER),
+           (grep {  $LIST_SECTION{ $_->[0] } } @GROUP_ORDER))
+        : @GROUP_ORDER;
+
+    for my $g (@groupOrder) {
         my ($key, $token, $iconName) = @$g;
         my $rels = $bucket{$key} or next;
 
@@ -2381,7 +2432,7 @@ sub _buildList {
 
         # Long sections are capped; the header keeps naming the TRUE total, so
         # "Singles (87)" over 30 rows reads as paging, not as a lost release.
-        my ($vis, $pgRows) = _pageSection($client, $opts, $key, \@tiles);
+        my ($vis, $pgRows, $all) = _sectionTiles($client, $opts, $useH, $key, \@tiles);
 
         # The divider row is emitted for EVERY client — only its type differs
         # (real header vs text) — so the tree shape (and item_id indexing) is
@@ -2390,14 +2441,14 @@ sub _buildList {
         # available — image-less items disable it page-wide, LBF lesson).
         my $hdr = {
             name  => cstring($client, $token) . ' (' . scalar(@tiles) . ')',
-            type  => $useH ? _headerType() : 'text',
+            type  => $useH ? _sectionHeaderType($useH, $key) : 'text',
             image => IMG_BASE . 'dsc_MTL_svg_' . $iconName . '.png',
         };
         if ($useH) {
             # Older Material forces a drill action onto 'header' items; point
             # it at this section's own tiles rather than a dead page.
             # 'header-basic' ignores the url harmlessly.
-            my @kids = (@$vis, @$pgRows);
+            my @kids = @$all;
             $hdr->{id}          = 'sect:' . $key;
             $hdr->{itemActions} = _listItemActions($opts, $hdr->{id});
             $hdr->{url}         = sub { $_[1]->({ items => \@kids }) };
@@ -2570,15 +2621,15 @@ sub _buildList {
             @dated = reverse @dated if $sort eq 'newest';
             my @tiles = (@dated, @undated);
 
-            my ($vis, $pgRows) = _pageSection($client, $opts, 'STREAM', \@tiles);
+            my ($vis, $pgRows, $all) = _sectionTiles($client, $opts, $useH, 'STREAM', \@tiles);
             my $hdr = {
                 name  => cstring($client, 'PLUGIN_DISCOGRAPHY_STREAM_EXTRAS')
                        . ' (' . scalar(@tiles) . ')',
-                type  => $useH ? _headerType() : 'text',
+                type  => $useH ? _sectionHeaderType($useH, 'STREAM') : 'text',
                 image => IMG_BASE . 'dsc-lib_MTL_icon_library_music.png',
             };
             if ($useH) {
-                my @kids = (@$vis, @$pgRows);
+                my @kids = @$all;
                 $hdr->{id}          = 'sect:STREAM';
                 $hdr->{itemActions} = _listItemActions($opts, $hdr->{id});
                 $hdr->{url}         = sub { $_[1]->({ items => \@kids }) };
@@ -2802,15 +2853,15 @@ sub _extraSection {
         \%t;
     } @dated, @undated;
 
-    my ($vis, $pgRows) = _pageSection($client, $opts, $pageKey, \@tiles);
+    my ($vis, $pgRows, $all) = _sectionTiles($client, $opts, $useH, $pageKey, \@tiles);
 
     my $hdr = {
         name  => cstring($client, $token) . ' (' . scalar(@tiles) . ')',
-        type  => $useH ? _headerType() : 'text',
+        type  => $useH ? _sectionHeaderType($useH, $pageKey) : 'text',
         image => $image,
     };
     if ($useH) {
-        my @kids = (@$vis, @$pgRows);
+        my @kids = @$all;
         $hdr->{id}          = 'sect:' . $pageKey;
         $hdr->{itemActions} = _listItemActions($opts, $hdr->{id});
         $hdr->{url}         = sub { $_[1]->({ items => \@kids }) };
