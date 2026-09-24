@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.54.0';
+use constant CACHE_VERSION => '0.54.2';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -322,7 +322,11 @@ sub _headerType {
 # TEST GATE: a self-built Material has a fourth version number (6.4.10.1);
 # Craig's releases have three, so they get exactly the old list. Replace with
 # the release that ships the patch once it is merged.
-use constant STRIP_SIZE => 25;
+# 30 tiles, the most Material ever shows in a strip: it caps each strip by
+# screen width with numScrollItems (10 to 30, the way its search and home rows
+# do; Craig on the PR, 2026-09-24), so a phone shows 10 and a 1920px desktop
+# about 15. Sending more would be dropped. The header's More opens every tile.
+use constant STRIP_SIZE => 30;
 my $_stripsCache;
 sub _useStrips {
     return $_stripsCache if defined $_stripsCache;

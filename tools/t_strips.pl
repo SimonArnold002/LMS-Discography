@@ -74,7 +74,9 @@ sub ok {
     else           { $fail++; print "FAIL - $n\n" }
 }
 
-# 40 tiles: over both STRIP_SIZE (25) and PAGE_SIZE (30), so both modes cut.
+# 40 tiles: over both STRIP_SIZE (30) and PAGE_SIZE (30), so both modes cut.
+my $S = $B->can('STRIP_SIZE')->();
+ok(scalar($S == 30), "STRIP_SIZE is 30 (Material's numScrollItems maximum; it trims by width)");
 my @tiles = map { { name => "t$_", type => 'playlist' } } 1 .. 40;
 my $ts  = $B->can('_sectionTiles');
 my $sht = $B->can('_sectionHeaderType');
@@ -86,14 +88,14 @@ my $patched = $ver =~ /^6\.4\.10\.\d+$/;
 # paging, so every tile stays reachable through Show more.
 {
     my ($vis, $pg, $all) = $ts->(undef, {}, 0, 'ALBUM', \@tiles);
-    ok(scalar(@$vis == 30), "[$ver] no-header client: first page of 30 rows, not a 25-tile strip");
+    ok(scalar(@$vis == 30), "[$ver] no-header client: first page of 30 rows, not a $S-tile strip");
     ok(scalar(@$pg >= 1 && $pg->[0]{id} eq 'page:ALBUM:40'), "[$ver] no-header client: Show more row reaches the rest");
     ok(scalar(!$on->(0)), "[$ver] no-header client: strips off (Singles keeps its place)");
 }
 
 if ($patched) {
     my ($vis, $pg, $all) = $ts->(undef, {}, 1, 'ALBUM', \@tiles);
-    ok(scalar(@$vis == 25 && !@$pg), "[$ver] header client: 25-tile strip, no paging rows");
+    ok(scalar(@$vis == $S && !@$pg), "[$ver] header client: $S-tile strip, no paging rows");
     ok(scalar(@$all == 40), "[$ver] header client: the header's More holds every tile");
     ok(scalar($sht->(1, 'ALBUM') eq 'header-strip'), "[$ver] header client: strip header type");
     ok(scalar($on->(1)), "[$ver] header client: strips on");
@@ -118,7 +120,7 @@ if ($patched) {
 # The layout settings (0.54.0): Singles follow layout_singles, everything else
 # layout_albums. Unset = the defaults (tiles, Singles a list), checked above.
 if ($patched) {
-    my $mode = sub { my ($k) = @_; my ($v, $p) = $ts->(undef, {}, 1, $k, \@tiles); @$p ? 'list' : (@$v == 25 ? 'tiles' : '?') };
+    my $mode = sub { my ($k) = @_; my ($v, $p) = $ts->(undef, {}, 1, $k, \@tiles); @$p ? 'list' : (@$v == $S ? 'tiles' : '?') };
     for my $case (['list',  'list',  'list',  'list',  'all list'],
                   ['tiles', 'tiles', 'tiles', 'tiles', 'all tiles'],
                   ['tiles', 'list',  'tiles', 'list',  'the mix'],

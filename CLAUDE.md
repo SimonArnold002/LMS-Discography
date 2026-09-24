@@ -1054,19 +1054,26 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   | 3c2c519f9 | fold only a whole list + Search list inside strips (review 2) | yes, 6.4.10.3 |
   | 10e6cfd78 | subtitle count + jumplist positions after the fold (review 3) | no (6.4.10.4 built) |
   | 78002963a | fold test uses LMS's own count, known, first batch (review 4) | no (6.4.10.5 built) |
-  | ffda923c4 | first-row `pageHasStrips` flag instead of `items.some()` (Craig's review) | no (JXA parse only), NOT pushed |
+  | ffda923c4 | first-row `pageHasStrips` flag instead of `items.some()` (Craig's review) | 6.4.10.6 INSTALLED 2026-09-24 (served: `material.min.js?r=6.4.10.6`), UI check pending, PUSHED |
+  | b8f144b57 | strips capped by `numScrollItems()` (10-30 by width), as search does (Craig's 2nd comment) | 6.4.10.7 built, PUSHED 2026-09-24 |
 - **Craig's review (2026-09-24), on the PR:** (1) wants the virtual scroller, then noted his own search skips
   it but shows only 10 per category (~40 items), and asked if we have more; (2) dislikes
   `this.items.some(itm => itm.strip)` (scans every row), suggests a flag on the first item. **(2) DONE, fork commit
-  ffda923c4 (not pushed):** the fold sets `items[0].pageHasStrips` only when it built a strip; `useRecyclerForLists` and
+  ffda923c4 (pushed 2026-09-24):** the fold sets `items[0].pageHasStrips` only when it built a strip; `useRecyclerForLists` and
   Search list read it; the `window.textarea` row (unshifted AFTER the fold, pages under 100 rows) carries it over.
   JXA parse-checked, not live-tested; the doc's diffs updated to match. **(1) MEASURED live 2026-09-24 (rig on all
   tiles; mix derived from the Singles header count):** Radiohead 62 items -> 24 rows / 43 tiles; Dylan 80 -> 25 / 59;
   Zappa 92 -> 25 / 71; Bowie 141 -> 40 rows / 107 tiles in 6 strips (mix: 66 rows / 82 tiles); Miles Davis 107 ->
   33 / 78; Beatles 46 -> 20 / 29. Rows stay well under the 100-row scroller threshold; TILES exceed search, whose
   strips clamp to `numScrollItems` (width/145 rounded up to 5, min 10, max 30) — Discography sends up to 25 per strip.
-  OPEN: Simon to choose a lower `STRIP_SIZE` (15 proposed, matches search on a 1920px desktop); nothing is lost
-  either way, the header's More opens `$all`. Reply to Craig drafted, not posted.
+  **Craig's 2nd comment:** search's count is not fixed — `numScrollItems()` gives 10-30 in steps of 5 by width.
+  So the cap moved INTO MATERIAL (fork `b8f144b57`): the fold keeps at most `numScrollItems({$store:store},
+  #browse-view)` tiles per strip (10 if the element is missing); dropped tiles still count in the subtitle
+  (`foldedItems` is taken before the cap) and More fetches the full section from the plugin. Search list cannot
+  find a dropped tile, and the cap is fixed at load (a rotate needs a reload) — both exactly as search.
+  Discography `STRIP_SIZE` 15 -> **30** (the numScrollItems maximum), 0.54.2 BUILT (zip sha1 `98411748217678a2ab66246805aeb2a428e86fc8`), not installed, committed + pushed to dev 2026-09-24 (0.54.1's 15 never committed); Material 6.4.10.7 zip sha1 `1bc7c7a446a7962ec47670837f45469b71139d15` in `~/Downloads`. Superseded note below kept for history.
+  **`STRIP_SIZE` 25 -> 15 (Simon, 2026-09-24)**, BUILT as 0.54.1 (zip sha1 `4d5b74d227103939ba5246dc01aa0793fc171e02`), INSTALLED 2026-09-24 with Material 6.4.10.6, uncommitted. Server side VERIFIED over HTTP: Bowie (rig on all tiles) sends strips of 15, 7, 15, 15, 15, 4 = 71 tiles (was 107); the UI checks (More, Search list, no re-fetch at the bottom) are Simon's: matches search on a 1920px desktop; nothing
+  is lost, the header's More opens `$all`. `t_strips.pl` pins it (39). Reply to Craig drafted, not posted.
 - Review 5 of 78002963a: clean. **Before submitting:** install `~/Downloads/lms-material-6.4.10.5.zip`, recheck
   strips / tile play / More / Singles list / scrolling / Search list, plus the subtitle item count.
 - Checklist: tile tap with no list index, header `actions` (More) and `listSize` VERIFIED LIVE. Subtitle count +
