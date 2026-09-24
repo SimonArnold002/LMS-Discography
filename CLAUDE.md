@@ -983,7 +983,9 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
-### 0.52.1 (2026-09-24) — settings checkboxes could not be turned OFF — BUILT, NOT installed
+### 0.52.1 (2026-09-24) — settings checkboxes could not be turned OFF — INSTALLED + VERIFIED LIVE
+- **VERIFIED LIVE 2026-09-24 (Simon):** menu entry unticked + saved + restart -> stays off, gone from Material;
+  ticked + saved + restart -> back. This also closes 0.52.0's open check (4), pref-off + restart.
 - Zip sha1 `85a0cec86fdc25b0b4a5f08b042aa2352d66282d`; CACHE_VERSION 0.52.1. LIVE VERIFY: untick the Material
   menu entry, save, restart LMS -> it stays unticked and the entry is gone from Material; tick it again -> back.
 - **Field (Simon): unticking "Material Skin artist menu entry" did not stick.** An unticked checkbox
@@ -1033,7 +1035,7 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   section with our action, all four params; (2) `customactions.json` holds only Album Booklet's `track`
   entry, and the log shows the strip ran once (`removed the old Discography entry from
   .../material-skin/actions.json`), no registration errors; (3) Simon: the menu entry works in Material.
-  (4) pref-off + restart not separately confirmed.
+  (4) pref-off + restart: VERIFIED on 0.52.1 (it could not work before the checkbox fix).
 
 ### 0.51.20 (2026-09-24) — review of 0.51.19: stub bios, and MAI's "not found" shown as the review — BUILT, NOT installed
 - Zip sha1 `b5408afcee983eb8c4567f4afc5edb7f99dcbdfc`; CACHE_VERSION 0.51.20 (clears the sorry-text
