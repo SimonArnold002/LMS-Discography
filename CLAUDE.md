@@ -65,6 +65,8 @@ because line numbers rot on the next edit.
 | Deezer's artist-albums payload has no track count, so no size | A3 | `Deezer states record_type` |
 | `length $e->[0] >= 2` parsing as `length($e->[0] >= 2)` | A3 | `a named unary binds tighter` |
 | Collaborations needing a second entry; and why `clearcache` is NOT a cold artist | A3 | ``clearcache` is not cold` |
+| `autodetectMirror`'s `$try` is STILL a self-capturing closure — deliberate, once per startup | log | `is still deliberately left alone` |
+| `Browse::_disambiguateByLibrary` has no suite — known gap, stated 2026-09-24 | log | `has no suite at all` |
 
 **Two standing rules that kill most repeat findings:**
 
@@ -264,7 +266,7 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 | Belief | Verdict | The evidence |
 |---|---|---|
 | A 503 from MusicBrainz means we are over the rate limit and must back off | **WRONG — it is usually LOAD SHEDDING** (measured 2026-09-20) | MusicBrainz answers both with 503; only the headers separate them. A shed carries **`X-RateLimit-Who`** ending `-shed` (e.g. `search-shed`), a `Zone`, `Retry-After: 0`, and a body of "The MusicBrainz web server is currently busy" — with `Remaining` WELL SHORT of `Limit` (269 of 1900 observed), i.e. we were not over anything. Probed from a cold IP that had sent nothing: 4/8 search requests shed at 1.1s spacing, and one on Simon's server arrived after an 18.6s IDLE gap, which no rate limiter can produce. All 4 recovered on the FIRST retry 0.4s later. So: retry a shed, do NOT back off, and do not space requests further apart to "fix" it. Pinned in `t_netqueue.pl` §10. |
-| `_probeArtistImage` reads `Location` off the wrong argument, so the Deezer placeholder probe can never fire | **WRONG** (raised 2026-09-19, and once before) | `Slim::Networking::SimpleAsyncHTTP` invokes **the error callback's third argument** as the response: `$self->ecb->( $self, $error, $http->response )` (read in the 9.0 source). `my (undef, $error, $res) = @_` is therefore correct, and `$res->header('Location')` is an `HTTP::Response` method. The 302-in-the-error-callback behaviour under `maxRedirect => 0` was measured live in 0.51.0 on the real Mothers/Pink Floyd/B52's urls. |
+| `_probeArtistImage` reads `Location` off the wrong argument, so the Deezer placeholder probe can never fire | **WRONG** (raised 2026-09-19, and once before) | `Slim::Networking::SimpleAsyncHTTP` invokes **the error callback's third argument** as the response: `$self->ecb->( $self, $error, $http->response )` (read in the 9.0 source). `my (undef, $error, $res) = @_` is therefore correct, and `$res->header('Location')` is an `HTTP::Response` method. The 302-in-the-error-callback behaviour under `maxRedirect => 0` was measured live in 0.51.0 on the real Mothers/Pink Floyd/B52's urls. **The same signature is what `_netIsRateLimited` got WRONG (fixed 2026-09-24): it read the response off `$_[0]`, and because the accessors are `eval`-wrapped it answered "not a shed" in silence rather than dying. When a probe here takes the callback's arguments, it must take ALL of them.** |
 | `_idGroup` (0.51.12) could keep a release group from matching a copy whose id names THAT group | **WRONG** | `_idGroup cannot block a group` from its own copy: it is only consulted INSIDE the `unless (_mbidMatch(...))` branch, i.e. only after the id has already failed to name this group. Symmetric by construction, and pinned by the "control: its own group still takes it by id" assertion in `t_size.pl` §5. |
 | `artistImage(undef, ...)` from the ImageProxy handler cannot reach the services, because `getAPIHandler(undef)` has no client to hang an API instance off | **WRONG** | All three plugins handle a clientless call the same way, read in their own sources 2026-09-20: `$clientOrId ||= ...->getSomeUserId()` (Qobuz) / `userId => ...->getSomeUserId()` (TIDAL, Deezer), then construct an API object from that user id. A handler comes back whenever any account is signed in, so tier 3 works from the proxy. Re-raise only for a service whose `getAPIHandler` genuinely requires `ref $client`. |
 | Deezer's artist-albums payload carries no track count, so a Deezer copy has no size and the single gate cannot act on it | **WRONG** | `/artist/<id>/albums` omits `nb_tracks` but **Deezer states record_type** on every row, which `_candSize` reads when there are no counts; `/search/album` carries BOTH (`nb_tracks` + `record_type`, verified live 2026-09-19). Pinned in `t_size.pl` §1. |
@@ -979,10 +981,58 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   path (the retry branch returns before the backoff is consulted), the `Retry-After` probe sat at +1s
   where the ordinary 1.1s gap holds the retry anyway, and the shed fixture set BOTH signals so
   deleting either detection still passed. Each is now pinned alone.
+  **CORRECTED 2026-09-24 — "pinned alone" was WRONG for the first of the three.** The assertion was
+  added, but the fixture fired `$r->{err}->($r, 'HTTP 503', $r)`, passing ONE object as both the
+  async object and the response. Nothing in the suite could tell the two apart, so the assertion
+  could not fail and none of the six mutants could reach it. The defect it was written to catch was
+  sitting in the code the whole time (below). **An assertion added in the same round that discovers
+  the bug is not evidence until a mutant has actually turned it red.**
 - **UNVERIFIED LIVE.** The suite proves the logic; only a run on the server proves the diagnosis was
   right about Simon's traffic. The acceptance bar moved with the finding: zero 503s is not achievable
   because MusicBrainz issues them for its own reasons — the bar is **zero 503s reaching the page**,
   with sheds visible only as `shed ... retry 1/3` debug lines.
+
+#### Review round 2026-09-24 (`/code-review`, before the build) — the shed guard was reading the wrong object
+- **`_netIsRateLimited` was handed the async object where the response belongs**, and its fixed
+  `($resp, $err)` signature is why. The two accessors it needs live on DIFFERENT objects: `->code`
+  and `->header` on the `HTTP::Response` (the THIRD callback argument, per A3), `->error` on the
+  SimpleAsyncHTTP object (the FIRST — every error handler in `API.pm` reads `shift->error`). The one
+  call site had to pick one, and picked the async object. **Every accessor inside `_netIsShed` is
+  `eval`-wrapped, so the wrong object did not die — it silently answered "not a shed."** The shed
+  guard therefore failed OPEN, and an exhausted shed moved the 5→30s backoff curve for the whole
+  `mb` bucket: exactly the behaviour this version was written to stop. Four sheds on one job
+  (~1.5s of continuous shedding) is the writer, which is uncommon but is what the retry bound exists
+  for. Found by review, never observed live.
+- **Fix: `_netIsRateLimited` is now variadic**, the same contract its two siblings already had —
+  hand it the callback's arguments in any order and it probes whichever object can answer. The call
+  site passes `@_`. Swapping an index instead would have been wrong: the error-text fallback needs
+  the async object that the response cannot supply.
+- **The fixture was the root cause of the blindness, so it changed too.** `t_netqueue.pl` now models
+  the callback as the two objects it really is — `T::HTTP` (async: `->error`, `->content`, no
+  `->header`) and `T::RESP` (the response: `->code`, `->content`, `->header`, deliberately NO
+  `->error`). The shed markers go on the response ONLY. 46 -> 50 assertions; the four new ones pin
+  the argument-order contract on the subs directly, so a future swap is named rather than inferred
+  from a stray delay. **Anti-tested with four mutants, each caught by the assertion that names it**,
+  including the original defect restored verbatim.
+- **Five self-capturing closures freed** (`my $next; $next = sub {…$next…}` — the reference cycle
+  Perl never reclaims, the 0.30.1 leak class). All five are per-request, so each leaked a little on
+  every use: `Sources::artistImage`'s adapter walk (every cold artist thumbnail), `API::getReleaseGroups`'
+  and `API::_warmOfficial`'s pagers (every artist page with a cold cache), `API::warmLocalReleases`
+  (every page open with unresolved release mbids), and `Browse::_disambiguateByLibrary`'s candidate
+  walk. All rewritten to pass the sub to itself. **`autodetectMirror`'s `$try` is still deliberately
+  left alone** (0.30.1's reasoning: once per startup, not per request).
+- **The pagers' recursive branch had NO coverage** — `t_alias.pl`'s fixture returned every result in
+  one response, so `$offset + PAGE_SIZE < $total` was never true and neither pager's self-call was
+  ever driven. That is the exact line the closure rewrite changed the shape of. The fixture now
+  paginates (slice honours `limit`/`offset`, count stays the full total) and six assertions walk both
+  pagers past page one. 39 -> 45. **A dropped self-argument is FATAL, not silent** — verified by
+  mutant: the suite dies rather than quietly returning one page.
+- **`Browse::_disambiguateByLibrary` has no suite at all**, so its rewrite was proven in a throwaway
+  harness instead: the walk visits all three candidates (including the `onError` arm) and adopts the
+  corroborated one, and both dropped-self-argument mutants die on the spot. **Left as a known
+  coverage gap, not a silent assumption.**
+- All 33 suites green, `syntax_check.sh` clean. **Still UNVERIFIED LIVE** — nothing built or
+  installed in this round.
 
 
 ### 0.51.17 (2026-09-20) — one outbound request queue

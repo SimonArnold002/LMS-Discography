@@ -170,16 +170,33 @@ my %SPINE = (
 );
 
 our %RELEASES;   # artist mbid -> release-browse items (release + its group)
+
+# PAGINATED, like the real endpoint: the slice honours limit/offset while the
+# COUNT stays the full total, which is the only thing that makes both pagers
+# ask for a second page. The fixture returned everything in one response for a
+# long time, so neither pager's recursive branch was ever driven — and that is
+# the branch that carries the self-call.
+sub _page {
+    my ($url, $all) = @_;
+    my ($limit)  = $url =~ /\blimit=(\d+)/;
+    my ($offset) = $url =~ /\boffset=(\d+)/;
+    $limit ||= scalar @$all;
+    $offset ||= 0;
+    my $end = $offset + $limit - 1;
+    $end = $#$all if $end > $#$all;
+    return $offset > $#$all ? [] : [ @{$all}[ $offset .. $end ] ];
+}
 sub response_for {
     my ($url) = @_;
     if ($url =~ m{/release\?artist=([^&]+)}) {
         my $r = $RELEASES{$1} || [];
-        return { releases => $r, 'release-count' => scalar @$r };
+        return { releases => _page($url, $r), 'release-count' => scalar @$r };
     }
     my ($mbid) = $url =~ m{release-group\?artist=([^&]+)};
     return { 'release-groups' => [], 'release-group-count' => 0 } unless $mbid;
     my $rgs = $SPINE{$mbid} || [];
-    return { 'release-groups' => $rgs, 'release-group-count' => scalar @$rgs };
+    return { 'release-groups' => _page($url, $rgs),
+             'release-group-count' => scalar @$rgs };
 }
 
 sub spine {
@@ -435,6 +452,47 @@ ok(!matches($byId{'rg-mensch'}, 'The Man-Machine Recreated'),
     ok($t{'Tour de France'}, 'the group records its edition titled "Tour de France"');
     ok(!$t{'Live in Paris Bootleg'}, '... but never a bootleg edition\'s title');
     ok(scalar(keys %t) == 2, '... each distinct title once (the group\'s own name included, dropped later)');
+}
+
+# ---------------------------------------------------------------------------
+# BOTH PAGERS WALK PAST THE FIRST PAGE. `getReleaseGroups` and `warmOfficial`
+# each ask for the next page from inside their own response handler, and that
+# self-call is the one line in either sub that the rest of this file never
+# reaches: every other fixture fits in a single page, so a pager that silently
+# stopped at 100 would have passed everything above.
+#
+# It is also the line that changed shape when both closures were rewritten to
+# pass themselves rather than capture a lexical (the 0.30.1 leak fix), so it
+# needs an assertion of its own rather than an eyeball.
+# ---------------------------------------------------------------------------
+{
+    my $PAGED = 'mbid-paged';
+    my $N     = 150;                      # > RG_PAGE_SIZE/REL_PAGE_SIZE (100)
+    local $SPINE{$PAGED} = [ map {
+        { id => "rg-p$_", title => "Paged Album $_", 'first-release-date' => '1990',
+          'primary-type' => 'Album' }
+    } 1 .. $N ];
+
+    %CACHE = (); @QUERIES = ();
+    my $got;
+    $API->getReleaseGroups(mbid => $PAGED, onDone => sub { $got = shift });
+    ok(scalar(@QUERIES == 2), 'the release-group pager asks for a SECOND page');
+    ok(scalar($QUERIES[0] =~ /\boffset=0\b/ && $QUERIES[1] =~ /\boffset=100\b/),
+       '... at the right offsets');
+    ok(scalar($got && @$got == $N), "... and returns all $N groups, not just the first page");
+    ok(scalar($got && $got->[-1]{mbid} eq "rg-p$N"),
+       '... including the last one, which only the second page carries');
+
+    local %RELEASES = ($PAGED => [ map {
+        { id => "r-p$_", title => "Paged Release $_", status => 'Official',
+          'release-group' => { id => "rg-p$_", title => "Paged Album $_" } }
+    } 1 .. $N ]);
+    %CACHE = (); @QUERIES = ();
+    $API->warmOfficial($PAGED, sub {});
+    ok(scalar(@QUERIES == 2), 'the release browse asks for a second page too');
+    my $map = $API->peekReleaseMap($PAGED);
+    ok(scalar($map && keys(%$map) == $N),
+       "... and maps all $N releases to their groups");
 }
 
 print "\n$pass passed, $fail failed\n";

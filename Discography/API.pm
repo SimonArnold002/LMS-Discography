@@ -57,7 +57,7 @@ my $prefs = preferences('plugin.discography');
 # instance for a namespace and ignores later args). tools/syntax_check.sh
 # asserts all three agree and match install.xml.
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.17';
+use constant CACHE_VERSION => '0.51.18';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 # MB's canonical artist name, remembered in-process as well as cached — the
@@ -274,15 +274,31 @@ sub _netRetryAfter {
     return 0;
 }
 
+# SAME CONTRACT AS _netIsShed: hand it the error callback's arguments in any
+# order and it probes whichever object can answer. It must see ALL of them.
+#
+# The accessors it needs live on DIFFERENT objects — `->code`/`->header` on the
+# HTTP::Response (the THIRD argument), `->error` on the SimpleAsyncHTTP object
+# (the FIRST; every error handler in this file reads `shift->error`). The old
+# fixed ($resp, $err) signature forced the one call site to pick one of them,
+# and it picked the async object — so the shed guard below, which reads
+# HEADERS, saw an object with none and fell through. An exhausted shed then
+# moved the backoff curve: the exact thing 0.51.18 exists to stop.
+#
+# The accessors are eval'd because an object that cannot answer one must not
+# die inside a network callback. The price is that a WRONG argument looks
+# exactly like a negative answer — which is why the old miss survived a review
+# round and a suite — so the contract is "pass everything", never "pass the
+# right one".
 sub _netIsRateLimited {
-    my ($resp, $err) = @_;
-    return 0 if _netIsShed($resp);      # busy, not throttled
-    if (ref $resp && $resp->can('code')) {
-        my $code = $resp->code // 0;
+    return 0 if _netIsShed(@_);         # busy, not throttled
+    my $err = '';
+    for my $r (@_) {
+        unless (ref $r) { $err .= $r if defined $r; next }
+        my $code = eval { $r->code } // 0;
         return 1 if $code == 503 || $code == 429;
+        $err .= (eval { $r->error } // '');
     }
-    $err = '' unless defined $err;
-    $err .= (ref $resp && $resp->can('error')) ? ($resp->error // '') : '';
     return $err =~ /rate limit|exceeding the allowable|too many requests|\b503\b|\b429\b/i ? 1 : 0;
 }
 
@@ -400,7 +416,10 @@ sub _netSend {
                 $release->();        # frees the slot and pumps; job is queued
                 return;
             }
-            _netNoteLimit($b) if $b && _netIsRateLimited($_[0], $_[1]);
+            # ALL THREE ARGUMENTS, like the shed test above: the response
+            # carries the code and the headers, the async object carries
+            # ->error, and handing over only one of them blinds the shed guard.
+            _netNoteLimit($b) if $b && _netIsRateLimited(@_);
             $release->();
             $job->{err}->(@_) unless $already;
         },
@@ -2084,8 +2103,10 @@ sub getReleaseGroups {
     my @all;
     my $page = 0;
 
-    my $fetchPage; $fetchPage = sub {
-        my ($offset) = @_;
+    # Self-passing closure, not a captured lexical (the 0.30.1 leak fix): this
+    # pager runs on every artist page that misses the release-group cache.
+    my $fetchPage = sub {
+        my ($self, $offset) = @_;
         # inc=aliases: MusicBrainz titles a release group in its ORIGINAL
         # language and carries other spellings as ALIASES, which no amount of
         # title normalisation can reach. Kraftwerk is filed under
@@ -2143,7 +2164,7 @@ sub getReleaseGroups {
                     # construction (each is asked for from the previous one's
                     # response) and _netGet supplies the MB etiquette gap on
                     # the public host. A second gap here would double it.
-                    $fetchPage->($offset + RG_PAGE_SIZE);
+                    $self->($self, $offset + RG_PAGE_SIZE);
                     return;
                 }
 
@@ -2185,7 +2206,7 @@ sub getReleaseGroups {
             timeout => 20);
     };
 
-    $fetchPage->(0);
+    $fetchPage->($fetchPage, 0);
 }
 
 sub clearReleaseGroups {
@@ -2390,11 +2411,14 @@ sub warmLocalReleases {
     $rel2rgInFlight{$_} = 1 for @todo;
     _dbg('local-release warm: ' . scalar(@todo) . ' release(s) to resolve directly');
 
-    my $next; $next = sub {
+    # Self-passing closure, not a captured lexical (the 0.30.1 leak fix): this
+    # runs on every page open that has unresolved release mbids.
+    my $next = sub {
+        my ($self) = @_;
         my $m = shift @todo;
         unless ($m) { $cb->(); return; }
 
-        my $done = sub { delete $rel2rgInFlight{$m}; $next->(); };
+        my $done = sub { delete $rel2rgInFlight{$m}; $self->($self); };
         my $url  = _mbBase() . 'release/' . $m . '?inc=release-groups&fmt=json';
 
         _netGet($url,
@@ -2428,7 +2452,7 @@ sub warmLocalReleases {
             timeout => 15);
     };
 
-    $next->();
+    $next->($next);
 }
 
 # ---------------------------------------------------------------------------
@@ -2700,8 +2724,10 @@ sub warmOfficial {
     my (%official, %rgOf, %editions);
     my $page = 0;
 
-    my $fetchPage; $fetchPage = sub {
-        my ($offset) = @_;
+    # Self-passing closure, not a captured lexical (the 0.30.1 leak fix): this
+    # release browse runs once per artist page whose official map is cold.
+    my $fetchPage = sub {
+        my ($self, $offset) = @_;
         my $url = _mbBase() . 'release?artist=' . $artistMbid
                 . '&inc=release-groups&limit=' . REL_PAGE_SIZE
                 . '&offset=' . $offset . '&fmt=json';
@@ -2738,7 +2764,7 @@ sub warmOfficial {
                 if ($offset + REL_PAGE_SIZE < $total && $page < REL_MAX_PAGES) {
                     # As the release-group pager: serial already, and _netGet
                     # owns the gap (0.51.17).
-                    $fetchPage->($offset + REL_PAGE_SIZE);
+                    $self->($self, $offset + REL_PAGE_SIZE);
                     return;
                 }
 
@@ -2771,7 +2797,7 @@ sub warmOfficial {
     };
 
     _dbg("official-status warm: starting release browse for $artistMbid");
-    $fetchPage->(0);
+    $fetchPage->($fetchPage, 0);
 }
 
 sub clearOfficial {

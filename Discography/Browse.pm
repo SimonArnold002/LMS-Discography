@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.17';
+use constant CACHE_VERSION => '0.51.18';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -1183,7 +1183,10 @@ sub _disambiguateByLibrary {
 
         my ($best, $bestW) = ($tagMbid, 0);
         my $i = 0;
-        my $step; $step = sub {
+        # Self-passing closure, not a captured lexical (the 0.30.1 leak fix):
+        # this walk runs whenever a tagged mbid fails to resolve.
+        my $step = sub {
+            my ($self) = @_;
             if ($i >= @$cands) {
                 my $ok = $bestW >= DISAMBIG_MIN_WEIGHT;
                 _dbg("disambiguate '$name': "
@@ -1193,7 +1196,7 @@ sub _disambiguateByLibrary {
             }
             my $c = $cands->[$i++];
             $api->getReleaseGroups(mbid => $c->{mbid},
-                onError => sub { $step->() },
+                onError => sub { $self->($self) },
                 onDone  => sub {
                     my $rgs = shift;
                     if ($rgs && @$rgs) {
@@ -1213,10 +1216,10 @@ sub _disambiguateByLibrary {
                     # goes through API::_netGet, which paces on the URL. A gap
                     # here as well would double the wait on the public host,
                     # and on a mirror it was already 0.
-                    $step->();
+                    $self->($self);
                 });
         };
-        $step->();
+        $step->($step);
     });
 }
 

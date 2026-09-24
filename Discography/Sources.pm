@@ -32,7 +32,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.51.17';
+use constant CACHE_VERSION => '0.51.18';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
@@ -1333,8 +1333,11 @@ sub artistImage {
     };
 
     my ($loose, $sawExact);
-    my $next;
-    $next = sub {
+    # Self-passing closure, not a captured lexical — avoids the reference cycle
+    # Perl never reclaims (the 0.30.1 leak fix). This one walks the adapters on
+    # every COLD artist thumbnail, so the captured form leaked per artist.
+    my $next = sub {
+        my ($self) = @_;
         my $a = shift @adapters;
         unless ($a) {
             _dbg("artist image '$name': loose fallback $loose")
@@ -1375,7 +1378,7 @@ sub artistImage {
                 my ($h) = grep { $_->{img} && _artistMatch($want, _norm($_->{name})) } @cands;
                 $loose = $h->{img} if $h;
             }
-            $next->();
+            $self->($self);
         };
         $timer = Slim::Utils::Timers::setTimer(undef, time() + ARTIMG_TIMEOUT, sub {
             return if $settled;
@@ -1388,7 +1391,7 @@ sub artistImage {
             $settle->(undef);
         };
     };
-    $next->();
+    $next->($next);
 }
 
 # Merge per-source artist hits into ONE deduped, deterministically ordered

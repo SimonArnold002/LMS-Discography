@@ -66,11 +66,30 @@ BEGIN {
 }
 
 package T::Null;  our $AUTOLOAD; sub AUTOLOAD { return } sub DESTROY { }
+
+# TWO OBJECTS, BECAUSE THE REAL CALLBACK GETS TWO. SimpleAsyncHTTP calls its
+# error handler as ($self, $error, $response) — verified in the LMS 9.0 source
+# and recorded in A3 — and the two carry DIFFERENT accessors. Modelling them as
+# one object is what made the shed assertions vacuous: the fixture passed the
+# same thing as both arguments, so code that read the wrong one still passed.
+#
+# T::HTTP is the ASYNC OBJECT. It answers ->error (every error handler in
+# API.pm reads `shift->error`) and, on success, ->content. It does NOT answer
+# ->header: whether the async object proxies the response's headers on the
+# error path is undocumented and unverified, so nothing may depend on it.
 package T::HTTP;
 sub get { my ($s, $url) = @_; $s->{url} = $url; push @main::SENT, $s; return $s }
 sub code    { return $_[0]{code}  // 0 }
 sub error   { return $_[0]{error} // '' }
 sub content { return $_[0]{body}  // '' }
+
+# T::RESP is the HTTP::Response. It answers ->code, ->content and ->header, and
+# deliberately has NO ->error — that accessor is the async object's, and a test
+# that let this object answer it would hide the same class of mix-up.
+package T::RESP;
+sub new     { my ($c, %f) = @_; return bless { %f }, $c }
+sub code    { return $_[0]{code} // 0 }
+sub content { return $_[0]{body} // '' }
 sub header  { return $_[0]{hdr}{ $_[1] } }
 package main;
 
@@ -133,20 +152,30 @@ sub failWith {
     my ($r, $code) = @_;
     return ok(0, "expected a request to fail with $code, but none was sent") unless ref $r;
     $r->{code} = $code; $r->{error} = "HTTP $code";
-    $r->{err}->($r, "HTTP $code");
+    $r->{err}->($r, "HTTP $code", T::RESP->new(code => $code, hdr => {}));
 }
 # A SHED, verbatim off the wire (probed 2026-09-20). Note `Remaining` is well
 # short of `Limit`: we were not over anything, their cluster was busy.
+#
+# THE SHED MARKERS GO ON THE RESPONSE ONLY, never on the async object. That is
+# the whole discrimination: code that reads the shed off the wrong argument
+# sees a bare 503 with no headers and no body, treats it as a refusal, and the
+# backoff assertions in section 10 go red. The earlier fixture passed $r as
+# both arguments, so it could not tell the two apart and the assertion that
+# exists for exactly this case could never fail.
 sub shedWith {
     my ($r, %o) = @_;
     return ok(0, 'expected a request to shed, but none was sent') unless ref $r;
     $r->{code}  = 503;
     $r->{error} = 'HTTP 503';
-    $r->{body}  = '{"error": "The MusicBrainz web server is currently busy. Please try again later."}';
-    $r->{hdr}   = { 'X-RateLimit-Who' => 'search-shed', 'X-RateLimit-Zone' => 'search',
-                    'X-RateLimit-Limit' => 1900, 'X-RateLimit-Remaining' => 269,
-                    'Retry-After' => (defined $o{after} ? $o{after} : 0) };
-    $r->{err}->($r, 'HTTP 503', $r);
+    my $resp = T::RESP->new(
+        code => 503,
+        body => '{"error": "The MusicBrainz web server is currently busy. Please try again later."}',
+        hdr  => { 'X-RateLimit-Who' => 'search-shed', 'X-RateLimit-Zone' => 'search',
+                  'X-RateLimit-Limit' => 1900, 'X-RateLimit-Remaining' => 269,
+                  'Retry-After' => (defined $o{after} ? $o{after} : 0) },
+    );
+    $r->{err}->($r, 'HTTP 503', $resp);
 }
 
 my $MIRROR = 'http://mirror:5000/ws/2/';
@@ -370,13 +399,30 @@ ok(scalar($A->can('_netIsShed')->(undef) == 0), 'control: nothing is not a shed'
 # passed it. Each is pinned alone here.
 {
     my $isShed = $A->can('_netIsShed');
-    my $hdrOnly = bless { code => 503, hdr => { 'X-RateLimit-Who' => 'search-shed' } }, 'T::HTTP';
-    my $bodyOnly = bless { code => 503, hdr => {},
-        body => '{"error": "The MusicBrainz web server is currently busy."}' }, 'T::HTTP';
-    my $plain503 = bless { code => 503, hdr => {}, body => 'gateway error' }, 'T::HTTP';
+    my $hdrOnly  = T::RESP->new(code => 503, hdr => { 'X-RateLimit-Who' => 'search-shed' });
+    my $bodyOnly = T::RESP->new(code => 503, hdr => {},
+        body => '{"error": "The MusicBrainz web server is currently busy."}');
+    my $plain503 = T::RESP->new(code => 503, hdr => {}, body => 'gateway error');
     ok(scalar($isShed->($hdrOnly)),  'the X-RateLimit-Who header alone identifies a shed');
     ok(scalar($isShed->($bodyOnly)), 'the "currently busy" body alone does too');
     ok(scalar(!$isShed->($plain503)), '... and an ordinary 503 is not one');
+
+    # THE ARGUMENT-ORDER PIN. Both shed probes are variadic for a reason: the
+    # markers are on the RESPONSE, and a reader handed only the async object
+    # answers "not a shed" — silently, because the accessors are eval'd. That
+    # is precisely what _netIsRateLimited did until 0.51.18, which let an
+    # exhausted shed move the backoff curve. Asserted on the subs themselves,
+    # so a future swap is named here rather than inferred from a stray delay.
+    my $async = bless { code => 503, error => 'HTTP 503' }, 'T::HTTP';
+    my $resp  = T::RESP->new(code => 503, hdr => { 'X-RateLimit-Who' => 'search-shed' });
+    my $isLim = $A->can('_netIsRateLimited');
+    ok(scalar(!$isShed->($async)), 'the async object alone carries no shed markers');
+    ok(scalar($isShed->($resp, $async) && $isShed->($async, $resp)),
+       '... so the response must be probed too, in either order');
+    ok(scalar(!$isLim->($async, 'HTTP 503', $resp)),
+       'a shed given the full callback arguments is never a rate limit');
+    ok(scalar($isLim->($async, 'HTTP 503')),
+       '... and WITHOUT the response it reads as one: why all three are passed');
 }
 
 # Retry-After is honoured as a floor when the server names one.
