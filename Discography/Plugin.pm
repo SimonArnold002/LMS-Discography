@@ -10,10 +10,11 @@ package Plugins::Discography::Plugin;
 # trimmed port of the album-match engine from the ListenBrainz Fresh Releases
 # plugin, same as the Pitchfork Reviews plugin's port.
 #
-# Entry point: a "Full Discography" custom action on the ARTIST context menu in
-# Material Skin (an `lmsbrowse` action written into the shared
-# prefs/material-skin/actions.json — read-merge-write, we only ever touch our
-# own entries; the file is shared with Listen Later and user-defined actions).
+# Entry point: a "Discography" custom action on the ARTIST context menu in
+# Material Skin — an `lmsbrowse` action REGISTERED with Material 6.4.6+
+# (registerCustomAction), no longer written into the shared
+# prefs/material-skin/actions.json. Startup still strips our entry from that
+# file, where builds up to 0.51.x put it (see _clearMaterialActions).
 # The plugin is also registered as an app so the feed is reachable/testable
 # without Material.
 #
@@ -23,7 +24,6 @@ use strict;
 use base qw(Slim::Plugin::OPMLBased);
 
 use JSON::XS;
-use File::Path ();
 use File::Spec;
 
 use Slim::Control::Request;
@@ -55,10 +55,12 @@ sub dbg {
 }
 
 # Canonical JSON writer for the shared actions.json (stable output for diffs).
+# Only the startup strip of our old entry writes that file now.
 my $JSON = JSON::XS->new->utf8->canonical->pretty;
 
 $prefs->init({
-    # Write the "Full Discography" entry to Material's artist context menu.
+    # Register the "Discography" entry on Material's artist context menu.
+    # Material has no unregister, so turning this off takes effect at restart.
     material_action => 1,
 
     # Default discography sort: 'newest' or 'oldest' first (by original release
@@ -239,15 +241,16 @@ sub postinitPlugin {
     my $class = shift;
 
     if ( Slim::Utils::PluginManager->isEnabled('Plugins::MaterialSkin::Plugin') ) {
+        # Strip our old actions.json entry FIRST, pref on or off. Material reads
+        # the file before its registered list and drops a repeated title, so a
+        # leftover file entry would hide the registered one — and keep the menu
+        # item alive with the pref off.
+        eval { _clearMaterialActions(); 1 }
+            or $log->error("dsc: failed to clear the old Material custom action: $@");
+
         if ( $prefs->get('material_action') ) {
-            eval { _writeMaterialActions(); 1 }
-                or $log->error("dsc: failed to write Material custom action: $@");
-        }
-        else {
-            # Pref is OFF but a previous run may have written our entry — strip it
-            # so the toggle actually removes the menu item.
-            eval { _clearMaterialActions(); 1 }
-                or $log->error("dsc: failed to clear Material custom action: $@");
+            eval { _registerMaterialActions(); 1 }
+                or $log->error("dsc: failed to register Material custom action: $@");
         }
     }
 
@@ -261,12 +264,95 @@ sub postinitPlugin {
 }
 
 # ---------------------------------------------------------------------------
-# Material custom action (prefs/material-skin/actions.json)
+# Material custom action — REGISTERED with Material (6.4.6+)
 #
-# The file is SHARED — Material itself, Listen Later and hand-written user
-# actions all live in it. Discipline (same as Listen Later): read the whole
-# file, strip only OUR entries (matched by _isOurAction), append the current
-# one, write back atomically. We never reset a category we don't own.
+# Material 6.4.6 added `registerCustomAction($section, $action)`: it keeps the
+# action in memory and serves it over ["material-skin","plugin-actions"], which
+# the client fetches at app start and merges with the shared actions.json
+# (customactions.js getSectionActions — FILE list first, then the registered
+# list, a repeated title skipped). Listen to Later is the worked example; this
+# is its tier-1/2 path cut down to what Discography needs:
+#
+#   * ONE positive action, in ONE section ('artist'). LL's delivery tiers exist
+#     for its EMPTY suppressor sections — the one-argument call that pushes a
+#     null on 6.4.6/6.4.7. We only ever make the two-argument call, which is
+#     safe on every Material that has the sub, so a ->can test is the whole gate.
+#   * No actions.json fallback. A Material older than 6.4.6 gets no menu entry;
+#     the feed is still reachable from My Apps. Logged, not silent.
+#   * Registered once per server run. registerCustomAction PUSHES — no de-dupe,
+#     no unregister — so a second call would list the entry twice, and turning
+#     the pref off only takes effect at the next restart.
+#
+# Search results and an artist page opened from search reach this entry too:
+# since 6.4.6 both resolve custom actions per item (getCustomActions('artist')),
+# which walks the registered list as well as the file.
+# ---------------------------------------------------------------------------
+
+# `our`, not `my`, so tools/t_material_actions.pl can re-arm it between cases —
+# "registers exactly once" is the contract that suite exists to pin.
+# Latched on the ATTEMPT: a retry in the same run could only double what landed.
+our $REGISTERED = 0;
+
+# The one action. `lmsbrowse` navigates Material INTO our browse feed with the
+# item's $VARS substituted. On an artist item $ARTISTID comes from the
+# "artist_id:N" item id and is the reliable key (we resolve the display name from
+# the library DB). $TITLE is the row's title — the artist name on artist rows —
+# kept as a fallback for surfaces without an artist_id. Unpopulated $VARS arrive
+# as the literal token ("$TITLE"); the feed guards against those.
+#
+# menu:discography is ESSENTIAL: without a menu param XMLBrowser answers in the
+# legacy loop_loop format whose items carry NO click actions — Material renders
+# the list but every click builds an empty command (blank page). With it the
+# response is SlimBrowse item_loop with per-item go actions (verified live both
+# ways, 0.2.2).
+# features:hi — Material appends this itself on every DRILL command
+# (browseBuildCommand), but the custom-action entry fetch bypasses that path, so
+# advertise it here or the top view renders headers as plain text while drill
+# rebuilds render real ones.
+# "Discography", not "Full Discography" — streaming-gated matching means we
+# can't promise completeness (hide_unmatched drops what we can't play).
+sub _materialAction {
+    return {
+        title => 'Discography',
+        icon  => 'album',
+        lmsbrowse => {
+            command => [ 'discography', 'items' ],
+            params  => [ 'artist_id:$ARTISTID', 'artist:$TITLE', 'menu:discography', 'features:hi' ],
+        },
+    };
+}
+
+# Returns 1 when Material took the action, 0 otherwise. Called through the code
+# ref ->can hands back, the same way LL does (_materialActionTier): a plain sub,
+# NOT a method, looked up at call time rather than bound at our compile time.
+sub _registerMaterialActions {
+    return 0 if $REGISTERED;
+
+    my $register = Plugins::MaterialSkin::Plugin->can('registerCustomAction');
+    unless ($register) {
+        $log->warn('dsc: this Material Skin has no registerCustomAction (needs 6.4.6+) - '
+            . 'no "Discography" entry on the artist menu; the plugin is still under My Apps');
+        return 0;
+    }
+
+    $REGISTERED = 1;
+    if ( eval { $register->('artist', _materialAction()); 1 } ) {
+        $log->info('dsc: registered the Material artist custom action');
+        return 1;
+    }
+    $log->error("dsc: registerCustomAction refused the artist action: $@");
+    return 0;
+}
+
+# ---------------------------------------------------------------------------
+# The OLD home: prefs/material-skin/actions.json. Builds up to 0.51.x wrote our
+# entry there; nothing writes it now, and startup strips it (postinitPlugin).
+#
+# The file is SHARED — Material itself, Listen Later, Album Booklet and
+# hand-written user actions all live in it. Read the whole file, strip only OUR
+# entries (matched by _isOurAction), write back atomically, and only when
+# something of ours was actually there. A file we cannot read or parse reads as
+# empty, so it is never written — it holds nothing of ours we could find.
 # ---------------------------------------------------------------------------
 
 sub _materialActionsFile {
@@ -313,55 +399,6 @@ sub _isOurAction {
     return 0;
 }
 
-sub _writeMaterialActions {
-    my $file = _materialActionsFile();
-    my $dir  = File::Spec->catdir(Slim::Utils::Prefs::dir(), 'material-skin');
-    File::Path::make_path($dir) unless -d $dir;
-
-    my $data = _readMaterialActions($file);
-
-    # Strip our entries from every category (covers a category rename between
-    # versions), then append the current entry to 'artist'.
-    for my $cat (keys %$data) {
-        next unless ref $data->{$cat} eq 'ARRAY';
-        $data->{$cat} = [ grep { !_isOurAction($_) } @{ $data->{$cat} } ];
-    }
-
-    # `lmsbrowse` navigates Material INTO our browse feed with the item's $VARS
-    # substituted. On an artist item $ARTISTID comes from the "artist_id:N" item
-    # id and is the reliable key (we resolve the display name from the library
-    # DB). $TITLE is the row's title — the artist name on artist rows — kept as
-    # a fallback for surfaces without an artist_id. Unpopulated $VARS arrive as
-    # the literal token ("$TITLE"); the feed guards against those.
-    #
-    # menu:discography is ESSENTIAL: without a menu param XMLBrowser answers in
-    # the legacy loop_loop format whose items carry NO click actions — Material
-    # renders the list but every click builds an empty command (blank page).
-    # With it the response is SlimBrowse item_loop with per-item go actions
-    # (verified live both ways, 0.2.2).
-    # features:hi — Material appends this itself on every DRILL command
-    # (browseBuildCommand), but the custom-action entry fetch bypasses that
-    # path, so advertise it here or the top view renders headers as plain text
-    # while drill rebuilds render real ones.
-    # "Discography", not "Full Discography" — streaming-gated matching means
-    # we can't promise completeness (hide_unmatched drops what we can't play).
-    push @{ $data->{artist} ||= [] }, {
-        title => 'Discography',
-        icon  => 'album',
-        lmsbrowse => {
-            command => [ 'discography', 'items' ],
-            params  => [ 'artist_id:$ARTISTID', 'artist:$TITLE', 'menu:discography', 'features:hi' ],
-        },
-    };
-
-    _writeMaterialActionsFile($file, $data);
-    $log->info("dsc: wrote Material artist custom action to $file");
-
-    # NB: Material reads customactions.json ONCE at app start and browser-caches
-    # it — an already-open Material tab needs a hard refresh to see this entry.
-    return;
-}
-
 sub _clearMaterialActions {
     my $file = _materialActionsFile();
     return unless -e $file;
@@ -371,16 +408,18 @@ sub _clearMaterialActions {
     for my $cat (keys %$data) {
         next unless ref $data->{$cat} eq 'ARRAY';
         my @kept = grep { !_isOurAction($_) } @{ $data->{$cat} };
-        if (@kept != @{ $data->{$cat} }) {
-            $data->{$cat} = \@kept;
-            $changed = 1;
-        }
-        # Drop the 'artist' key only if WE emptied it; an empty category is not
-        # neutral in Material (it suppresses), so never leave one behind.
-        delete $data->{$cat} if $changed && $cat eq 'artist' && !@kept;
+        next if @kept == @{ $data->{$cat} };
+        $data->{$cat} = \@kept;
+        $changed = 1;
+        # Drop the 'artist' key only if WE emptied it — decided per category,
+        # so an 'artist' section somebody else left empty on purpose survives.
+        # An empty category is not neutral in Material (it suppresses), so
+        # never leave one of ours behind.
+        delete $data->{$cat} if $cat eq 'artist' && !@kept;
     }
-    _writeMaterialActionsFile($file, $data) if $changed;
-    $log->info("dsc: cleared Material artist custom action") if $changed;
+    return unless $changed;
+    _writeMaterialActionsFile($file, $data);
+    $log->warn("dsc: removed the old Discography entry from $file (it is registered with Material now)");
     return;
 }
 

@@ -221,7 +221,7 @@ PLUGIN_DISCOGRAPHY_MATERIAL_ACTION
 	EN	Material Skin artist menu entry
 
 PLUGIN_DISCOGRAPHY_MATERIAL_ACTION_DESC
-	EN	Add "Discography" to the artist context menu in Material Skin. Changing this needs a server restart and a hard refresh of Material.
+	EN	Add "Discography" to the artist context menu in Material Skin (needs Material 6.4.6 or later). Changing this needs a server restart and a reload of Material.
 
 PLUGIN_DISCOGRAPHY_MB_BASE_URL
 	EN	MusicBrainz server
