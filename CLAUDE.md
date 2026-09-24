@@ -67,6 +67,9 @@ because line numbers rot on the next edit.
 | Collaborations needing a second entry; and why `clearcache` is NOT a cold artist | A3 | ``clearcache` is not cold` |
 | `autodetectMirror`'s `$try` is STILL a self-capturing closure — deliberate, once per startup | log | `is still deliberately left alone` |
 | `Browse::_disambiguateByLibrary` has no suite — known gap, stated 2026-09-24 | log | `has no suite at all` |
+| A vanished player id closes the connection with NO log line — reads as a crash, is not one | log | `READS EXACTLY LIKE A SERVER CRASH` |
+| `pref` CLI refused from a Tailscale/CGNAT address, so `acceptance.py`'s first check cannot run remotely | log | `restricted to the local network` |
+| LMS restarts + the `inactive database handle` backtrace are UnifiedHiFi's shutdown, not DSC | log | `were NOT Discography` |
 
 **Two standing rules that kill most repeat findings:**
 
@@ -951,7 +954,7 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
-### 0.51.18 (2026-09-20) — a MusicBrainz 503 is TWO different things — NOT YET BUILT
+### 0.51.18 (2026-09-20) — a MusicBrainz 503 is TWO different things — BUILT + INSTALLED 2026-09-24, pushed to dev
 - **Field (Simon's acceptance run).** With `mb_base_url` pointed at the public API, cold artist pages
   earned a 503 roughly once a minute. The queue was not at fault: the log shows a textbook 1.0-1.2s
   stream sustained for 45s, and the refusals landed only on the artist SEARCH.
@@ -987,8 +990,9 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   could not fail and none of the six mutants could reach it. The defect it was written to catch was
   sitting in the code the whole time (below). **An assertion added in the same round that discovers
   the bug is not evidence until a mutant has actually turned it red.**
-- **UNVERIFIED LIVE.** The suite proves the logic; only a run on the server proves the diagnosis was
-  right about Simon's traffic. The acceptance bar moved with the finding: zero 503s is not achievable
+- **Live 2026-09-24: no regression, but the SHED PATH IS STILL UNPROVEN LIVE** (MusicBrainz did not
+  shed once during the soak; see "Live acceptance 2026-09-24" below). The suite proves the logic; only a
+  shedding day proves the diagnosis was right about Simon's traffic. The acceptance bar moved with the finding: zero 503s is not achievable
   because MusicBrainz issues them for its own reasons — the bar is **zero 503s reaching the page**,
   with sheds visible only as `shed ... retry 1/3` debug lines.
 
@@ -1031,8 +1035,47 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   harness instead: the walk visits all three candidates (including the `onError` arm) and adopts the
   corroborated one, and both dropped-self-argument mutants die on the spot. **Left as a known
   coverage gap, not a silent assumption.**
-- All 33 suites green, `syntax_check.sh` clean. **Still UNVERIFIED LIVE** — nothing built or
-  installed in this round.
+- All 33 suites green, `syntax_check.sh` clean.
+
+#### Live acceptance 2026-09-24 — 0.51.18 built, installed, run against the PUBLIC API
+- **PASS on the stated bar, with one honest gap.** 33 distinct artists, each cache-cleared and
+  resolved BY NAME (the search endpoint is the one that sheds), rendered cold against
+  `https://musicbrainz.org/ws/2/`: every page rendered, **zero 503s reached a page**, zero backoff
+  events, zero watchdog wedges, zero Discography error/warn lines. Cold pages ran 6.6-23.5s, the
+  1.1s queue gap visibly holding between pages.
+- **THE SHED RETRY PATH WAS NEVER EXERCISED. MusicBrainz did not shed once, all afternoon.** The
+  field report this version answers was "a 503 roughly once a minute"; today, none in 33 cold pages
+  over ~15 minutes of sustained cold traffic. Load shedding is THEIR weather, not something a test
+  can summon. So the fix is proven by the suite and its four mutants, and the live run proves only
+  that nothing REGRESSED. **Do not record this round as proving the shed logic.** Re-run the soak on
+  a day MusicBrainz is shedding, and look for `shed ... retry n/3` with the backoff curve unmoved.
+- **Both rewritten pagers ARE proven live, and deeper than the suite manages.** On the mirror:
+  `release-group list truncated at 600 of 6288` (6 pages, the `RG_MAX_PAGES` cap) and `release list
+  truncated at 4000 of 8632` (**40 pages — 39 recursive self-calls**) on one artist, plus Madness at
+  `111 of 111` for a clean 2-page walk that exits without truncating. A dropped self-argument is
+  fatal, so ~45 clean self-calls is real evidence.
+
+**TWO ACCEPTANCE-TOOLING TRAPS, both of which cost this session real time:**
+- **A VANISHED PLAYER ID READS EXACTLY LIKE A SERVER CRASH.** LMS rejects a request naming a player
+  that no longer exists at `validate()` **before dispatch**: the connection closes in ~0.04s with
+  **no log line at all**, while `serverstatus` and any player-less command (`clearcache`) still
+  answer fine. LMS restarted several times mid-soak and the bridge plugins' virtual players came
+  back with NEW MACs, so a harness that resolves the player ONCE at startup poisons every later
+  render and looks like the plugin killing the server. **A soak must re-resolve the player before
+  every render.** `tools/acceptance.py` still resolves it once — fix it before trusting a long run.
+- **`pref` CLI queries are refused from a Tailscale IP.** `Slim::Web::JSONRPC::handleURI`: "Access
+  to settings is restricted to the local network or localhost: 100.90.6.51" — a CGNAT (100.64/10)
+  address is not LAN, so EVERY `pref ... ?` fails, including core ones (`language`, `httpport`).
+  `acceptance.py`'s `test_hide_unmatched_cold` reads a pref on its first line, so it cannot run
+  remotely at all and reports as a raised FAIL. Not a defect; run it from the LAN, or skip it.
+- **The LMS restarts were NOT Discography.** Two of them predate the 0.51.18 install entirely
+  (12:31, 13:02 vs install 13:26). The ones that logged a cause show `main::cleanup` — a deliberate
+  shutdown — and the accompanying `DBD::SQLite ... attempt to fetch on inactive database handle` is
+  **`Plugins::UnifiedHiFi`'s `shutdownPlugin` re-entering the event loop** after the DB handle is
+  closed (frames 27→22 of the backtrace), servicing a streaming response on a dead schema. It fires
+  under whichever plugin happens to be mid-work — it was logged once under Discography and once
+  under LBF's `DetailWarm`. Discography appears in no crash stack, and the heaviest run of the day
+  (Beethoven, 40 pages) caused no restart.
 
 
 ### 0.51.17 (2026-09-20) — one outbound request queue
