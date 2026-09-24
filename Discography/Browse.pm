@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.54.6';
+use constant CACHE_VERSION => '0.54.8';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -113,6 +113,9 @@ my @GROUP_ORDER = (
     [ LIVE         => 'PLUGIN_DISCOGRAPHY_LIVE',         'release-live'   ],
     [ OTHER        => 'PLUGIN_DISCOGRAPHY_OTHER',        'release'        ],
 );
+
+# The release groups the Singles view shows (the Albums | Singles toggle).
+my %SINGLE_FAMILY = (SINGLES => 1, EPS => 1);
 
 sub _groupOf {
     my ($rg) = @_;
@@ -906,7 +909,8 @@ sub topLevel {
         # bug: bio expansion never showed). `page` is the same class of state:
         # the section "Show more" rows refresh the TOP view too. The visibility
         # snapshot is still reset — the refreshed render is a complete,
-        # consistent new tree.
+        # consistent new tree. `view` (the Albums | Singles toggle) is the same
+        # class again: its refresh re-issues the artist's own command.
         my $prev = $lastCtx{ _cid($client) };
         my $same = $prev
             && ($prev->{artist_id} // '') eq ($artistId // '')
@@ -916,7 +920,8 @@ sub topLevel {
             artist_id => $artistId, artist => $artist, mbid => $mbid,
             features => $features,
             $same ? ( bio  => $prev->{bio}, rev => $prev->{rev},
-                      ver  => $prev->{ver}, page => $prev->{page} ) : (),
+                      ver  => $prev->{ver}, page => $prev->{page},
+                      view => $prev->{view} ) : (),
         };
     }
     elsif ($walking && (my $ctx = $lastCtx{ _cid($client) })) {
@@ -2363,8 +2368,31 @@ sub _buildList {
             . 'this render found ' . scalar(@shown) . ' release(s)');
     }
 
+    # ALBUMS | SINGLES VIEW (Simon, 2026-09-24; LBF's "Showing ..." toggle).
+    # Applied HERE, after the release loop and the empty-verdict code, so it
+    # only decides what is DISPLAYED: matching, rival ownership, the streaming
+    # claims ("Also on streaming") and the hide_unmatched snapshot were all
+    # computed for every release above, and the verdict judged the full set.
+    # Singles view = the EPs and Singles sections (a true tab: no bio, extras or
+    # links; EPs joined it at Simon's request, as LBF's "Singles & EPs");
+    # Albums view = every other release section. Live etc. stay on Albums for now. The choice lives in the per-player ctx (reset by a
+    # different artist, kept across this artist's own refreshes) and is CLAMPED
+    # to a family this page has, so a singles-only artist never opens empty and
+    # the toggle only appears when both families have something to show.
+    my $hasSingles = grep {  $SINGLE_FAMILY{ _groupOf($_->[0]) } } @shown;
+    my $hasAlbums  = grep { !$SINGLE_FAMILY{ _groupOf($_->[0]) } } @shown;
+    my $view = ($ctx->{view} // '') eq 'singles' ? 'singles' : 'albums';
+    $view = 'albums'  if $view eq 'singles' && !$hasSingles;
+    $view = 'singles' if $view eq 'albums'  && !$hasAlbums && $hasSingles;
+    my $singlesView = $view eq 'singles' ? 1 : 0;
+    # The TAB (bio, extras and links held back) only exists when there is an
+    # Albums view to hold them: a singles-only artist has no toggle, so its
+    # page keeps every section rather than losing them with no way back.
+    my $singlesTab = ($singlesView && $hasAlbums) ? 1 : 0;
+    my @render = grep { ($SINGLE_FAMILY{ _groupOf($_->[0]) } ? 1 : 0) == $singlesView } @shown;
+
     my %bucket;
-    push @{ $bucket{ _groupOf($_->[0]) } }, $_ for @shown;
+    push @{ $bucket{ _groupOf($_->[0]) } }, $_ for @render;
 
     # Artist bio at the very top (the phase-2 artist-view vision, list-native):
     # summary + the same refresh-toggle inline expand the review uses. Awaited
@@ -2415,6 +2443,7 @@ sub _buildList {
     unshift @bioRows, _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_BIOGRAPHY', $useH,
         IMG_BASE . 'dsc-bio_MTL_icon_person.png', \@bioRows,
         { id => 'sect:BIO', itemActions => _listItemActions($opts, 'sect:BIO') }) if @bioRows;
+    @bioRows = () if $singlesTab;    # a true tab: Options + Singles only
 
     # Search rides here too, as a BUTTON that opens its own page (Simon,
     # 2026-09-24): after any artist browse the app re-opens on that artist (the
@@ -2423,7 +2452,8 @@ sub _buildList {
     # Material draws it inline or as a popup depending on the page's size.
     # The local-only toggle is offered whenever the user owns anything by this
     # artist (or the filter is already on, so there is always a way back out).
-    my @optRows = (_sortToggleItem($client, $opts),
+    my @optRows = (($hasAlbums && $hasSingles) ? (_viewToggleItem($client, $opts, $view)) : (),
+                   _sortToggleItem($client, $opts),
                    ((@$local || $localOnly) ? (_localOnlyToggleItem($client, $opts)) : ()),
                    _refreshItem($client, $opts, $mbid),
                    _searchButtonRow($client, $opts));
@@ -2472,6 +2502,9 @@ sub _buildList {
 
         push @items, $hdr, @$vis, @$pgRows;
     }
+
+    # The Singles view is a true tab: nothing below the release sections.
+    return \@items if $singlesTab;
 
     # Safety net: library albums under this artist that NO release group
     # claimed (MB gaps, odd editions, matcher misses) — nothing owned may
@@ -2950,6 +2983,33 @@ sub _pageRow {
             # default, so an unpaged section leaves no ctx residue.
             if ($p->{target} <= PAGE_SIZE) { delete $ctx->{page}{ $p->{key} } }
             else                           { $ctx->{page}{ $p->{key} } = $p->{target} }
+            $cb->({ items => [] });
+        },
+    };
+}
+
+# The Albums | Singles view toggle (Simon, 2026-09-24): ONE cycling row, LBF's
+# "Showing ..." pattern — Material gives a plugin list no side-by-side layout,
+# so there are no real tabs. The icon shows the CURRENT view, the label names
+# both. It flips IN PLACE: the row sets the ctx flag to an ABSOLUTE target
+# (idempotent under a re-walk) and nextWindow refreshes the artist's own
+# command, whose same-artist fresh entry keeps `view` (like the bio's flag).
+sub _viewToggleItem {
+    my ($client, $opts, $view) = @_;
+    my $singles = ($view // '') eq 'singles' ? 1 : 0;
+    my $now  = cstring($client, $singles ? 'PLUGIN_DISCOGRAPHY_SINGLES_EPS' : 'PLUGIN_DISCOGRAPHY_ALBUMS');
+    my $next = cstring($client, $singles ? 'PLUGIN_DISCOGRAPHY_ALBUMS'      : 'PLUGIN_DISCOGRAPHY_SINGLES_EPS');
+    return {
+        name        => sprintf(cstring($client, 'PLUGIN_DISCOGRAPHY_SHOWING'), $now, $next),
+        type        => 'link',
+        image       => IMG_BASE . 'dsc_MTL_svg_' . ($singles ? 'release-single' : 'release-album') . '.png',
+        nextWindow  => 'refresh',
+        id          => 'act:view',
+        itemActions => _listItemActions($opts, 'act:view'),
+        passthrough => [{ to => $singles ? 'albums' : 'singles' }],
+        url         => sub {
+            my ($c, $cb, $a, $p) = @_;
+            $lastCtx{ _cid($c) }{view} = ($p->{to} // '') eq 'singles' ? 'singles' : 'albums';
             $cb->({ items => [] });
         },
     };

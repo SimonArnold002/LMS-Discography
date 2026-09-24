@@ -43,6 +43,12 @@ PLUGIN_DISCOGRAPHY_ROLE_MATERIAL
 PLUGIN_DISCOGRAPHY_SORT_NEWEST
 	EN	Sorted newest first (tap for oldest)
 
+PLUGIN_DISCOGRAPHY_SHOWING
+	EN	Showing %s (tap for %s)
+
+PLUGIN_DISCOGRAPHY_SINGLES_EPS
+	EN	Singles & EPs
+
 PLUGIN_DISCOGRAPHY_SORT_OLDEST
 	EN	Sorted oldest first (tap for newest)
 

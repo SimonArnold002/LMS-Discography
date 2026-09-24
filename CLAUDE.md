@@ -80,7 +80,9 @@ because line numbers rot on the next edit.
 | No badge on a Local-first tile, line2 still naming services, no badge on artist rows — all by design | A2 | `THE SERVICE BADGE NAMES THE SOURCE THAT PLAYS` |
 | Artist-page search is a button in Options that opens the home page (the extra tap is the design) | A2 | `SEARCH IS A BUTTON IN OPTIONS` |
 | "Works best with" tiles show no role line (tooltip only) | A2 | `IS ONE STRIP OF TILES` |
+| Albums / Singles is a toggle row, not tabs; the Singles view hides bio/extras/links | A2 | `SINGLES IS A TRUE TAB` |
 | `extid` on our rows changing Material favourites | A3 | `Material's only other `extid` reader` |
+| Qobuz badge off-centre on tiles = our wrong icon | A3 | `badge off-centre on strip tiles` |
 
 **Two standing rules that kill most repeat findings:**
 
@@ -319,6 +321,12 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   builder; Simon, 2026-09-24: the stacked rows took too much screen). No visible role line is the design,
   not an omission; on a touch screen the role is simply not shown. Pinned in `tools/t_worksbest.pl`.
 
+- **THE ARTIST PAGE'S ALBUMS | SINGLES SPLIT IS ONE TOGGLE ROW, AND SINGLES IS A TRUE TAB** (`_viewToggleItem`,
+  `act:view`, `$singlesTab`; Simon, 2026-09-24). Not real tabs: Material has no side-by-side layout for a
+  plugin list (LBF's ledger measured it). The Singles view showing no bio/extras/links is the design; a
+  singles-only artist keeps them (no toggle, no Albums view). The Singles view holds EPs too, as its own
+  section (Simon, 2026-09-24, "Singles & EPs"); Live etc. stay on Albums until asked for. The choice is per artist per player (ctx), not a pref. Pinned in `tools/t_view.pl`.
+
 ### A3. DISPROVEN — a review WILL re-derive these from the code; each was measured
 
 **Why this section exists (Simon, 2026-09-19).** A finding that a review "checked and cleared"
@@ -342,6 +350,7 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 | `length $e->[0] >= 2` in `_editionTitles`/`matchesFor` parses as `length($e->[0] >= 2)` | **WRONG** | In Perl **a named unary binds tighter** than a comparison operator, so it is `length($e->[0]) >= 2`, which is the intent. Same shape appears in the alias pass and has been correct since 0.48.0. |
 | Moving the collaboration vetting off the render path (0.51.15) costs a visit on a cold artist | **PARTLY RIGHT — and my 2026-09-19 "WRONG" verdict was itself wrong** | Re-measured 2026-09-20 on 0.51.16 after a CACHE_VERSION bump, which is the ONLY truly cold state: Brian Eno's Collaborations section is **absent on the first entry and present on the second** (same two links). The 2026-09-19 measurement used `["discography","clearcache","mbid:..."]`, and **clearing by mbid and clearing by name touch DISJOINT key sets** — by mbid it reports `rg,official,bands,collabs,rgcount,empty`, by name `mbid,bio,candnames,candidates`. So the name->mbid resolution, the bio and the streaming candidates stayed warm, the serial chain was short enough to finish before the render, and the section made the first entry. **`clearcache` is not cold.** To test a cold artist, bump CACHE_VERSION or clear by BOTH name and mbid. |
 | Putting `extid` on our rows (0.54.3) changes what Material stores as a favourite | **WRONG** (read in `lms-material` b8f144b57, review 2026-09-24) | Material's only other `extid` reader, in `utils-deferred.js`, builds a favourite URL from it ONLY for an item whose id starts with `album_id:` (its library album rows). Discography's badged rows carry ids `v:`, `str:`, `lib:` or none, so they never reach that path; the badge is `getEmblem`, which reads the text before the first `:` and nothing else. |
+| The Qobuz badge off-centre on strip tiles (Simon 2026-09-24, "the Q is offset") means Discography sends a different icon or transparency | **WRONG** (read in `lms-material` b8f144b57) | The badge is Material's own `getEmblem("qobuz:...")`, the same key PFR and LL send. The fault is Material CSS: a `header-strip` tile is a `grid-scroll` row in LIST mode, so the circle takes the grid size (icon+8px, 2px padding) while the img takes `.lms-list .emblem img` (icon size), leaving a 4px gap right and bottom. Fixed on the Material `plugin-tile-strips` branch (`.grid-scroll .emblem img` joins the grid img rule in style.css). Nothing to change in Discography. Material 6.4.10.8 with the fix INSTALLED + VERIFIED LIVE (Simon 2026-09-24). |
 
 ### B. KNOWN-OPEN AND ACCEPTED — do not re-report as new
 
@@ -1023,6 +1032,49 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   likewise deliberately LBF-only and outside the shared engine.
 
 ## Development Log
+
+### 0.54.8 (2026-09-24) — EPs move into the Singles view — BUILT, not installed
+- Zip sha1 `dc580cc1658c85d90bb2a73e3f6778c6a55dbce0`; CACHE_VERSION 0.54.8; repo.xml bumped with it. Also carries 0.54.7 (the Albums | Singles toggle), never installed on its own.
+- **Simon (0.54.7 built, not yet installed): "move EPs into singles".** Chose its OWN EPs section in that
+  view (over one merged "Singles & EPs" section). `%SINGLE_FAMILY` = SINGLES + EPS drives the toggle's
+  availability, the clamp and the filter; the Singles view renders EPs then Singles, each with its own
+  count and paging. The toggle reads "Showing Singles & EPs (tap for Albums)" (new string
+  `PLUGIN_DISCOGRAPHY_SINGLES_EPS`, LBF's wording). EPs keep `layout_albums` (the layout setting's
+  documented scope: everything except Singles), so in the mix EPs are a tile strip above the Singles list.
+- `tools/t_view.pl` 22 -> 24 (EPs move views, EPs before Singles, an EPs-and-singles-only artist opens on
+  that view with no toggle and keeps its bio). Anti-tested (EPs left out of the family: 4 red). All 40
+  suites green.
+
+### 0.54.7 (2026-09-24) — artist page: Albums | Singles view toggle — BUILT, not installed
+- Zip sha1 `8f80b8b6666f39c28a7c70aee168fdc8e6b7af6a`; CACHE_VERSION 0.54.7; repo.xml bumped with it.
+- **Simon: split albums and singles the way LBF does, to make the page easier to navigate; EPs, Live etc.
+  may get their own views later, start with albums and singles.** LBF's feature is not real tabs (its
+  ledger: Material gives a plugin list no side-by-side layout) but ONE cycling Options row, "Showing
+  Albums (tap for Singles)"; ported that shape.
+- **`Browse::_viewToggleItem`** (`act:view`), first row of Options, icon = Material's release-album /
+  release-single svg for the CURRENT view. Flips IN PLACE: sets `$lastCtx{cid}{view}` to an ABSOLUTE
+  target and returns `nextWindow => 'refresh'`; `topLevel`'s same-artist fresh entry now keeps `view`
+  (beside bio/rev/ver/page), so the choice sticks across this artist's refreshes, paging and param-
+  addressed taps, and a different artist opens on Albums. No pref, no param.
+- **Singles view = the Singles section only, a TRUE TAB** (Simon's pick): no bio, library extras,
+  Also on streaming, bands, collaborations or similar artists. Albums view = every other release section
+  (Albums, EPs, Compilations, Live, Other) plus all of those.
+- **The filter sits AFTER the release loop and the empty-verdict code**, so matching, rival ownership,
+  the "Also on streaming" claims and the hide_unmatched snapshot are computed for every release exactly
+  as before; the view only decides what is displayed. Pinned: a streaming album claimed by a Single does
+  not resurface under Also on streaming on the Albums view.
+- **Clamped per render:** the toggle appears only when both families have visible releases; a
+  singles-only artist opens on Singles with no toggle AND keeps its bio/extras/links (the tab only
+  exists when an Albums view can hold them — caught by the new suite before shipping); an albums-only
+  artist ignores a stored Singles choice. Layout settings unchanged (Singles keeps `layout_singles`).
+- New string `PLUGIN_DISCOGRAPHY_SHOWING` ("Showing %s (tap for %s)"); icons reuse the shipped svg names.
+- **`tools/t_view.pl` (new, 22)** drives the REAL `_buildList` with the services stubbed. Anti-tested
+  five ways (no filter: 2 red; filter moved INTO the release loop: the claims assertion red; tab even
+  with no Albums view: 1; no clamp: 1; flag not kept on fresh entry: 1). All 40 suites green.
+- **LIVE CHECK after install:** an artist with both: Options starts "Showing Albums (tap for Singles)";
+  tap -> the same page shows just Options + Singles; paging/drilling a single and coming back stays on
+  Singles; tap again -> Albums with bio and links; a new artist opens on Albums; a singles-only artist
+  shows no toggle and still has its bio.
 
 ### 0.54.6 (2026-09-24) — "Works best with" as one strip of tiles — INSTALLED + VERIFIED LIVE
 - Zip sha1 `410680c71818862128cca2e4aab5845d93ef3bef`; CACHE_VERSION 0.54.6; repo.xml bumped with it. Also carries 0.54.5 (search button -> home page), never installed on its own.

@@ -185,6 +185,18 @@ It already looks inside grouped rows, but only when the first row has `searchcat
 +        if (this.view.items.length>0 && (undefined!=this.view.items[0].searchcat || this.view.items[0].pageHasStrips)) {
 ```
 
+### 6. `style.css`: centre the service badge on a strip tile
+
+A strip sits on a list page, so a tile's badge circle takes the grid size but its image takes
+the list size (`.lms-list .emblem img`) and sits 4px off-centre. Home-page shelves are fine
+because they sit inside `.lms-image-grid`. Search strips have the same gap, but their tiles
+rarely carry a badge.
+
+```diff
+-.np-grid-item .emblem img, .np-emblem img, .lms-image-grid .emblem img {
++.np-grid-item .emblem img, .np-emblem img, .lms-image-grid .emblem img, .grid-scroll .emblem img {
+```
+
 ## Compatibility
 
 Nothing changes unless a plugin sends `header-strip`. An older Material doesn't recognise the
