@@ -14,6 +14,20 @@ my $prefs = preferences('plugin.discography');
 # @GROUP_ORDER — keep in sync).
 my @TYPE_KEYS = qw(ALBUMS EPS SINGLES COMPILATIONS LIVE OTHER);
 
+# Every checkbox pref on the page (LBF's @CHECKBOX_PREFS, same reason). An
+# unticked checkbox posts NOTHING, and Slim::Web::Settings::handler then stores
+# undef for it; Prefs::Base::init re-seeds an undef pref with its DEFAULT at the
+# next load, so a default-on box (material_action, hide_unmatched, show_bio,
+# show_library_extras) came back ticked after every restart and could never be
+# turned off. handler() coerces each to an explicit 0/1.
+#
+# KEEP IN SYNC with the pref_* checkboxes in settings.html. The release-type
+# boxes are NOT here — they are dsc_type_* fields folded into show_types below.
+our @CHECKBOX_PREFS = qw(
+    hide_unmatched show_bio show_library_extras show_streaming_extras
+    show_all_versions material_action debug_log
+);
+
 sub name { 'PLUGIN_DISCOGRAPHY' }
 
 sub page { 'plugins/Discography/settings.html' }
@@ -31,6 +45,15 @@ sub handler {
     my ($class, $client, $params) = @_;
 
     if ($params->{saveSettings}) {
+        # Checkboxes -> explicit 0/1, but only for the REAL form: an unticked box
+        # and a box absent from a partial/non-form POST look the same, and a
+        # blind coercion would zero every toggle on a partial save. The hidden
+        # dsc_types_form field is always posted by the page, so it is the
+        # sentinel (it also gates the release-type boxes below).
+        if (defined $params->{dsc_types_form}) {
+            $params->{"pref_$_"} = $params->{"pref_$_"} ? 1 : 0 for @CHECKBOX_PREFS;
+        }
+
         # Normalise priorities to integers 0-9 (0 = never use). An absent field
         # (partial/non-form POST) keeps the CURRENT value rather than forcing 0,
         # which would silently disable that source (fleet convention).

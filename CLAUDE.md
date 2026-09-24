@@ -983,7 +983,24 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
-### 0.52.0 (2026-09-24) — the Material menu entry is REGISTERED, not written — BUILT, NOT installed
+### 0.52.1 (2026-09-24) — settings checkboxes could not be turned OFF — BUILT, NOT installed
+- Zip sha1 `85a0cec86fdc25b0b4a5f08b042aa2352d66282d`; CACHE_VERSION 0.52.1. LIVE VERIFY: untick the Material
+  menu entry, save, restart LMS -> it stays unticked and the entry is gone from Material; tick it again -> back.
+- **Field (Simon): unticking "Material Skin artist menu entry" did not stick.** An unticked checkbox
+  posts nothing; `Slim::Web::Settings::handler` stores undef for every pref in `prefs()`; `Prefs::Base::init`
+  re-seeds an undef pref with its DEFAULT at the next load. So the four default-on boxes
+  (`material_action`, `hide_unmatched`, `show_bio`, `show_library_extras`) came back ON after every restart.
+  Present since the settings page (0.10.0). LBF fixed this long ago (`@CHECKBOX_PREFS`) and LL did too;
+  it was never ported here.
+- **Fix:** `Settings::@CHECKBOX_PREFS` (all 7 `pref_*` boxes), coerced to explicit 0/1 in `handler`, only
+  when the hidden `dsc_types_form` sentinel shows the real form was posted (a partial POST keeps values).
+- **`tools/t_settings.pl` (new, 23)** RUNS `handler()` against a base modelled on LMS's (unconditional set,
+  then `beforeRender`), and checks the list against every `pref_*` checkbox in settings.html so a new box
+  cannot be missed. Mutation-tested: no coercion (8 red), no sentinel (1), a box missing from the list (2).
+- **Fleet check:** LBF coerces all 30 of its checkbox prefs - clean. PFR's one checkbox (`debug_log`) is
+  NOT coerced; it defaults to 0 so the re-seed is harmless, but it stores undef.
+
+### 0.52.0 (2026-09-24) — the Material menu entry is REGISTERED, not written — INSTALLED + VERIFIED LIVE
 - Zip sha1 `63ceed699fcba0c08cb037d8d692ce2160676861`; CACHE_VERSION 0.52.0 in all three modules (clears every
   Discography cache on install). repo.xml bumped with it.
 - **Simon: "port it over to the new way. Use LL as the benchmark ... we don't need any migration."**
@@ -1012,6 +1029,11 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   entry is still there; (3) in Material, "Discography" is on the "…" menu from the Artists list, from
   a search result, and from an artist page opened from search, and it opens the right artist;
   (4) pref off + restart -> the entry is gone.
+- **VERIFIED LIVE 2026-09-24 (Material 6.4.10, LMS 9.1.2):** (1) `plugin-actions` carries the `artist`
+  section with our action, all four params; (2) `customactions.json` holds only Album Booklet's `track`
+  entry, and the log shows the strip ran once (`removed the old Discography entry from
+  .../material-skin/actions.json`), no registration errors; (3) Simon: the menu entry works in Material.
+  (4) pref-off + restart not separately confirmed.
 
 ### 0.51.20 (2026-09-24) — review of 0.51.19: stub bios, and MAI's "not found" shown as the review — BUILT, NOT installed
 - Zip sha1 `b5408afcee983eb8c4567f4afc5edb7f99dcbdfc`; CACHE_VERSION 0.51.20 (clears the sorry-text
