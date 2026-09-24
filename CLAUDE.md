@@ -78,6 +78,8 @@ because line numbers rot on the next edit.
 | Bio/review prose is LBF's parser, with FOUR deliberate divergences (cap, U+2028, duplicate names, 380 cut) and one row per block | A2 | `Bio and review prose is LBF's port` |
 | The Default / Classic web skins are NOT supported — a finding about how they render is void | A2 | `Default and Classic web skins are not supported` |
 | No badge on a Local-first tile, line2 still naming services, no badge on artist rows — all by design | A2 | `THE SERVICE BADGE NAMES THE SOURCE THAT PLAYS` |
+| Artist-page search is a button in Options that opens the home page (the extra tap is the design) | A2 | `SEARCH IS A BUTTON IN OPTIONS` |
+| "Works best with" tiles show no role line (tooltip only) | A2 | `IS ONE STRIP OF TILES` |
 | `extid` on our rows changing Material favourites | A3 | `Material's only other `extid` reader` |
 
 **Two standing rules that kill most repeat findings:**
@@ -303,6 +305,19 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   source, Local included, is shown. Artist rows (search, band, collaboration, similar) are NOT badged:
   their artwork is an artist photo, not a service's album. Needs Material 6.4.10+; older draws nothing.
   Pinned in `tools/t_extid.pl`.
+
+- **ON THE ARTIST PAGE, SEARCH IS A BUTTON IN OPTIONS, NOT A SEARCH BOX** (`_searchButtonRow`, `act:search`;
+  Simon, 2026-09-24: the inline box "feels a bit lost around all the other details"). The button opens the
+  plugin's HOME page (`_rootView`), not a separate search page (Simon's call). The extra tap is the
+  design. Options, not the top of the page, was Simon's pick. The home page keeps its inline box. Pinned in
+  `tools/t_searchbtn.pl`. The tap rebuilds the artist page to find the row (a cold RG cache + a MusicBrainz
+  failure would open an empty page), the SAME exposure every list control has; that is covered by
+  `The full `_discographyView` rebuild on every` (review 2026-09-24). A direct route that skips the rebuild
+  (item:act:search -> _rootView in topLevel) was offered 2026-09-24; Simon's call pending.
+
+- **"WORKS BEST WITH" IS ONE STRIP OF TILES, THE ROLE ONLY A TOOLTIP** (`_rootView`, the `$status` tile
+  builder; Simon, 2026-09-24: the stacked rows took too much screen). No visible role line is the design,
+  not an omission; on a touch screen the role is simply not shown. Pinned in `tools/t_worksbest.pl`.
 
 ### A3. DISPROVEN — a review WILL re-derive these from the code; each was measured
 
@@ -1008,6 +1023,57 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   likewise deliberately LBF-only and outside the shared engine.
 
 ## Development Log
+
+### 0.54.6 (2026-09-24) — "Works best with" as one strip of tiles — INSTALLED + VERIFIED LIVE
+- Zip sha1 `410680c71818862128cca2e4aab5845d93ef3bef`; CACHE_VERSION 0.54.6; repo.xml bumped with it. Also carries 0.54.5 (search button -> home page), never installed on its own.
+- **VERIFIED LIVE 2026-09-24 (Simon): "all good"** — the tile strip and the search button (0.54.5) both.
+- **Simon: tile "Works best with" horizontally so it doesn't take so much screen space.** The home page's
+  five stacked status rows are now ONE dead text row whose HTML is a wrapping flex strip of 96px tiles:
+  the plugin's badge over its name and a tick/cross. The role ("Streaming source", ...) is the tile's
+  hover tooltip only (Simon's pick over a visible role line); a not-installed plugin is dimmed with a grey
+  placeholder badge. Wraps to two lines on a phone, one on a wider screen.
+- Tooltip text escapes `'` itself (`_escHtml` does not, and the attribute is single-quoted).
+- These are the page's LAST rows, so 5 -> 1 moves nothing above them: the search row keeps its index.
+  Same markup route as the cover banner (a text row's v-html, flex-wrap), already rendering live.
+- **`tools/t_worksbest.pl` (new, 19)** through the REAL `_rootView`: one row after the header, five tiles,
+  tick/cross, dimming, placeholder, imageproxy for a remote icon, tooltip escaping, rows above unchanged.
+  Anti-tested three ways (one row per tile back: 13 red; no quote escape: 3; not dimmed: 1). All 39
+  suites green.
+- **LIVE CHECK after install:** the home page's "Works best with" is one strip; a phone wraps it to two
+  lines; hovering a tile on desktop shows its role; a missing plugin's tile is dimmed.
+
+### 0.54.5 (2026-09-24) — the search button opens the plugin's HOME page — BUILT, not installed
+- Zip sha1 `84c63c59b77845781f70b408a57d8f84ce6c6b10`; CACHE_VERSION 0.54.5; repo.xml bumped with it.
+- **Simon, before installing 0.54.4: "could it not take you to the search page we have already".** The
+  `act:search` button's coderef now returns `_rootView` (banner, About, Find an artist, Works best with)
+  instead of a page holding only `_searchRow`. Same page the Apps menu opens; its search row submits
+  param-addressed as before. 0.54.4 was never installed, so this supersedes it.
+- `tools/t_searchbtn.pl` 18 -> 20: the page equals `_rootView`'s rows in order, carries About, holds
+  exactly one search box. Anti-tested (the one-row page put back: 4 red). All 38 suites green.
+- **LIVE CHECK after install:** Options -> "Search for an artist" opens the home page (banner, About,
+  search, Works best with); a search from it lists results; a result opens that artist.
+
+### 0.54.4 (2026-09-24) — artist page: search is a BUTTON that opens its own page — BUILT, not installed
+- Zip sha1 `901ef9384534dd039b27a393ebc1ea9951ec01f1`; CACHE_VERSION 0.54.4; repo.xml bumped with it.
+- **Simon: the inline search box on the artist page "feels a bit lost around all the other details";
+  asked for a button that opens the search.** Placement: in Options, next to Sort and Refresh (his choice).
+- **`Browse::_searchButtonRow`** replaces `_searchRow` in `_buildList`'s Options rows: a plain `link` row,
+  id `act:search`, param-addressed via `_listItemActions` (the Refresh row's route: `item:act:search` ->
+  `_listItemDispatch`, which accepts any id). Its page holds ONLY `_searchRow`, whose submission stays
+  param-addressed (`search:<text>`, no item id) — unchanged. `features` rides the button's passthrough so
+  the results still get real headers.
+- **Side benefit:** the search page is always tiny, so Material always draws the box INLINE. On the artist
+  page it had gone inline or popup with the page's size (Key Mechanics, "renders inline OR as a
+  click-to-popup" — that note now applies to the home page only, which is always small).
+- **Unchanged:** the home page's search section; row count and order on the artist page (one row swapped
+  for one), so positional walks are unaffected; the Options header's kid list picks the button up as-is.
+- **`tools/t_searchbtn.pl` (new, 18)** through the REAL `_searchButtonRow` / `_searchRow` / `_findRow` /
+  `_runRow`, plus a source check that `_buildList` builds the button and `_rootView` keeps the box.
+  Anti-tested four ways (old inline box back: 2 red; positional tap: 2; features dropped: 1; refresh
+  instead of drill: 1). `syntax_check.sh` clean; all 38 suites green.
+- **LIVE CHECK after install:** Options on an artist page shows "Search for an artist" as a row with an
+  arrow; tapping it opens a page with just the search box; a search from there lists results and a result
+  opens that artist. Repeat after browsing a second artist (the param-addressed tap).
 
 ### 0.54.3 (2026-09-24) — the service shown as Material's badge (extid) — INSTALLED + VERIFIED LIVE
 - Zip sha1 `85fab8e835dbac832087c985f169663f5f8c8282`; CACHE_VERSION 0.54.3; repo.xml bumped with it.

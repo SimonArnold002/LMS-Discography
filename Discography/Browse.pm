@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.54.3';
+use constant CACHE_VERSION => '0.54.6';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -2416,16 +2416,17 @@ sub _buildList {
         IMG_BASE . 'dsc-bio_MTL_icon_person.png', \@bioRows,
         { id => 'sect:BIO', itemActions => _listItemActions($opts, 'sect:BIO') }) if @bioRows;
 
-    # The search row rides here too: after any artist browse the app re-opens
-    # on that artist (the %lastCtx model), so the Apps-view search would be
-    # unreachable without it. Submission is walk-safe: the paramless re-fetch
-    # rebuilds this SAME view from ctx, so the row's item_id resolves.
+    # Search rides here too, as a BUTTON that opens its own page (Simon,
+    # 2026-09-24): after any artist browse the app re-opens on that artist (the
+    # %lastCtx model), so the Apps-view search would be unreachable without it,
+    # but an inline search box got lost among the page's other rows, and
+    # Material draws it inline or as a popup depending on the page's size.
     # The local-only toggle is offered whenever the user owns anything by this
     # artist (or the filter is already on, so there is always a way back out).
     my @optRows = (_sortToggleItem($client, $opts),
                    ((@$local || $localOnly) ? (_localOnlyToggleItem($client, $opts)) : ()),
                    _refreshItem($client, $opts, $mbid),
-                   _searchRow($client, $opts));
+                   _searchButtonRow($client, $opts));
     my @items = (@bioRows,
         _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_OPTIONS', $useH,
             IMG_BASE . 'dsc-opt_MTL_icon_tune.png', \@optRows,
@@ -3051,8 +3052,8 @@ sub _refreshItem {
 # search dispatch renders the results directly: no positional walk, immune to
 # whatever ctx is stashed. The url coderef stays for legacy (classic web skin)
 # walks, which deliver the text as $args->{search} (XMLBrowser.pm:493).
-# The row sits in the hint view AND the artist view's Options section, so it
-# is reachable in both ctx states.
+# The row sits on the home page (_rootView), which the artist view's Options
+# button (_searchButtonRow) also opens, so it is reachable in both ctx states.
 # ---------------------------------------------------------------------------
 sub _searchRow {
     my ($client, $opts) = @_;
@@ -3070,6 +3071,32 @@ sub _searchRow {
                 (length $features ? (features => $features) : ()) } } },
         passthrough => [{ features => $features }],
         url         => \&_artistSearch,
+    };
+}
+
+# The artist page's way into search (Simon, 2026-09-24): a plain button that
+# opens the plugin's HOME page (_rootView: banner, About, the search box, Works
+# best with), rather than the search box sitting among the artist page's rows.
+# The home page is small, so Material draws its box inline (on a big artist
+# page it went popup; see CLAUDE.md, "renders inline OR as a click-to-popup").
+# The tap is param-addressed (item:act:search, the Refresh row's route); the
+# search row keeps its own param-addressed submission; the home page's other
+# rows are display-only (banner, prose, status rows; headers too on Material
+# 6.4.3+), so a search never depends on a positional walk.
+sub _searchButtonRow {
+    my ($client, $opts) = @_;
+    my $features = $opts->{features} // '';
+    return {
+        name        => cstring($client, 'PLUGIN_DISCOGRAPHY_SEARCH'),
+        type        => 'link',
+        image       => MENU_SEARCH,
+        id          => 'act:search',
+        itemActions => _listItemActions($opts, 'act:search'),
+        passthrough => [{ features => $features }],
+        url         => sub {
+            my ($c, $cb, $a, $p) = @_;
+            $cb->(_rootView($c, $p->{features}));
+        },
     };
 }
 
@@ -3145,15 +3172,15 @@ sub _rootView {
         @search;
 
     # --- Works best with (live detection) ---
-    # v-html rows (0.42.0, Simon: rows felt crowded, wanted the real service
-    # badges and a tick instead of the word "detected"): each row is a dead
-    # text row whose HTML lays out the plugin's OWN icon as a badge, the bold
-    # name with a green tick (installed) or muted cross, and the role line —
-    # with vertical margin for breathing room. Badge geometry mimics a native
-    # icon row: 16px indent + 42px badge + 14px gap = text at the 72px avatar
-    # column. A not-installed plugin has no local logo to serve, so a spacer
-    # keeps the text aligned; ticks/crosses are HTML entities (the no-non-
-    # ASCII-literals rule).
+    # ONE dead text row holding a strip of tiles (Simon, 2026-09-24: five
+    # stacked rows took too much of the screen). Each tile is the plugin's OWN
+    # icon as a badge over its name and a green tick (installed) or muted cross;
+    # the role ("Streaming source", ...) is the tile's hover tooltip only (his
+    # pick). The strip wraps (flex-wrap), so a phone gets two lines and a wider
+    # screen one. A not-installed plugin has no local logo to serve, so its tile
+    # shows a grey placeholder and the whole tile is dimmed. Ticks/crosses are
+    # HTML entities (the no-non-ASCII-literals rule). These are the LAST rows on
+    # the page, so 5 -> 1 moves no row above them (positional walks unaffected).
     # Badge src normalisation (0.42.1, field): _pluginDataFor('icon') is not
     # always a relative path — MAI returns a FULL REMOTE URL (herger.net
     # mai.svg), which a blind '/' prefix mangled into '/https://...' (broken
@@ -3172,43 +3199,48 @@ sub _rootView {
     my $status = sub {
         my ($name, $installed, $roleToken, $img) = @_;
         my $mark = $installed
-            ? "<span style='color:#4caf50;font-size:1.1em'>&#10003;</span>"
-            : "<span style='opacity:.45;font-size:1.1em'>&#10007;</span>";
-        my $role = _escHtml(cstring($client, $roleToken));
-        $role .= " \x{00B7} " . _escHtml(cstring($client, 'PLUGIN_DISCOGRAPHY_SVC_NOT_DETECTED'))
-            unless $installed;
+            ? "<span style='color:#4caf50'>&#10003;</span>"
+            : "<span style='opacity:.6'>&#10007;</span>";
+        # Tooltip: the role, plus "not installed" when it is not. Built into a
+        # single-quoted attribute, so a quote is escaped too (_escHtml leaves it).
+        my $tip = cstring($client, $roleToken);
+        $tip .= " \x{00B7} " . cstring($client, 'PLUGIN_DISCOGRAPHY_SVC_NOT_DETECTED') unless $installed;
+        $tip = _escHtml($tip);
+        $tip =~ s/'/&#39;/g;
         my $src   = $badgeSrc->($img);
         my $badge = $src
-            ? "<img src='$src' style='width:42px;height:42px;border-radius:8px;flex:0 0 auto'/>"
-            : "<div style='width:42px;height:42px;flex:0 0 auto'></div>";
-        return { type => 'text', name =>
-            "<div style='display:flex;align-items:center;gap:14px;margin:10px 8px 10px 16px'>"
-          . $badge
-          . "<div style='flex:1;min-width:0'>"
-          . "<div style='font-weight:bold'>" . _escHtml($name) . " $mark</div>"
-          . "<div style='opacity:.7'>$role</div>"
-          . '</div></div>' };
+            ? "<img src='$src' style='width:42px;height:42px;border-radius:8px'/>"
+            : "<div style='width:42px;height:42px;border-radius:8px;background:rgba(128,128,128,.25)'></div>";
+        return "<div title='$tip' style='width:96px;display:flex;flex-direction:column;align-items:center;"
+             . 'gap:6px;text-align:center;font-size:.85em;line-height:1.25'
+             . ($installed ? '' : ';opacity:.55') . "'>"
+             . $badge
+             . '<div>' . _escHtml($name) . " $mark</div>"
+             . '</div>';
     };
     # ONE capability probe for the whole section: adapters() walks every
     # service plugin's ->can() surface, and both the icon map and the
     # installed/not-installed status derive from that same list.
     my @adapters = Plugins::Discography::Sources::adapters();
     my %icon     = map { $_->{name} => $_->{icon} } @adapters;
-    my @plugins;
+    my @tiles;
     for my $s (@{ Plugins::Discography::Sources::serviceStatus(\@adapters) }) {
-        push @plugins, $status->($s->{name}, $s->{installed},
+        push @tiles, $status->($s->{name}, $s->{installed},
             'PLUGIN_DISCOGRAPHY_ROLE_STREAM', $icon{ $s->{name} });
     }
     my $mai = eval { Slim::Utils::PluginManager->isEnabled('Plugins::MusicArtistInfo::Plugin') } ? 1 : 0;
-    push @plugins, $status->('Music & Artist Information', $mai,
+    push @tiles, $status->('Music & Artist Information', $mai,
         'PLUGIN_DISCOGRAPHY_ROLE_MAI',
         $mai ? Plugins::Discography::Sources::_pluginIcon('Plugins::MusicArtistInfo::Plugin') : undef);
     # Material Skin exposes no plugin icon (_pluginDataFor('icon') is undef) —
     # use the skin's own served asset (verified live: 200).
     my $mat = eval { Slim::Utils::PluginManager->isEnabled('Plugins::MaterialSkin::Plugin') } ? 1 : 0;
-    push @plugins, $status->('Material Skin', $mat,
+    push @tiles, $status->('Material Skin', $mat,
         'PLUGIN_DISCOGRAPHY_ROLE_MATERIAL',
         $mat ? '/material/html/images/icon.png' : undef);
+    my @plugins = ({ type => 'text', name =>
+        "<div style='display:flex;flex-wrap:wrap;gap:12px 8px;margin:12px 8px 12px 16px'>"
+      . join('', @tiles) . '</div>' });
     push @items,
         _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_PLUGINS_HDR', $useH,
             IMG_BASE . 'dsc-opt_MTL_icon_tune.png', \@plugins),
