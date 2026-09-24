@@ -82,6 +82,7 @@ start at the wrong offset or split a strip from its header.
 +               let rowOf = []; // original position -> row after folding (a tile maps to its strip's row)
 +               let stripHeader = undefined;
 +               let strip = undefined;
++               let haveStrip = false;
 +               for (let i=0, loop=resp.items, len=loop.length; i<len; ++i) {
 +                   let itm = loop[i];
 +                   if (itm.header) {
@@ -92,6 +93,7 @@ start at the wrong offset or split a strip from its header.
 +                       if (undefined==strip) { // added with its first tile, so an empty strip never becomes a row
 +                           strip = {id:"strip."+stripHeader, strip:true, items:[]};
 +                           items.push(strip);
++                           haveStrip = true;
 +                       }
 +                       strip.items.push(itm);
 +                   } else {
@@ -101,6 +103,10 @@ start at the wrong offset or split a strip from its header.
 +               }
 +               let folded = resp.items.length - items.length;
 +               resp.items = items;
++               // Flag the page on its first row, so checks for strips need not scan every row.
++               if (haveStrip) {
++                   items[0].pageHasStrips = true;
++               }
 +               // listSize counts every item LMS sent, but a strip's tiles are now one row. Without this the
 +               // list looks unfinished, so scrolling fetches (and appends) items it already has.
 +               resp.listSize -= folded;
@@ -126,6 +132,19 @@ And the subtitle's item count, which is taken from the rows, adds the folded til
 +                                    (undefined==resp.foldedItems ? 0 : resp.foldedItems);
 ```
 
+And a page's `window.textarea` row, added to the top after the fold, keeps the flag:
+
+```diff
+                         resp.items.unshift({
+                                         title: text.startsWith("<") ? text : ("<div>"+text+"</div>"),
+                                         type: "html",
+-                                        id: parent.id+".textarea"
++                                        id: parent.id+".textarea",
++                                        // Keep the strips flag on the first row
++                                        pageHasStrips: resp.items.length>0 ? resp.items[0].pageHasStrips : undefined
+                                        });
+```
+
 ### 3. `browse-page.js`: draw a plugin strip with the search template
 
 ```diff
@@ -136,13 +155,14 @@ And the subtitle's item count, which is taken from the rows, adds the folded til
 ### 4. `browse-page.js`: keep a page with strips out of the virtual scroller
 
 The virtual scroller has no strip template. Search avoids it because its first item always has
-`searchcat`. A plugin page usually starts with something else, such as a text row.
+`searchcat`. A plugin page usually starts with something else, such as a text row, so the fold
+flags the first row instead.
 
 ```diff
          useRecyclerForLists() {
 -            return !this.isTop && this.items.length>LMS_MAX_NON_SCROLLER_ITEMS && undefined==this.items[0].searchcat
 +            return !this.isTop && this.items.length>LMS_MAX_NON_SCROLLER_ITEMS && undefined==this.items[0].searchcat &&
-+                   !this.items.some(itm => itm.strip)
++                   !this.items[0].pageHasStrips
          },
 ```
 
@@ -152,7 +172,7 @@ It already looks inside grouped rows, but only when the first row has `searchcat
 
 ```diff
 -        if (this.view.items.length>0 && undefined!=this.view.items[0].searchcat) {
-+        if (this.view.items.length>0 && (undefined!=this.view.items[0].searchcat || this.view.items.some(itm => itm.strip))) {
++        if (this.view.items.length>0 && (undefined!=this.view.items[0].searchcat || this.view.items[0].pageHasStrips)) {
 ```
 
 ## Compatibility

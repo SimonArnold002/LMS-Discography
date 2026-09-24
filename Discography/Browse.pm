@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.53.3';
+use constant CACHE_VERSION => '0.54.0';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -330,9 +330,17 @@ sub _useStrips {
     return $_stripsCache = ($ver =~ /^6\.4\.10\.\d+$/) ? 1 : 0;
 }
 
-# Sections that stay a LIST even in strip mode, the way Material's search keeps
-# tracks as rows under its tile strips (Simon, 2026-09-24).
-my %LIST_SECTION = (SINGLES => 1);
+# Each section's layout is the user's choice (Settings, 0.54.0): Singles follow
+# `layout_singles`, every other section (release types, library, appearances,
+# streaming) follows `layout_albums`. 'tiles' or 'list'; the defaults give the
+# mix Simon settled on — tile strips, with Singles a list the way Material's
+# search keeps tracks as rows under its strips (2026-09-24).
+sub _layoutOf {
+    my ($key) = @_;
+    return ($key // '') eq 'SINGLES'
+        ? ($prefs->get('layout_singles') // 'list')
+        : ($prefs->get('layout_albums')  // 'tiles');
+}
 
 # Strips need BOTH a patched Material on the server AND a client that draws
 # headers ($useH): the header's More is the only way to the tiles past
@@ -341,7 +349,17 @@ my %LIST_SECTION = (SINGLES => 1);
 # is the same on every re-walk.
 sub _stripsOn { $_[0] && _useStrips() }
 
-sub _stripSection { my ($useH, $key) = @_; _stripsOn($useH) && !$LIST_SECTION{ $key // '' } }
+sub _stripSection { my ($useH, $key) = @_; _stripsOn($useH) && _layoutOf($key) ne 'list' }
+
+# The release-type sections in display order. Singles as a list under tile
+# strips follow every other release type rather than sitting between two strips
+# (Simon, 2026-09-24). Every other mix (all list, all tiles, list albums over
+# tile singles) keeps the type order unchanged.
+sub _groupOrder {
+    my ($useH) = @_;
+    return @GROUP_ORDER unless _stripSection($useH, 'ALBUMS') && !_stripSection($useH, 'SINGLES');
+    return ((grep { $_->[0] ne 'SINGLES' } @GROUP_ORDER), (grep { $_->[0] eq 'SINGLES' } @GROUP_ORDER));
+}
 
 sub _sectionHeaderType { _stripSection(@_) ? 'header-strip' : _headerType() }
 
@@ -2410,15 +2428,7 @@ sub _buildList {
             { id => 'sect:OPT', itemActions => _listItemActions($opts, 'sect:OPT') }),
         @optRows);
 
-    # With strips on, the list sections (Singles) follow every strip section
-    # rather than sitting between two strips (Simon, 2026-09-24). The plain
-    # list keeps the type order unchanged.
-    my @groupOrder = _stripsOn($useH)
-        ? ((grep { !$LIST_SECTION{ $_->[0] } } @GROUP_ORDER),
-           (grep {  $LIST_SECTION{ $_->[0] } } @GROUP_ORDER))
-        : @GROUP_ORDER;
-
-    for my $g (@groupOrder) {
+    for my $g (_groupOrder($useH)) {
         my ($key, $token, $iconName) = @$g;
         my $rels = $bucket{$key} or next;
 

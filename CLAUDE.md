@@ -76,6 +76,7 @@ because line numbers rot on the next edit.
 | `pref` CLI refused from a Tailscale/CGNAT address, so `acceptance.py`'s first check cannot run remotely | log | `restricted to the local network` |
 | LMS restarts + the `inactive database handle` backtrace are UnifiedHiFi's shutdown, not DSC | log | `were NOT Discography` |
 | Bio/review prose is LBF's parser, with FOUR deliberate divergences (cap, U+2028, duplicate names, 380 cut) and one row per block | A2 | `Bio and review prose is LBF's port` |
+| The Default / Classic web skins are NOT supported — a finding about how they render is void | A2 | `Default and Classic web skins are not supported` |
 
 **Two standing rules that kill most repeat findings:**
 
@@ -282,6 +283,13 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   - **No web-skin (Default/Classic) handling** — the fleet web-skin port reaches this repo later
     (LBF's `_webify`); prose rows were already `<div>` markup on those skins before this change.
   Pinned in `tools/t_prose.pl` (53, captured MAI fixtures in `tools/fixtures/`).
+
+- **Default and Classic web skins are not supported (Simon, 2026-09-24).** Discography is built for
+  Material. A finding that only shows on the Default / Classic web skin (layout, paging, headers,
+  markup) is NOT a finding, and needs no live check. Code that degrades gracefully for a
+  non-header client (`$useH` false, e.g. 0.53.3's `_stripsOn`) stays, as it costs nothing, but
+  those skins are not tested. Web-skin support arrives only with the fleet web-skin port (LBF's
+  `_webify`), as a scoped piece of work.
 
 ### A3. DISPROVEN — a review WILL re-derive these from the code; each was measured
 
@@ -987,6 +995,27 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
+### 0.54.0 (2026-09-24) — layout settings: all list, all tiles, or the mix — INSTALLED + VERIFIED LIVE
+- **VERIFIED LIVE 2026-09-24 (Simon, Material 6.4.10.x): "appears to work"** — the layout settings on the rig.
+- Zip sha1 `dddb478adaa016fee1006bdfaa33225852cab5f3`; CACHE_VERSION 0.54.0.
+- **Simon, before pushing 0.53.x:** users must be able to choose all list, all tiles, or the mix. Material has
+  no per-page layout control for a plugin, so it is two SETTINGS (Discography settings, View section, radios):
+  `layout_albums` (default `tiles`) and `layout_singles` (default `list`), each `tiles` / `list`. Scope
+  (Simon's choice): `layout_albums` covers EVERY section except Singles — Albums, EPs, Compilations, Live,
+  Other, Also in your library, Appearances, Also on streaming. The defaults are exactly 0.53.2's page.
+- `Browse::_layoutOf($key)` replaces the hard-coded `%LIST_SECTION`; `_stripSection` = `_stripsOn($useH)` and
+  the section's layout is not `list`. So a setting of Tiles still gives the plain list on a release Material
+  or a client without headers (the setting descriptions say tiles need a Material that supports them).
+- Section order moved into `_groupOrder($useH)`: Singles go below the other release types ONLY in the mix
+  (tile albums, list Singles). All list, all tiles, and list albums over tile Singles keep `@GROUP_ORDER`.
+- `Settings.pm`: both prefs in `prefs()`, enum-guarded like `sort_order` (unknown or absent keeps the current
+  value). Strings `PLUGIN_DISCOGRAPHY_LAYOUT_*`. No cache bump needed: no cache holds a rendered page; the
+  layout is read on every render. A setting change mid-browse shifts rows like `show_types` does.
+- Suites: `t_strips.pl` 17 -> 37 (four layout combos x section kinds, header type, section order, no-header
+  client ignores the setting); `t_settings.pl` 23 -> 26 (radios save, bad/missing value kept, page has all four
+  radios). Mutation-tested: `_layoutOf` returning the defaults turns 9 red. Syntax gate + all 36 suites green.
+- LIVE CHECK after install (Material 6.4.10.x): each of the four combos on one artist; the mix matches 0.53.2.
+
 ### 0.53.3 (2026-09-24) — strips need a header-capable CLIENT, not just the server — BUILT, not installed
 - Zip sha1 `e0ddb8a38152632b7959ca1cdf1b390a8cb42821`; CACHE_VERSION 0.53.3.
 - **Review finding (code review of 0.53.0–0.53.2):** `_sectionTiles` switched strips on from `_useStrips()` alone,
@@ -1002,8 +1031,8 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 - **`tools/t_strips.pl` (new, 17)** drives the REAL `_sectionTiles` / `_sectionHeaderType` / `_stripsOn` under a
   patched (6.4.10.5) and a release (6.4.10) Material version, re-running itself for the second. Mutation-tested:
   the old server-only gate turns the 3 no-header assertions red. Syntax gate + all 36 suites green.
-- LIVE CHECK after install: Material unchanged (strips); Default web skin on an artist with 26+ albums
-  shows a paged list with Show more.
+- LIVE CHECK after install: Material unchanged (strips). No web-skin check: those skins are unsupported
+  (A2 `Default and Classic web skins are not supported`).
 
 ### 0.53.2 (2026-09-24) — Singles moved below the other release types — INSTALLED + VERIFIED LIVE
 - **VERIFIED LIVE 2026-09-24 (Simon, Material 6.4.10.2):** Singles sits below the strips, and scrolling to the
@@ -1025,6 +1054,19 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   | 3c2c519f9 | fold only a whole list + Search list inside strips (review 2) | yes, 6.4.10.3 |
   | 10e6cfd78 | subtitle count + jumplist positions after the fold (review 3) | no (6.4.10.4 built) |
   | 78002963a | fold test uses LMS's own count, known, first batch (review 4) | no (6.4.10.5 built) |
+  | ffda923c4 | first-row `pageHasStrips` flag instead of `items.some()` (Craig's review) | no (JXA parse only), NOT pushed |
+- **Craig's review (2026-09-24), on the PR:** (1) wants the virtual scroller, then noted his own search skips
+  it but shows only 10 per category (~40 items), and asked if we have more; (2) dislikes
+  `this.items.some(itm => itm.strip)` (scans every row), suggests a flag on the first item. **(2) DONE, fork commit
+  ffda923c4 (not pushed):** the fold sets `items[0].pageHasStrips` only when it built a strip; `useRecyclerForLists` and
+  Search list read it; the `window.textarea` row (unshifted AFTER the fold, pages under 100 rows) carries it over.
+  JXA parse-checked, not live-tested; the doc's diffs updated to match. **(1) MEASURED live 2026-09-24 (rig on all
+  tiles; mix derived from the Singles header count):** Radiohead 62 items -> 24 rows / 43 tiles; Dylan 80 -> 25 / 59;
+  Zappa 92 -> 25 / 71; Bowie 141 -> 40 rows / 107 tiles in 6 strips (mix: 66 rows / 82 tiles); Miles Davis 107 ->
+  33 / 78; Beatles 46 -> 20 / 29. Rows stay well under the 100-row scroller threshold; TILES exceed search, whose
+  strips clamp to `numScrollItems` (width/145 rounded up to 5, min 10, max 30) — Discography sends up to 25 per strip.
+  OPEN: Simon to choose a lower `STRIP_SIZE` (15 proposed, matches search on a 1920px desktop); nothing is lost
+  either way, the header's More opens `$all`. Reply to Craig drafted, not posted.
 - Review 5 of 78002963a: clean. **Before submitting:** install `~/Downloads/lms-material-6.4.10.5.zip`, recheck
   strips / tile play / More / Singles list / scrolling / Search list, plus the subtitle item count.
 - Checklist: tile tap with no list index, header `actions` (More) and `listSize` VERIFIED LIVE. Subtitle count +

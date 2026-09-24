@@ -30,6 +30,16 @@
 		<div style="margin:4px 0;"><label><input type="radio" name="pref_sort_order" value="oldest" [% IF prefs.sort_order == 'oldest' %]checked="checked"[% END %] /> [% 'PLUGIN_DISCOGRAPHY_SORT_OLDEST_OPT' | string %]</label></div>
 	[% END %]
 
+	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_LAYOUT_ALBUMS" desc="PLUGIN_DISCOGRAPHY_LAYOUT_ALBUMS_DESC" %]
+		<div style="margin:4px 0;"><label><input type="radio" name="pref_layout_albums" value="tiles" [% IF prefs.layout_albums == 'tiles' %]checked="checked"[% END %] /> [% 'PLUGIN_DISCOGRAPHY_LAYOUT_TILES' | string %]</label></div>
+		<div style="margin:4px 0;"><label><input type="radio" name="pref_layout_albums" value="list" [% IF prefs.layout_albums == 'list' %]checked="checked"[% END %] /> [% 'PLUGIN_DISCOGRAPHY_LAYOUT_LIST' | string %]</label></div>
+	[% END %]
+
+	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_LAYOUT_SINGLES" desc="PLUGIN_DISCOGRAPHY_LAYOUT_SINGLES_DESC" %]
+		<div style="margin:4px 0;"><label><input type="radio" name="pref_layout_singles" value="tiles" [% IF prefs.layout_singles == 'tiles' %]checked="checked"[% END %] /> [% 'PLUGIN_DISCOGRAPHY_LAYOUT_TILES' | string %]</label></div>
+		<div style="margin:4px 0;"><label><input type="radio" name="pref_layout_singles" value="list" [% IF prefs.layout_singles == 'list' %]checked="checked"[% END %] /> [% 'PLUGIN_DISCOGRAPHY_LAYOUT_LIST' | string %]</label></div>
+	[% END %]
+
 	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_SHOW_TYPES" desc="PLUGIN_DISCOGRAPHY_SHOW_TYPES_DESC" %]
 	<div>
 		<input type="hidden" name="dsc_types_form" value="1" />

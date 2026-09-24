@@ -2,6 +2,7 @@
 #
 # REGRESSION TEST: release sections as tile strips (0.53.x), and WHO gets them.
 #
+# Which sections are strips is the user's layout setting (0.54.0).
 # Strips need BOTH a patched Material on the server (_useStrips) AND a client that
 # draws headers (features:h -> $useH). A strip shows STRIP_SIZE tiles and relies
 # on the header's More for the rest; a client without headers gets a text
@@ -31,7 +32,7 @@ BEGIN {
     $INC{'Plugins/MaterialSkin/Plugin.pm'} = 1;
     *{'Plugins::MaterialSkin::Plugin::getPluginVersion'} = sub { $ENV{T_MATERIAL_VER} // '6.4.10.5' };
     *{'Slim::Utils::Log::logger'}        = sub { bless {}, 'T::Null' };
-    *{'Slim::Utils::Prefs::preferences'} = sub { bless {}, 'T::Null' };
+    *{'Slim::Utils::Prefs::preferences'} = sub { bless {}, 'T::Prefs' };
     *{'Slim::Utils::Cache::new'}         = sub { bless {}, 'T::Null' };
     *{'Slim::Utils::Strings::cstring'}   = sub { $_[1] };   # returns the token
     *{'Plugins::Discography::Plugin::dbg'} = sub { };
@@ -48,6 +49,11 @@ BEGIN {
 }
 
 package T::Null; our $AUTOLOAD; sub AUTOLOAD { return } sub DESTROY {}
+
+# Prefs backed by %T::Prefs::P, so each block can set the section layouts.
+# An unset pref reads undef, as a fresh install would before init.
+package T::Prefs; our %P; our $AUTOLOAD;
+sub get { $P{ $_[1] } } sub AUTOLOAD { return } sub DESTROY {}
 
 package main;
 
@@ -107,6 +113,50 @@ if ($patched) {
     ok(scalar(@$vis == 30 && @$pg >= 1), "[$ver] release Material: header client keeps the plain paged list");
     ok(scalar($sht->(1, 'ALBUM') ne 'header-strip'), "[$ver] release Material: never sends header-strip");
     ok(scalar(!$on->(1)), "[$ver] release Material: strips off");
+}
+
+# The layout settings (0.54.0): Singles follow layout_singles, everything else
+# layout_albums. Unset = the defaults (tiles, Singles a list), checked above.
+if ($patched) {
+    my $mode = sub { my ($k) = @_; my ($v, $p) = $ts->(undef, {}, 1, $k, \@tiles); @$p ? 'list' : (@$v == 25 ? 'tiles' : '?') };
+    for my $case (['list',  'list',  'list',  'list',  'all list'],
+                  ['tiles', 'tiles', 'tiles', 'tiles', 'all tiles'],
+                  ['tiles', 'list',  'tiles', 'list',  'the mix'],
+                  ['list',  'tiles', 'list',  'tiles', 'list albums, tile singles']) {
+        my ($la, $ls, $wantA, $wantS, $name) = @$case;
+        local %T::Prefs::P = (layout_albums => $la, layout_singles => $ls);
+        ok(scalar($mode->('ALBUM') eq $wantA && $mode->('EPS') eq $wantA && $mode->('STREAM') eq $wantA
+               && $mode->('LIB') eq $wantA),
+           "[$ver] $name: every non-Singles section is $wantA");
+        ok(scalar($mode->('SINGLES') eq $wantS), "[$ver] $name: Singles is $wantS");
+        ok(scalar(($sht->(1, 'SINGLES') eq 'header-strip') == ($wantS eq 'tiles')),
+           "[$ver] $name: Singles header type matches");
+    }
+    # Singles move to the end only in the mix (tile albums, list Singles).
+    my $go = $B->can('_groupOrder');
+    my $order = sub { join ',', map { $_->[0] } $go->(@_) };
+    my $typeOrder = 'ALBUMS,EPS,SINGLES,COMPILATIONS,LIVE,OTHER';
+    for my $case (['tiles', 'list',  1, 'ALBUMS,EPS,COMPILATIONS,LIVE,OTHER,SINGLES', 'the mix'],
+                  ['tiles', 'tiles', 1, $typeOrder, 'all tiles'],
+                  ['list',  'list',  1, $typeOrder, 'all list'],
+                  ['list',  'tiles', 1, $typeOrder, 'list albums, tile singles'],
+                  ['tiles', 'list',  0, $typeOrder, 'the mix, no-header client']) {
+        my ($la, $ls, $h, $want, $name) = @$case;
+        local %T::Prefs::P = (layout_albums => $la, layout_singles => $ls);
+        ok(scalar($order->($h) eq $want), "[$ver] $name: section order $want");
+    }
+
+    # A no-header client ignores the settings: always the paged list.
+    local %T::Prefs::P = (layout_albums => 'tiles', layout_singles => 'tiles');
+    my ($v, $p) = $ts->(undef, {}, 0, 'SINGLES', \@tiles);
+    ok(scalar(@$p >= 1), "[$ver] all tiles set: a no-header client still gets the paged list");
+} else {
+    local %T::Prefs::P = (layout_albums => 'tiles', layout_singles => 'tiles');
+    ok(scalar($sht->(1, 'SINGLES') ne 'header-strip' && $sht->(1, 'ALBUMS') ne 'header-strip'),
+       "[$ver] release Material: tiles set, still no header-strip");
+    local %T::Prefs::P = (layout_albums => 'tiles', layout_singles => 'list');
+    ok(scalar(join(',', map { $_->[0] } $B->can('_groupOrder')->(1)) eq 'ALBUMS,EPS,SINGLES,COMPILATIONS,LIVE,OTHER'),
+       "[$ver] release Material: type order unchanged");
 }
 
 # Re-run once against a release Material (strips must be off for everyone).

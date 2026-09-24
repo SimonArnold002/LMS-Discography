@@ -67,6 +67,13 @@ $prefs->init({
     # date from MusicBrainz). An in-menu toggle overrides per visit.
     sort_order => 'newest',
 
+    # Section layout: 'tiles' (a sideways strip) or 'list'. Singles follow
+    # layout_singles, every other section layout_albums. Tiles need a
+    # Material that draws tile strips (Browse::_useStrips) and a client that
+    # draws headers; anything else gets the list whatever is set here.
+    layout_albums  => 'tiles',
+    layout_singles => 'list',
+
     # Source priority (ascending; 0 = never use). Local = the library.
     # Same convention as the ListenBrainz / Pitchfork plugins.
     svc_priority_local  => 1,

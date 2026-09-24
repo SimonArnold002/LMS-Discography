@@ -181,6 +181,24 @@ PLUGIN_DISCOGRAPHY_SORT_NEWEST_OPT
 PLUGIN_DISCOGRAPHY_SORT_OLDEST_OPT
 	EN	Oldest first
 
+PLUGIN_DISCOGRAPHY_LAYOUT_ALBUMS
+	EN	Albums and other releases
+
+PLUGIN_DISCOGRAPHY_LAYOUT_ALBUMS_DESC
+	EN	How albums, EPs, compilations, live and other releases show on an artist's page, along with the library and streaming sections. Tiles show each section as a row of covers you scroll sideways. Tiles need a version of Material Skin that supports them; until then every section shows as a list.
+
+PLUGIN_DISCOGRAPHY_LAYOUT_SINGLES
+	EN	Singles
+
+PLUGIN_DISCOGRAPHY_LAYOUT_SINGLES_DESC
+	EN	How singles show on an artist's page. As a list under tiles, singles move below the other release types. Tiles need a version of Material Skin that supports them.
+
+PLUGIN_DISCOGRAPHY_LAYOUT_TILES
+	EN	Tiles
+
+PLUGIN_DISCOGRAPHY_LAYOUT_LIST
+	EN	List
+
 PLUGIN_DISCOGRAPHY_SHOW_TYPES
 	EN	Release types
 

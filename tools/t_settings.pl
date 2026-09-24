@@ -67,6 +67,7 @@ my %DEFAULTS = (
     material_action => 1, hide_unmatched => 1, show_bio => 1, show_library_extras => 1,
     show_streaming_extras => 0, show_all_versions => 0, debug_log => 0,
     sort_order => 'newest', show_types => 'ALBUMS,EPS', mb_base_url => '',
+    layout_albums => 'tiles', layout_singles => 'list',
     svc_priority_local => 1, svc_priority_qobuz => 2, svc_priority_tidal => 3, svc_priority_deezer => 4,
 );
 sub reset_store { %STORE = %DEFAULTS; $BASE_RAN = 0 }
@@ -77,6 +78,7 @@ sub form_post {
     my %p = (
         saveSettings => 1, dsc_types_form => 1,
         pref_sort_order => 'newest', pref_mb_base_url => '',
+        pref_layout_albums => 'tiles', pref_layout_singles => 'list',
         pref_svc_priority_local => 1, pref_svc_priority_qobuz => 2,
         pref_svc_priority_tidal => 3, pref_svc_priority_deezer => 4,
         dsc_type_ALBUMS => 1, dsc_type_EPS => 1,
@@ -141,6 +143,24 @@ Plugins::Discography::Settings->handler(undef, $p);
 ok($STORE{sort_order} eq 'oldest', '6: sort_order radio saves');
 ok($STORE{show_types} eq 'ALBUMS', '6: release-type boxes still fold into show_types');
 ok($STORE{svc_priority_qobuz} == 2, '6: priorities unchanged');
+
+# ===================================================================================
+section('7. the section layouts (0.54.0)');
+reset_store();
+$p = form_post();
+$p->{pref_layout_albums} = 'list'; $p->{pref_layout_singles} = 'tiles';
+Plugins::Discography::Settings->handler(undef, $p);
+ok($STORE{layout_albums} eq 'list' && $STORE{layout_singles} eq 'tiles', '7: both layout radios save');
+reset_store();
+$p = form_post();
+$p->{pref_layout_albums} = 'grid'; delete $p->{pref_layout_singles};
+Plugins::Discography::Settings->handler(undef, $p);
+ok($STORE{layout_albums} eq 'tiles' && $STORE{layout_singles} eq 'list',
+   '7: an unknown or missing layout keeps the current value');
+open my $fh2, '<', "$FindBin::Bin/../Discography/HTML/EN/plugins/Discography/settings.html" or die $!;
+my $page = do { local $/; <$fh2> };
+ok(scalar(() = $page =~ /name="pref_layout_(?:albums|singles)" value="(?:tiles|list)"/g) == 4,
+   '7: the page has a Tiles and a List radio for each layout');
 
 printf "\n%d passed, %d failed\n", $pass, $fail;
 exit($fail ? 1 : 0);
