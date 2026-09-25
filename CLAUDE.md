@@ -90,6 +90,8 @@ because line numbers rot on the next edit.
 | Spotify takes no part in artist photos (`artist_image => 0`) | A2 | `SPOTIFY IS NOT IN THE ARTIST-PHOTO WALK` |
 | Spotify favourites url / row `name` / placeholder cover handled differently from Q/T/D | A2 | `SPOTIFY ROWS KEEP SPOTTY'S OWN` |
 | Spotty's `getAPIHandler` working without a client, like the other three | A3 | `Spotty's getAPIHandler REQUIRES a client` |
+| Spotify paging at 50 still fanning out in parallel inside Spotty | A3 | `WRONG at limit 50` |
+| A cache-served Spotty page clearing `hasError429` | A3 | `cleared only by a REAL network response` |
 
 **Two standing rules that kill most repeat findings:**
 
@@ -383,8 +385,12 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   `_renderSpotifyAlbums`; plan §4.8). (1) `_attachFavUrl` is skipped: Spotty's `album()` takes the id with a greedy
   `/album:(.*)/`, so an appended `?cover=` would break a saved favourite (settled the same way in LBF and PFR). LL
   therefore titles a Discography Spotify add from Spotify's album name, not the MB title (plan §4.9, LL's "show what
-  it matched to"). (2) Spotty's `name` ("Album (Year) BY Artists") is NOT reset to `line1`: versions dedupe on
-  `name|line2` and Spotty's `line2` is the artist, so resetting it would merge two same-titled editions. (3) Spotty
+  it matched to"). (2) Spotty's `name` ("Album BY Artists", "Album (YYYY) BY Artists" with LMS `showYear`) is NOT reset to
+  `line1`. Versions dedupe on the RAW `name|line2` in `matchesFor`, and Spotty's `line2` is the artist. **CORRECTED
+  2026-09-25 (review):** this entry first said resetting would "merge two same-titled editions" — they ALREADY merge
+  with `showYear` off (the LMS default): explicit + clean share `name|line2` and show as ONE version row, the first.
+  Keeping Spotty's `name` only matters with `showYear` on, where the year keeps editions from different years apart.
+  Both pinned in `t_spotify.pl` §8. The one-row-per-title behaviour is the same dedupe every service gets. (3) Spotty
   puts `plugins/Spotty/html/images/album.png` in `image` for an album with no art; only an http(s) cover may become
   `_cover` (tiles prefer `_cover` over CAA art), and the row keeps the placeholder as its icon. Done in the Spotify
   code, not the shared `_decorate`: no other service sends a placeholder that way.
@@ -404,6 +410,8 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 | `_idGroup` (0.51.12) could keep a release group from matching a copy whose id names THAT group | **WRONG** | `_idGroup cannot block a group` from its own copy: it is only consulted INSIDE the `unless (_mbidMatch(...))` branch, i.e. only after the id has already failed to name this group. Symmetric by construction, and pinned by the "control: its own group still takes it by id" assertion in `t_size.pl` §5. |
 | `artistImage(undef, ...)` from the ImageProxy handler cannot reach the services, because `getAPIHandler(undef)` has no client to hang an API instance off | **WRONG** | All three plugins handle a clientless call the same way, read in their own sources 2026-09-20: `$clientOrId ||= ...->getSomeUserId()` (Qobuz) / `userId => ...->getSomeUserId()` (TIDAL, Deezer), then construct an API object from that user id. A handler comes back whenever any account is signed in, so tier 3 works from the proxy. Re-raise only for a service whose `getAPIHandler` genuinely requires `ref $client`. |
 | Spotty's `getAPIHandler` works without a client, as the row above found for Qobuz/Tidal/Deezer | **WRONG for Spotty** | Spotty's getAPIHandler REQUIRES a client: `Plugins::Spotty::Plugin->getAPIHandler($client)` is a CLASS method that returns undef with no `$client` (Spotty 4.62.2 `Plugin.pm`, read 2026-09-25). It is the one service the row above tells you to re-raise for, and it is why Spotify is out of the photo walk (`SPOTIFY IS NOT IN THE ARTIST-PHOTO WALK`, §A2). A render always has a client, so the album search is unaffected: no client there means unresolved, never a miss. |
+| Discography's 50-per-page Spotify paging still fans out, because Spotty's Pipeline pages in PARALLEL | **WRONG at limit 50** (Spotty master `API/Pipeline.pm`, read 2026-09-25) | The Pipeline fetches page 1 and fans out only for the rest of a limit ABOVE its page size. At `limit => 50` (`SPOTIFY_PAGE`) it sends exactly ONE request and honours `offset`, so `_searchSpotify`'s own serial paging is what runs. OUR side is pinned in `t_spotify.pl` §4 (every call at limit 50, offsets 0/50/100 in turn); the one-request-per-call half is Spotty's source, not the suite. |
+| A later Spotify page Spotty serves from its own 1-hour cache clears `hasError429`, so a stale refusal can go unseen | **WRONG** (Spotty master `API.pm`, read 2026-09-25) | The flag is cleared only by a REAL network response; a cache-served page never touches it. The residual it leaves (a page served empty from cache while an old flag is still set) needs an artist with exactly 50/100/150 albums and reads as a failed list, i.e. unresolved — the safe direction (`SPOTIFY: A FAILED LATER PAGE`). |
 | MAI's `getBiography` / `getAlbumReview` call back with an EMPTY list when they have nothing, so "no items" means "no text" | **WRONG** (read in MAI's source + measured live, 2026-09-24) | **MAI's NOT-FOUND answer is an item**: ONE item whose `name` is the localised `PLUGIN_MUSICARTISTINFO_NOT_FOUND` ("I'm sorry, didn't find any relevant information."), for a web client wrapped `<p>…</p>` + the "More online sources" links (`AlbumInfo::renderReview`, `ArtistInfo::_getBioItems`). 10 of 12 albums sampled live answered this way; it rendered AS the review and blocked the Qobuz fallback from 0.7.0 to 0.51.19. The item TYPE does not separate them for bios (both `textarea`). `Browse::_maiNotFound` uses MAI's own test (text starts with that string) after stripping markup. Pinned in `t_prose.pl` §10. **Language: every place MAI builds that text uses `cstring($client, …)`**, the same call `_maiNotFound` makes — review via `Wikipedia.pm` (:199, :233), bio via its Last.fm fallback `LFM.pm` (:95, :120), which every failed bio ends in (`ArtistInfo::getBiography`'s `$bioCb`). Raised as unverifiable by the 0.51.20 review, checked in MAI master 2026-09-24. |
 | Deezer's artist-albums payload carries no track count, so a Deezer copy has no size and the single gate cannot act on it | **WRONG** | `/artist/<id>/albums` omits `nb_tracks` but **Deezer states record_type** on every row, which `_candSize` reads when there are no counts; `/search/album` carries BOTH (`nb_tracks` + `record_type`, verified live 2026-09-19). Pinned in `t_size.pl` §1. |
 | The "Discography" menu entry is missing on search results and on an artist page opened from search, and no plugin can fix it | **WRONG since Material 6.4.6** (read in the live 6.4.10 bundle, 2026-09-24) | Simon's upstream ask shipped: search builds a per-category `itemCustomActions` map from `getCustomActions("artist")`, `itemCustomActs` picks it by the item's `artist_id:` prefix, and a view with no actions falls back to the item's category. Both paths call `getSectionActions`, which reads the file AND the registered list. |
@@ -1101,7 +1109,34 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
-### Unreleased (after 0.55.0, 2026-09-25) — Spotify stage 2: carrier audit + docs, no logic change
+### 0.55.1 (2026-09-25) — "Also on streaming" merges across services on the TITLE — BUILT + committed, NOT installed
+- **Found by the whole-code Spotify review** (Simon: review everything the change can touch, not only the diff).
+  `Browse::_buildList`'s cross-service dedupe was DOCUMENTED as keyed on title+year (0.44.2) but keyed on each
+  service's rendered `name`. Read in the plugins' own source 2026-09-25: Tidal (`_renderAlbum`, no artist flag) and
+  Deezer (`addArtistToTitle` 0) put the bare title in `name`; Qobuz renders "Artist - Title" (+ " (Hi-Res)",
+  "\n(year)", " [E]", "* "); Spotty "Title[ (YYYY)] BY Artists". So a Qobuz or Spotify copy never merged with any
+  other service's, and an album on Tidal + Spotify showed as two rows. Pre-existing for Qobuz since 0.44.2.
+- **WRITER, stated plainly:** `show_streaming_extras` ON (default OFF) AND two working services carrying the same
+  unclaimed album, one of them Qobuz or Spotify. **No live example exists** — Simon's rig has extras off, Qobuz as
+  the only working service and a dead Spotty (checked over HTTP 2026-09-25), and he has never seen a doubled row.
+  Fixed on the code + upstream-source evidence, not a field report.
+- **Fix, deliberately narrow:** a copy joins an existing row when (1) its `_norm(name)`+year matches one (the OLD
+  rule, unchanged), else (2) its `_norm(_candTitle)`+year matches a row holding NO copy from its own service. So
+  everything that merged still merges, two copies ONE service lists separately (same title/year, different credit)
+  stay apart exactly as before, and the only new behaviour is the cross-service merge. A copy with no `_candTitle` is
+  keyed on its name. `_candTitle` = the raw album title (`_decorate`); Tidal's renderer appends " [E]" to that same
+  hash first, so both of its keys carry it. No reader of `name`/`_candTitle` changes them after `_decorate`
+  (grepped); drill-in rebuilds the same list and finds the survivor by the same rule; play uses the row's own url.
+- **`tools/t_extras.pl` (new, 19)** drives the REAL `_buildList`, `_norm` and `_artistMatch` with row fixtures in each
+  renderer's exact shape. Part A (11) passes on the pre-fix code AND after; Part B (8) failed on the pre-fix code.
+  Four mutants of the fix (no old rule, no same-service guard, no cross-service merge, no titleless fallback) each
+  turn it red — the last only after adding a two-titleless-albums case the first cut lacked.
+- **Also corrected, `SPOTIFY ROWS KEEP SPOTTY'S OWN` point (2):** its reason was wrong (see the entry). Pinned in
+  `t_spotify.pl` §8 (83 -> 85): same-titled Spotify editions collapse to one version row with `showYear` off, stay
+  apart with it on.
+- Zip sha1 `aab4daaf0001f807eaf9911d97f12462f8e4ba4d`; CACHE_VERSION 0.55.1 (clears every Discography cache on install); repo.xml bumped with it. 44 suites, 1,248 assertions green; `syntax_check.sh` clean.
+
+### 0.55.1 (same build) — Spotify stage 2: carrier audit + docs, no logic change
 - **Carrier audit:** every file in `Discography/` grepped for a service named without Spotify beside it. Only
   comments and one user-visible string were stale; no code path enumerates services except the ones 0.55.0 changed
   (`adapters`, `serviceStatus` `@known`, `_playUrl`, `%EMBLEM`, Settings, prefs; `_svcArtistImage` is excluded by
@@ -1113,7 +1148,7 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 - **Docs (plan §4.10, now done):** Spotty rows in the Service Plugin APIs table; §A3 `Spotty's getAPIHandler
   REQUIRES a client`; §A2 `SPOTIFY: AN EMPTY ANSWER IS NEVER A VERDICT`, `SPOTIFY: A FAILED LATER PAGE`,
   `SPOTIFY IS NOT IN THE ARTIST-PHOTO WALK`, `SPOTIFY ROWS KEEP SPOTTY'S OWN`; line 4 and Phase-1 Scope corrected.
-- Not built into a zip (the string change ships with the next build).
+- Ships in the 0.55.1 zip (the About text change included).
 - **D2 decided (Simon):** Discography's adapter contract stays separate from LBF's `streaming-adapter-spec.md` (recorded in the Service Plugin APIs section and plan §7).
 - **README** updated for Spotify (requirements incl. Premium for playback, priority default Spotify 5, limitations: empty answers never hide releases, no Spotify artist photos); `README.html`/`index.html` regenerated. CHANGELOG still waits for the main merge.
 

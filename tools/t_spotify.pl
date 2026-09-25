@@ -437,6 +437,27 @@ print "# 8. matchesFor keeps Spotty's favurl (with the control)\n";
     ok(($s{Qobuz}{favorites_url} // '') =~ m{^qobuz://album:q1\?cover=}, 'CONTROL: Qobuz still gets the decorated LL favurl');
     ok(!exists $bySvc->{Spotify}[0]{extid} && $bySvc->{Spotify}[0]{favorites_url} eq 'spotify:album:a1',
        'the pool entry itself is not decorated');
+
+    # VERSION DEDUPE on name|line2 (matchesFor), with Spotty's REAL name shape
+    # (OPML.pm _albumItem: "<name>[ (YYYY)] BY <artists>", the year only with
+    # LMS showYear). Pins what the ledger's SPOTIFY ROWS KEEP SPOTTY'S OWN says:
+    # with showYear OFF two same-titled editions (explicit + clean) share
+    # name|line2 and collapse to ONE version row; with it ON, editions from
+    # different years stay apart.
+    my $ed = sub { my ($id, $name) = @_;
+        { name => $name, line1 => 'Spectrum', line2 => 'Sonic Boom', _svc => 'Spotify', _albumid => $id,
+          _candTitle => 'Spectrum', _candArtist => 'Sonic Boom', favorites_url => "spotify:album:$id" } };
+    my $spRows = sub { my ($secs) = @_;
+        my ($sec) = grep { $_->{svc} eq 'Spotify' } @{ $secs || [] }; $sec ? @{ $sec->{items} } : () };
+    my @off = $spRows->($S->matchesFor({ Spotify => [ $ed->('e1', 'Spectrum BY Sonic Boom'),
+                                                      $ed->('e2', 'Spectrum BY Sonic Boom') ] },
+                                       'Sonic Boom', 'Spectrum', []));
+    ok(scalar(@off == 1 && $off[0]{_albumid} eq 'e1'),
+       'showYear OFF: two same-titled Spotify editions collapse to ONE version row (the first)');
+    my @on = $spRows->($S->matchesFor({ Spotify => [ $ed->('y1', 'Spectrum (1990) BY Sonic Boom'),
+                                                     $ed->('y2', 'Spectrum (2020) BY Sonic Boom') ] },
+                                      'Sonic Boom', 'Spectrum', []));
+    ok(scalar(@on == 2), 'showYear ON: editions from different years stay two version rows');
 }
 
 # ================================================================== 9

@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.55.0';
+use constant CACHE_VERSION => '0.55.1';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -2646,19 +2646,43 @@ sub _buildList {
         # share a title stay apart. The FIRST occurrence wins the row, and the
         # loop above runs in source-priority order, so the preferred service
         # supplies the node that plays.
-        my (@merged, %byKey);
+        #
+        # TWO keys (2026-09-25). The title must come from _candTitle, not the
+        # rendered `name`: only Tidal and Deezer put the bare title in `name`;
+        # Qobuz renders "Artist - Title" and Spotty "Title BY Artists" (read in
+        # their sources), so a Qobuz or Spotify copy never merged with anything.
+        # But `name` stays the key WITHIN a service, so two copies one service
+        # lists separately (same title and year, different credit) stay apart,
+        # exactly as before. Hence:
+        #   1. same name+year as a row already built -> join it (the old rule);
+        #   2. else same title+year as a row with NO copy from this service ->
+        #      join it (the cross-service merge);
+        #   3. else a row of its own.
+        # A copy with no _candTitle is keyed on its name, as before.
+        # Pinned in tools/t_extras.pl.
+        my (@merged, %byName, %byTitle);
         for my $t (@unclaimed) {
-            my $k = join('|', Plugins::Discography::Sources::_norm($t->{name} // ''),
-                              $t->{_year} // '');
-            if (my $have = $byKey{$k}) {
+            my $year  = $t->{_year} // '';
+            my $name  = Plugins::Discography::Sources::_norm($t->{name} // '');
+            my $title = Plugins::Discography::Sources::_norm($t->{_candTitle} // '');
+            $title = $name unless length $title;
+            my $svc   = $t->{_svc} // '';
+            my $have  = $byName{"$name|$year"}
+                     || (grep { !$_->{_svcHeld}{$svc} } @{ $byTitle{"$title|$year"} || [] })[0];
+            if ($have) {
                 push @{ $have->{_svcs} }, $t->{_svc} if $t->{_svc};
+                $have->{_svcHeld}{$svc} = 1;
+                $byName{"$name|$year"} ||= $have;
                 next;
             }
-            $t->{_svcs} = [ $t->{_svc} ? $t->{_svc} : () ];
-            $byKey{$k} = $t;
+            $t->{_svcs}    = [ $t->{_svc} ? $t->{_svc} : () ];
+            $t->{_svcHeld} = { $svc => 1 };
+            $byName{"$name|$year"} = $t;
+            push @{ $byTitle{"$title|$year"} }, $t;
             push @merged, $t;
         }
         for my $t (@merged) {
+            delete $t->{_svcHeld};   # merge bookkeeping only
             my %seen;
             my @svcs = grep { !$seen{$_}++ } @{ $t->{_svcs} || [] };
             $t->{line2} = join(" \x{00B7} ",

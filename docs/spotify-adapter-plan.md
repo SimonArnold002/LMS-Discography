@@ -1,6 +1,6 @@
 # Spotify (via Spotty) for Discography — build plan
 
-**Status: BUILT, 2026-09-25 (§4.1–§4.8, D1 = PFR's adapter fields, D3 = 5). 0.55.0 committed and installed; the §6 failure half is VERIFIED LIVE (dead token -> pool unresolved, every release still shown with hide_unmatched on); matching and playback are not live-tested.** Originally Written from code, not from a live Spotify
+**Status: BUILT, 2026-09-25 (§4.1–§4.8, D1 = PFR's adapter fields, D3 = 5). 0.55.0 committed and installed, 0.55.1 built + committed (not installed); the §6 failure half is VERIFIED LIVE (dead token -> pool unresolved, every release still shown with hide_unmatched on); matching and playback are not live-tested.** Originally Written from code, not from a live Spotify
 account: Simon no longer subscribes. Every claim below was checked against Discography's source,
 against Spotty 4.62.2's source (`michaelherger/Spotty-Plugin` master), and against the Spotify
 work already done in LBF, PFR and LL. Where a line number is given it was read on 2026-09-25 and
@@ -218,7 +218,7 @@ What LBF/PFR built, and what applies here:
 | `Browse::%EMBLEM` | Add `spotify` (key present in Material's `misc/emblems.json`, checked 2026-09-25). Badge extid becomes `spotify:album:<id>`. NB `_extid` keeps a node's own `extid`: check whether `_albumItem` sets one. |
 | `Plugin.pm` pref defaults | `svc_priority_spotify => 5` (last, as LBF). |
 | `Settings.pm` | Both service lists (the `prefs` list and the priority sanitiser loop). |
-| Row labels | **Leave Spotty's `name` as it is.** Versions are deduplicated on `name|line2` and Spotty's `line2` is the artist, so resetting `name` to `line1` would merge two same-titled editions. |
+| Row labels | **Leave Spotty's `name` as it is.** Versions are deduplicated on the raw `name|line2` and Spotty's `line2` is the artist. CORRECTED 2026-09-25: with LMS `showYear` off, same-titled editions already share `name|line2` and show as one row; keeping `name` matters only with `showYear` on, where its " (YYYY)" keeps different years apart (`t_spotify.pl` §8). |
 
 ### 4.9 Listen to Later (nothing owed; recorded so it is not reported)
 
