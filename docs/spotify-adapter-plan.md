@@ -235,10 +235,14 @@ What LBF/PFR built, and what applies here:
 
 - DONE 2026-09-25: `CLAUDE.md`'s "Spotty has no `getAPIHandler`" (Phase-1 Scope) and line 4
   ("Spotify maybe later") now point at this plan.
-- `CLAUDE.md` "Service Plugin APIs — VERIFIED SIGNATURES": add the Spotty row from §2 (a pointer
-  to this plan is there now; the row goes in at build).
-- Ledger A3: "Spotty's `getAPIHandler` does require a client", beside the `getSomeUserId` row.
-- Ledger: the `hide_unmatched` / zero-raw-results reasoning, and the placeholder-cover rule.
+- DONE 2026-09-25 (after 0.55.0): `CLAUDE.md` "Service Plugin APIs — VERIFIED SIGNATURES" has the
+  Spotty rows (`getAPIHandler`, `search`, `artistAlbums`, `OPML::_albumItem`) and Spotty's repo.
+- DONE: Ledger A3 "Spotty's getAPIHandler REQUIRES a client", beside the `getSomeUserId` row.
+- DONE: Ledger A2, four entries: `SPOTIFY: AN EMPTY ANSWER IS NEVER A VERDICT` (the `hide_unmatched` /
+  zero-raw-results reasoning), `SPOTIFY: A FAILED LATER PAGE`, `SPOTIFY IS NOT IN THE ARTIST-PHOTO WALK`,
+  `SPOTIFY ROWS KEEP SPOTTY'S OWN` (favurl, row name, the placeholder-cover rule).
+- DONE: the home-page About text (`PLUGIN_DISCOGRAPHY_ABOUT_1`) lists Spotify; the stale lines in
+  `CLAUDE.md` (line 4, Phase-1 Scope) say it is built.
 
 ## 5. Tests
 
@@ -294,6 +298,9 @@ Harness traps both siblings hit:
 - **D2 — the fleet adapter spec.** It covers LBF/PFR/LL, not Discography, and still lacks PFR's
   `empty_unverified` / `pace_warm`. Adding Discography means editing LBF's copy and re-copying it to
   PFR and LL (checksums must match). Now, or after the build.
+  **DECIDED (Simon, 2026-09-25): keep Discography SEPARATE from LBF's spec.** Discography's adapter
+  contract lives in its own `CLAUDE.md` (the Service Plugin APIs section and §A2) and this plan;
+  LBF's `docs/streaming-adapter-spec.md` is not edited and not re-copied.
 - **D3 — default priority** `svc_priority_spotify => 5` (last). Recommended, as LBF.
 
 ## 8. Review against the code (2026-09-25)

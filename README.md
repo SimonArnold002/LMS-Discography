@@ -31,7 +31,7 @@ Tested on LMS 9.x with the **Material Skin**.
 - **Lyrion Music Server 9.0.0+**.
 - **Material Skin 6.4.6 or later** for the *Discography* entry on the artist menu. Without it, the plugin is still under **My Apps**.
 - **The Music and Artist Information plugin, enabled.** It comes with LMS and is on by default. Discography needs it for biographies, reviews, artist photos and similar artists; with it turned off, those parts of the plugin don't work.
-- To play releases you don't own: the **Qobuz**, **Tidal** and/or **Deezer** plugin, installed and signed in.
+- To play releases you don't own: the **Qobuz**, **Tidal**, **Deezer** and/or **Spotty** (Spotify) plugin, installed and signed in. Playing from Spotify needs a Premium account.
 
 The streaming services are optional. A service that isn't installed is simply skipped.
 
@@ -83,7 +83,7 @@ Open **Settings → Plugins → Discography**.
 
 | Setting | Default | What it does |
 |---|---|---|
-| Source priority | Library 1, Qobuz 2, Tidal 3, Deezer 4 | The order sources are tried for playback and listed on a release page. 0 turns a source off. Each shows whether its plugin is installed |
+| Source priority | Library 1, Qobuz 2, Tidal 3, Deezer 4, Spotify 5 | The order sources are tried for playback and listed on a release page. 0 turns a source off. Each shows whether its plugin is installed |
 | Default sort | Newest first | The starting order of each section. The *Sorted by* row changes it for the visit |
 | Release types | All | Which type sections to show |
 | Hide releases you can't play | On | Hides releases that are neither in your library nor on a streaming service. Doesn't affect *Also in your library* or *Also on streaming* |
@@ -99,7 +99,9 @@ Open **Settings → Plugins → Discography**.
 
 ## Notes & limitations
 
-- **Streaming services: Qobuz, Tidal and Deezer.** Bandcamp and Spotify aren't supported.
+- **Streaming services: Qobuz, Tidal, Deezer and Spotify (through the Spotty plugin).** Bandcamp isn't supported.
+- **If Spotify stops answering, releases stay visible.** Spotty reports a signed-out or lapsed account, a Spotify outage and "no albums" the same way, so Discography never treats an empty answer from Spotify as "not on Spotify". It asks again an hour later.
+- **Spotify doesn't supply artist photos.** Photos come from Music and Artist Information and the other services.
 - **The first visit to a big artist is slower.** The public MusicBrainz API allows one request a second, so an artist with hundreds of releases takes several seconds to fetch the first time. A local MusicBrainz mirror removes the wait.
 - **The discography is only as complete as MusicBrainz.** An artist MusicBrainz doesn't know shows *Couldn't identify this artist on MusicBrainz*; albums it doesn't list appear under *Also in your library*, or *Also on streaming* if you turn that on.
 - **Classical music is a weak spot.** MusicBrainz mixes composer and performer credits, so a classical artist's page can be muddled.

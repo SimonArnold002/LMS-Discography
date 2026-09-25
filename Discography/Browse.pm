@@ -6,7 +6,7 @@ package Plugins::Discography::Browse;
 # original-release-date order (newest/oldest toggle at the top of the view,
 # fleet convention), Cover Art Archive tiles, and a per-release detail page
 # with the MusicBrainz metadata + weblink. Step 3 adds source resolution
-# (local library + Qobuz/Tidal/Deezer) and playback.
+# (local library + Qobuz/Tidal/Deezer/Spotify) and playback.
 #
 # String rule: NO non-ASCII literals in output strings (no `use utf8` in the
 # fleet — a literal em dash double-encodes to mojibake). Use \x{..} escapes,

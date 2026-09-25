@@ -6,7 +6,7 @@ package Plugins::Discography::Plugin;
 # discography spine comes from MusicBrainz release-groups (original/first
 # release dates, primary types), artwork from the Cover Art Archive, and each
 # release resolves to playable sources: the local library and/or the user's
-# streaming services (Qobuz / Tidal / Deezer). The streaming resolver is a
+# streaming services (Qobuz / Tidal / Deezer / Spotify). The streaming resolver is a
 # trimmed port of the album-match engine from the ListenBrainz Fresh Releases
 # plugin, same as the Pitchfork Reviews plugin's port.
 #

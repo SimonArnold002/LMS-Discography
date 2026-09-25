@@ -81,7 +81,7 @@ use constant SEARCH_MERGED_MAX => 30;       # merged result rows shown
 use constant LOCAL_TRACKS_MAX  => 2000;     # owned tracks scanned for track-linking
 
 # ---------------------------------------------------------------------------
-# Adapters (ported from PFR; Qobuz/Tidal/Deezer only — no Bandcamp by scope)
+# Adapters (ported from PFR; Qobuz/Tidal/Deezer, plus Spotify via Spotty (0.55.0) — no Bandcamp by scope)
 # ---------------------------------------------------------------------------
 
 sub _pluginIcon {

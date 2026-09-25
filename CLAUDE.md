@@ -1,7 +1,7 @@
 # Discography — LMS Plugin
 
 ## Project Overview
-A plugin for Lyrion Music Server (LMS) that shows an artist's **full discography** — not just what's in the library. The discography spine comes from **MusicBrainz release-groups** (original/first release dates, primary types), artwork from the **Cover Art Archive**, and each release resolves to playable sources: the **local library** and/or the user's streaming services (**Qobuz / Tidal / Deezer** — deliberately no Bandcamp; Spotify via Spotty is PLANNED, not built: `docs/spotify-adapter-plan.md`). Entry point is a **"Discography"** custom action on the artist context menu in Material Skin, **registered** with Material 6.4.6+ (`registerCustomAction`) since 0.52.0. Targets LMS 9.x.
+A plugin for Lyrion Music Server (LMS) that shows an artist's **full discography** — not just what's in the library. The discography spine comes from **MusicBrainz release-groups** (original/first release dates, primary types), artwork from the **Cover Art Archive**, and each release resolves to playable sources: the **local library** and/or the user's streaming services (**Qobuz / Tidal / Deezer / Spotify** — Spotify via Spotty since 0.55.0, `docs/spotify-adapter-plan.md`; deliberately no Bandcamp). Entry point is a **"Discography"** custom action on the artist context menu in Material Skin, **registered** with Material 6.4.6+ (`registerCustomAction`) since 0.52.0. Targets LMS 9.x.
 
 Long-term context: this is **Phase 1** of a bigger idea — an integrated Material artist view (bio header + library albums + full discography inline). Phase 1 deliberately needs **zero Material changes**; the integrated view would be a later local Material patch and, eventually, an upstream ask for a generic "artist-view section provider" hook.
 
@@ -85,6 +85,11 @@ because line numbers rot on the next edit.
 | Qobuz badge off-centre on tiles = our wrong icon | A3 | `badge off-centre on strip tiles` |
 | Anything that only happens with MAI disabled (MAI is required) | A2 | `MAI OFF IS NOT A SUPPORTED STATE` |
 | A multi-artist collaboration missing on the second-named artist's page (`artists[0]`) — accepted, not fixed | A2 | `A COLLABORATION CAN MISS ON THE SECOND-NAMED` |
+| A Spotify search with zero results is not cached as "no albums" (re-asked hourly) | A2 | `SPOTIFY: AN EMPTY ANSWER IS NEVER A VERDICT` |
+| A failed LATER Spotify page reads as the end of an exactly-50/100/150-album list | A2 | `SPOTIFY: A FAILED LATER PAGE` |
+| Spotify takes no part in artist photos (`artist_image => 0`) | A2 | `SPOTIFY IS NOT IN THE ARTIST-PHOTO WALK` |
+| Spotify favourites url / row `name` / placeholder cover handled differently from Q/T/D | A2 | `SPOTIFY ROWS KEEP SPOTTY'S OWN` |
+| Spotty's `getAPIHandler` working without a client, like the other three | A3 | `Spotty's getAPIHandler REQUIRES a client` |
 
 **Two standing rules that kill most repeat findings:**
 
@@ -351,6 +356,39 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   page and from a joint-credit search (Simon checked in the Spotify app, 2026-09-25: searching "Panda Bear Sonic
   Boom" returns the collaboration albums, as each artist's own page does). Re-raise only with a named release that is unreachable by ALL of those routes.
 
+- **SPOTIFY: AN EMPTY ANSWER IS NEVER A VERDICT** (`_spotifyEmpty`, `_searchSpotify`, `_artistsSpotify`; plan §4.4;
+  0.55.0, 2026-09-25). Zero raw results from ANY Spotify search (artist, albums page 1, album fallback, artist-search
+  leg) answer `undef`: the pool is cached UNRESOLVED for `CAND_ERR_TTL` (1h), `peekPool` does not count it as resolved,
+  so `hide_unmatched` keeps every release visible, and the artist-search merge is marked FAILED and not cached.
+  **Why:** Spotty turns every failure (502, a dead token, a timeout, a refused 429) into an empty list, so an empty
+  answer cannot be told from "Spotify has no such artist". **Cost, accepted:** an artist Spotify genuinely lacks is
+  re-asked once an hour, and only when someone opens that page (Discography has no warm, the reason PFR declined this
+  rule). VERIFIED LIVE 2026-09-25 in the dead-token state (Radiohead, hide_unmatched ON; artist search Portishead).
+  Not a finding: "a zero result should be cached as a miss".
+
+- **SPOTIFY: A FAILED LATER PAGE ends the list** (`_searchSpotify` `$fetch`; 0.55.0). Albums are fetched 50 at a
+  time, one page after another (at most 4). An empty page 2-4 while Spotty's 429 flag is set makes the WHOLE list
+  `undef`; an empty later page WITHOUT the flag is read as the end of the list, because a 502 there cannot be told
+  from an artist with exactly 50, 100 or 150 albums. Residual, stated in the code comment; the pool is then short by
+  the missing pages for its 3-day life. Re-raise only with a signal Spotty actually gives that separates the two.
+
+- **SPOTIFY IS NOT IN THE ARTIST-PHOTO WALK** (`artist_image => 0` on the adapter, filtered in `artistImage`; plan
+  §4.6). The photo route runs from the ImageProxy handler with NO client, and Spotty's handler needs one (§A3), so
+  Spotify could never answer there; worse, an exact Spotify entity without a photo would set `$sawExact` and veto a
+  looser photo from another service; and it is the one path that could fire a burst of Spotify searches. MAI is
+  required (above), so a Spotify-only user still gets photos from MAI. `_svcArtistImage` has no Spotify branch on
+  purpose.
+
+- **SPOTIFY ROWS KEEP SPOTTY'S OWN favourites url and `name`; its placeholder cover is dropped** (`native_favurl`,
+  `_renderSpotifyAlbums`; plan §4.8). (1) `_attachFavUrl` is skipped: Spotty's `album()` takes the id with a greedy
+  `/album:(.*)/`, so an appended `?cover=` would break a saved favourite (settled the same way in LBF and PFR). LL
+  therefore titles a Discography Spotify add from Spotify's album name, not the MB title (plan §4.9, LL's "show what
+  it matched to"). (2) Spotty's `name` ("Album (Year) BY Artists") is NOT reset to `line1`: versions dedupe on
+  `name|line2` and Spotty's `line2` is the artist, so resetting it would merge two same-titled editions. (3) Spotty
+  puts `plugins/Spotty/html/images/album.png` in `image` for an album with no art; only an http(s) cover may become
+  `_cover` (tiles prefer `_cover` over CAA art), and the row keeps the placeholder as its icon. Done in the Spotify
+  code, not the shared `_decorate`: no other service sends a placeholder that way.
+
 ### A3. DISPROVEN — a review WILL re-derive these from the code; each was measured
 
 **Why this section exists (Simon, 2026-09-19).** A finding that a review "checked and cleared"
@@ -365,6 +403,7 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 | `_probeArtistImage` reads `Location` off the wrong argument, so the Deezer placeholder probe can never fire | **WRONG** (raised 2026-09-19, and once before) | `Slim::Networking::SimpleAsyncHTTP` invokes **the error callback's third argument** as the response: `$self->ecb->( $self, $error, $http->response )` (read in the 9.0 source). `my (undef, $error, $res) = @_` is therefore correct, and `$res->header('Location')` is an `HTTP::Response` method. The 302-in-the-error-callback behaviour under `maxRedirect => 0` was measured live in 0.51.0 on the real Mothers/Pink Floyd/B52's urls. **The same signature is what `_netIsRateLimited` got WRONG (fixed 2026-09-24): it read the response off `$_[0]`, and because the accessors are `eval`-wrapped it answered "not a shed" in silence rather than dying. When a probe here takes the callback's arguments, it must take ALL of them.** |
 | `_idGroup` (0.51.12) could keep a release group from matching a copy whose id names THAT group | **WRONG** | `_idGroup cannot block a group` from its own copy: it is only consulted INSIDE the `unless (_mbidMatch(...))` branch, i.e. only after the id has already failed to name this group. Symmetric by construction, and pinned by the "control: its own group still takes it by id" assertion in `t_size.pl` §5. |
 | `artistImage(undef, ...)` from the ImageProxy handler cannot reach the services, because `getAPIHandler(undef)` has no client to hang an API instance off | **WRONG** | All three plugins handle a clientless call the same way, read in their own sources 2026-09-20: `$clientOrId ||= ...->getSomeUserId()` (Qobuz) / `userId => ...->getSomeUserId()` (TIDAL, Deezer), then construct an API object from that user id. A handler comes back whenever any account is signed in, so tier 3 works from the proxy. Re-raise only for a service whose `getAPIHandler` genuinely requires `ref $client`. |
+| Spotty's `getAPIHandler` works without a client, as the row above found for Qobuz/Tidal/Deezer | **WRONG for Spotty** | Spotty's getAPIHandler REQUIRES a client: `Plugins::Spotty::Plugin->getAPIHandler($client)` is a CLASS method that returns undef with no `$client` (Spotty 4.62.2 `Plugin.pm`, read 2026-09-25). It is the one service the row above tells you to re-raise for, and it is why Spotify is out of the photo walk (`SPOTIFY IS NOT IN THE ARTIST-PHOTO WALK`, §A2). A render always has a client, so the album search is unaffected: no client there means unresolved, never a miss. |
 | MAI's `getBiography` / `getAlbumReview` call back with an EMPTY list when they have nothing, so "no items" means "no text" | **WRONG** (read in MAI's source + measured live, 2026-09-24) | **MAI's NOT-FOUND answer is an item**: ONE item whose `name` is the localised `PLUGIN_MUSICARTISTINFO_NOT_FOUND` ("I'm sorry, didn't find any relevant information."), for a web client wrapped `<p>…</p>` + the "More online sources" links (`AlbumInfo::renderReview`, `ArtistInfo::_getBioItems`). 10 of 12 albums sampled live answered this way; it rendered AS the review and blocked the Qobuz fallback from 0.7.0 to 0.51.19. The item TYPE does not separate them for bios (both `textarea`). `Browse::_maiNotFound` uses MAI's own test (text starts with that string) after stripping markup. Pinned in `t_prose.pl` §10. **Language: every place MAI builds that text uses `cstring($client, …)`**, the same call `_maiNotFound` makes — review via `Wikipedia.pm` (:199, :233), bio via its Last.fm fallback `LFM.pm` (:95, :120), which every failed bio ends in (`ArtistInfo::getBiography`'s `$bioCb`). Raised as unverifiable by the 0.51.20 review, checked in MAI master 2026-09-24. |
 | Deezer's artist-albums payload carries no track count, so a Deezer copy has no size and the single gate cannot act on it | **WRONG** | `/artist/<id>/albums` omits `nb_tracks` but **Deezer states record_type** on every row, which `_candSize` reads when there are no counts; `/search/album` carries BOTH (`nb_tracks` + `record_type`, verified live 2026-09-19). Pinned in `t_size.pl` §1. |
 | The "Discography" menu entry is missing on search results and on an artist page opened from search, and no plugin can fix it | **WRONG since Material 6.4.6** (read in the live 6.4.10 bundle, 2026-09-24) | Simon's upstream ask shipped: search builds a per-category `itemCustomActions` map from `getCustomActions("artist")`, `itemCustomActs` picks it by the item's `artist_id:` prefix, and a view with no actions falls back to the item's category. Both paths call `getSectionActions`, which reads the file AND the registered list. |
@@ -400,7 +439,7 @@ session — one line, with the reason. A decision that lives only in a chat
 transcript will be rediscovered as a finding within days.
 
 ## Phase-1 Scope (locked decisions)
-- **Services: Qobuz / Tidal / Deezer only.** No Bandcamp (cookie-dependent search + event-loop-blocking parsing in its plugin — excluded on purpose). Spotify deferred, and now PLANNED in `docs/spotify-adapter-plan.md` (reviewed against the code 2026-09-25). The old reason given here, "Spotty has no `getAPIHandler`", was WRONG: it has one (a CLASS method that needs a client). The real cost is that Discography is artist-first, so it needs Spotty's artist search + artist-albums calls, which no sibling uses.
+- **Services: Qobuz / Tidal / Deezer, and Spotify via Spotty since 0.55.0.** No Bandcamp (cookie-dependent search + event-loop-blocking parsing in its plugin — excluded on purpose). Spotify was deferred, then BUILT in 0.55.0 from `docs/spotify-adapter-plan.md`. The old reason given here, "Spotty has no `getAPIHandler`", was WRONG: it has one (a CLASS method that needs a client). The real cost is that Discography is artist-first, so it needs Spotty's artist search + artist-albums calls, which no sibling uses.
 - **Spine = MusicBrainz release-groups** browsed by artist MBID (`release-group?artist=<mbid>&limit=100&offset=N`, serial pagination at MB's 1 req/s). `first-release-date` drives the date sort; primary type (Album/EP/Single/Compilation) + secondary types (Live/Remix — excluded by default) drive filtering. Art: CAA release-group front.
 - **Artist MBID**: prefer the library's `contributor.musicbrainz_id`; fall back to MB name search (port of LBF `getArtistMbidByName`).
 - **Resolver = trimmed port** of the LBF `_findPlayable` engine (the same port Pitchfork Reviews proved) — NOT a runtime dependency on LBF. New layer on top: `_resolveArtistBatch` — one artist-only search per service, matched against ALL release groups in a single pass (≈1 API call per service per artist, not per album). Known limit: service search caps ~50 albums; the v1.1 fix is the services' artist-discography endpoints.
@@ -994,7 +1033,7 @@ field mapping + the two hard rules (mandatory `X-LMS-Plugin-ID` header, one requ
 
 ## Service Plugin APIs — VERIFIED SIGNATURES (2026-07-10, from upstream source)
 
-**SPOTIFY (Spotty): the verified call signatures are in `docs/spotify-adapter-plan.md` §2; its row goes into this table when the adapter is built.** **ADDING A NEW SERVICE — READ `LMS-ListenBrainz-New-Releases/docs/streaming-adapter-spec.md` FIRST** (the adapter contract: what a service's own plugin must expose (R1-R8), the leg semantics (`undef` = inconclusive vs `[]` = a real miss, and the TTL each picks), the item fields to stamp, and the acceptance tests). **The spec covers the RELEASED plugins only — this repo is not listed in it, so its own out-of-table sites are recorded here: `_svcArtistImage` (`Sources.pm:1154`) and `_playUrl` (`Browse.pm:3123`) both branch per service, and want `artist_image` / `play_url` fields on the adapter entry. `adapters` (`Sources.pm:92`) also carries an `artists` leg the spec doesn't describe.** Add this repo to the spec at release.
+**SPOTIFY (Spotty): its rows are in the table below (built 0.55.0); the full detail, including how Spotty fails, is `docs/spotify-adapter-plan.md` §2.** **ADDING A NEW SERVICE — READ `LMS-ListenBrainz-New-Releases/docs/streaming-adapter-spec.md` FIRST** (the adapter contract: what a service's own plugin must expose (R1-R8), the leg semantics (`undef` = inconclusive vs `[]` = a real miss, and the TTL each picks), the item fields to stamp, and the acceptance tests). **The spec covers the RELEASED plugins only — this repo is not listed in it, so its own out-of-table sites are recorded here: `_svcArtistImage` (`Sources.pm:1154`) and `_playUrl` (`Browse.pm:3123`) both branch per service, and want `artist_image` / `play_url` fields on the adapter entry (0.55.0 added `artist_image` as an OPT-OUT only, `0` on Spotify, filtered in `artistImage`; `_svcArtistImage` still has no Spotify branch). `adapters` (`Sources.pm:92`) also carries an `artists` leg the spec doesn't describe.** **Discography stays OUT of that spec (Simon, 2026-09-25, plan D2): its adapter contract is kept HERE, in this section and §A2, and the LBF spec is not edited for it.** Read the spec for the shared lessons only.
 Don't guess these; the adapters break silently when they drift. Sources fetched from GitHub
 (the installed server copies are the same code):
 
@@ -1007,10 +1046,14 @@ Don't guess these; the adapters break silently when they drift. Sources fetched 
 | TIDAL `artistAlbums` | `($self,$cb,$id,$type)` — `$type` defaults `'ALBUMS'`, also `EPSANDSINGLES`/`COMPILATIONS` | plain ARRAY |
 | Deezer `search` | `($self,$cb,{search,type,strict,limit})` | plain ARRAY (unwraps `{data}`; `artist` type filtered on `nb_album`) |
 | Deezer `artistAlbums` | `($self,$cb,$id)` | plain ARRAY (unwraps `{data}`); items have **NO** `artist` object |
+| Spotty `getAPIHandler` | `Plugins::Spotty::Plugin->getAPIHandler($client)` — a CLASS method | a handler, or undef with NO `$client` and with no credentials. A lapsed account still gets a handler whose every call answers empty (the dead-token state) |
+| Spotty `search` | `($self,$cb,{query,type,limit})` — key `query`, singular `type`; default limit 200 = 4 requests, always pass ≤50 | plain ARRAY of normalised items; every failure (502, dead token, timeout) is `[]`; a 429 refusal calls back SYNCHRONOUSLY |
+| Spotty `artistAlbums` | `($self,$cb,{uri=>"spotify:artist:<id>",limit,offset,include})` — `include` defaults to include `appears_on` | plain ARRAY; albums have `name` (no `title`), `artist` a STRING + `artists` `[{id,name,uri}]`, `album_type` album/single/compilation (no EP), `total_tracks`, no duration. Past limit 50 it pages in PARALLEL and a 429 part-way drops pages silently, so Discography pages itself at 50 |
+| Spotty `OPML::_albumItem` | `($client,$album)` | — `url => \&OPML::album` (the rebuild sub), `favorites_url => spotify:album:<id>`, NO `play`, NO `extid`; `image` falls back to `plugins/Spotty/html/images/album.png` |
 | Deezer `_renderAlbum` | `($item,$addArtistToTitle,$artist)` | — (`$artist` backfills `favorites_title`; `line2` stays undef on artist-albums items — Browse overwrites `line2` with the service name anyway) |
 
 Repos: `LMS-Community/plugin-Qobuz` (master, `API.pm` + `API/Common.pm` + `Plugin.pm`) ·
-`michaelherger/lms-plugin-tidal` (`API/Async.pm`) · `philippe44/lms-deezer` (`API/Async.pm` + `Plugin.pm`).
+`michaelherger/lms-plugin-tidal` (`API/Async.pm`) · `philippe44/lms-deezer` (`API/Async.pm` + `Plugin.pm`) · `michaelherger/Spotty-Plugin` (4.62.2: `Plugin.pm`, `API.pm`, `API/Cache.pm`, `OPML.pm`).
 **Only Qobuz returns an envelope**; Deezer and TIDAL unwrap `{data}` themselves.
 
 ## Reference Code (read before porting)
@@ -1058,6 +1101,22 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
+### Unreleased (after 0.55.0, 2026-09-25) — Spotify stage 2: carrier audit + docs, no logic change
+- **Carrier audit:** every file in `Discography/` grepped for a service named without Spotify beside it. Only
+  comments and one user-visible string were stale; no code path enumerates services except the ones 0.55.0 changed
+  (`adapters`, `serviceStatus` `@known`, `_playUrl`, `%EMBLEM`, Settings, prefs; `_svcArtistImage` is excluded by
+  design). The "Works best with" strip, the settings page and the artist photo route all derive from those.
+- **Changed:** `PLUGIN_DISCOGRAPHY_ABOUT_1` now reads "Qobuz, Tidal, Deezer & Spotify"; header comments in
+  `Sources.pm`, `Browse.pm`, `Plugin.pm`.
+- **Live (dead token):** the artist SEARCH also fails safe: `search:Portishead` shows the Local hit, logs Spotify
+  FAILED, and the merged list is `NOT cached (incomplete)`.
+- **Docs (plan §4.10, now done):** Spotty rows in the Service Plugin APIs table; §A3 `Spotty's getAPIHandler
+  REQUIRES a client`; §A2 `SPOTIFY: AN EMPTY ANSWER IS NEVER A VERDICT`, `SPOTIFY: A FAILED LATER PAGE`,
+  `SPOTIFY IS NOT IN THE ARTIST-PHOTO WALK`, `SPOTIFY ROWS KEEP SPOTTY'S OWN`; line 4 and Phase-1 Scope corrected.
+- Not built into a zip (the string change ships with the next build).
+- **D2 decided (Simon):** Discography's adapter contract stays separate from LBF's `streaming-adapter-spec.md` (recorded in the Service Plugin APIs section and plan §7).
+- **README** updated for Spotify (requirements incl. Premium for playback, priority default Spotify 5, limitations: empty answers never hide releases, no Spotify artist photos); `README.html`/`index.html` regenerated. CHANGELOG still waits for the main merge.
+
 ### 0.55.0 (2026-09-25) — Spotify via Spotty — BUILT + committed, INSTALLED; failure half VERIFIED LIVE, matching NOT live-tested
 
 **Live check (plan §6, failure half), 2026-09-25 on plex:9000:** Spotify 1, Local 1, Qobuz/Tidal/Deezer 0, `hide_unmatched` ON, Spotty in its dead-token state. Radiohead cleared then rendered cold (4.6s, 66 rows): Spotty token refresh 400 -> `Spotify: artist search 'Radiohead' returned nothing ... left unresolved` -> `candidates Spotify: no pool`; the Spotify pool is then a cache HIT, yet unmatched releases (Kid A, In Rainbows...) still render with hide_unmatched on, which Browse only allows when `!$peek->{resolved}` - so the HIT is the unresolved marker, not a resolved-empty pool. Warm re-render 0.2s, same 66 rows. No Discography errors in the log since the restart. NB a menu-mode `discography items` render needs a PLAYER id; with "" the jsonrpc connection just closes (no log line). Matching + playback still need a signed-in Spotty.
@@ -1069,7 +1128,7 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   3. **Size** via the reshaped copy, `_candSize` untouched (see the plan §4.5).
   4. **Sites:** `_playUrl` `spotify://album:<id>`, `%EMBLEM` spotify, `svc_priority_spotify => 5`, both Settings lists.
 - `tools/t_spotify.pl` (83) drives the real code against a fake Spotty built from Spotty 4.62.2's source; 20 mutants of the new code, all but one caught (the one is an equivalent mutant: a redundant guard). New `tools/t_playurl.pl` (11) pins every `_playUrl` branch for the first time; `t_extid`, `t_settings` (section 8) and `t_worksbest` (six tiles, stub tied to the real list) extended. 43 suites, 1227 assertions green; every pre-existing suite's count unchanged except the three deliberately extended.
-- **Not yet done:** the live check (plan §6: dead-token state on the rig), README/CHANGELOG at the main merge, the Spotty row in the Service Plugin APIs table.
+- **Not yet done:** README/CHANGELOG at the main merge; live MATCHING and playback (need a signed-in Spotty). The dead-token live check passed (above); the Spotty rows are in the API table (next entry).
 
 ### (2026-09-25, docs — no version bump) — Spotify adapter plan reviewed; MAI declared a requirement
 - **`docs/spotify-adapter-plan.md` reviewed against the code:** every Discography-side claim holds; outcomes in its new §8. Two decisions logged in §A2: `A COLLABORATION CAN MISS ON THE SECOND-NAMED` (accepted, not fixed) and `MAI OFF IS NOT A SUPPORTED STATE`. Nothing built.
