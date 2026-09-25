@@ -1,6 +1,9 @@
 # Hosted LMS-Community API (`mai-api`) — discography spine migration
 
-**Status:** SCOPED, UNBLOCKED, NOT STARTED. Re-benchmarked 2026-08-01. No code written.
+**Status:** ON HOLD (Simon, 2026-09-25) until Herger's side ships. He is away for a few weeks. We sent him THREE requests (the list is in `docs/community-api-forum-post.bbcode.txt`). (1) Release-group ALIASES on each `/discography` entry (replaces our `inc=aliases` MusicBrainz call): AGREED. (2) Release TITLES in the `?withReleases=1` releases map (lets us drop the up-to-40-page MusicBrainz release browse): expected. (3) The unknown-mbid comment: RETRACTED by Simon 2026-09-25. He is happy with the usage we described. The mbid check is ours to handle (below). No code written.
+
+**The `?mbid=` rule (verified live 2026-09-25):** a mbid the API knows overrides the name completely (name "Radiohead" + the horrorcore Madness' mbid returns him). An UNKNOWN mbid (merged-away or mis-tagged) falls back to the name and returns the most popular artist of that name, and a dummy name cannot switch that off. So: always send the mbid when we have one, and treat a reply whose top-level `mbid` differs from the one sent as a miss -> normal MusicBrainz artist path. LBF's `_hostedDiscoMap` lacks this check today (its `getArtistAliases` has it); add it when this work resumes.
+
 **What it is:** `https://api.lms-community.org` — the LMS core dev's hosted MusicBrainz /
 MusicArtistInfo REST API (`mai-api`). Cloudflare-cached (`max-age` 30d), ~90ms warm, **un-throttled**.
 **Why it matters to DSC:** it replaces this plugin's serial, 1-req/s-throttled MusicBrainz
