@@ -1,0 +1,31 @@
+[B]About item 2 (release titles): what it is and why we need it[/B]
+
+A MusicBrainz release group is named after its [I]first[/I] release. Later reissues in the same group sometimes carry a different title. A user's copy is often one of those later reissues, so its title doesn't match the group's title.
+
+[B]Example 1: The Orb[/B]
+Release group [FONT=courier new]27b682b2-dd29-3e15-8ef2-f6475f4d262f[/FONT] is titled [I]"The Orb's Adventures Beyond the Ultraworld"[/I]. It holds 14 releases: 13 carry that title, and one official release is titled just [I]"Adventures Beyond The Ultraworld"[/I].
+A user whose album is tagged [I]"Adventures Beyond The Ultraworld"[/I] (their files, or the Qobuz/TIDAL copy) does not match the group by title. Discography then shows the album as not owned and lists their copy separately under "Also in your library".
+The group's only alias is a deluxe-edition string, so item 1 (aliases) doesn't fix this case.
+
+[B]Example 2: Kraftwerk[/B]
+Release group [I]"Tour de France Soundtracks"[/I] (2003) holds 9 releases with that title and 7 later ones (2009 remaster, 2015, 2020) titled [I]"Tour de France"[/I]. A user who owns the 2009 remaster has an album called "Tour de France". Without the release titles, the nearest match is the 1983 [I]single[/I] "Tour de France", which is the wrong record.
+
+[B]Why the release mbids you already send aren't enough[/B]
+The [FONT=courier new]releases[/FONT] map only helps when the user's file carries a MusicBrainz Album Id tag. Many files have no MusicBrainz tags, and a Qobuz, TIDAL or Deezer album never has one. For those copies, the title is the only thing we can match on.
+
+[B]What we do today[/B]
+We browse all of the artist's releases on MusicBrainz ([FONT=courier new]release?artist=<mbid>&inc=release-groups[/FONT], 100 per page at 1 request/s) to collect those titles. That's up to 40 pages for a big artist. Across one real library of about 1,100 artists, this browse matched 44 owned albums that matched nothing before.
+
+[B]What would replace it (any of these works)[/B]
+Today:
+[FONT=courier new]"releases": {"8479dc49-...": "Official"}[/FONT]
+
+Option A, the title next to the status:
+[FONT=courier new]"releases": {"8479dc49-...": {"status": "Official", "title": "Tour de France"}}[/FONT]
+
+Option B, smaller and all we actually need: the distinct titles of the group's releases that differ from the group title, on the group entry itself:
+[FONT=courier new]"release_titles": ["Tour de France"][/FONT]
+
+Option A changes the map's values from a string to an object, which could break anyone already reading [FONT=courier new]releases[/FONT]. Option B only adds a field, so nothing existing changes.
+
+We only use titles from Official releases (and releases with no status). If Option B is easier to filter that way on your side, that's fine too. Groups whose releases all share the group's title would carry nothing extra, so the payload barely grows.

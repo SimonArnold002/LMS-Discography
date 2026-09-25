@@ -92,6 +92,7 @@ because line numbers rot on the next edit.
 | Spotty's `getAPIHandler` working without a client, like the other three | A3 | `Spotty's getAPIHandler REQUIRES a client` |
 | Spotify paging at 50 still fanning out in parallel inside Spotty | A3 | `WRONG at limit 50` |
 | A cache-served Spotty page clearing `hasError429` | A3 | `cleared only by a REAL network response` |
+| Search results built from the services first, MusicBrainz only as a same-name section | A2 | `THE SEARCH LIST IS MUSICBRAINZ-FIRST` |
 
 **Two standing rules that kill most repeat findings:**
 
@@ -395,6 +396,23 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   `_cover` (tiles prefer `_cover` over CAA art), and the row keeps the placeholder as its icon. Done in the Spotify
   code, not the shared `_decorate`: no other service sends a placeholder that way.
 
+- **THE SEARCH LIST IS MUSICBRAINZ-FIRST** (`Browse::_mbFirstRows`, `API::searchArtistCandidates`,
+  `_withMbCandidates`; Simon, 2026-09-25: *"It should be searching MB first to get the discography then
+  streaming to make matches."*). The rows are the MusicBrainz artists whose NAME or ALIAS equals the query
+  (after `_nameKey`), in MB score order; the service/library rows attach to them by the mbid the row filter
+  resolved (`_mbid`) or the library tag (`_ident_mbid`), and only rows MB does not return stay as rows of their
+  own. **ORDER CORRECTED by measurement (PLANNED, not built — `docs/unified-artist-resolver-plan.md` §3):
+  LIBRARY evidence first (acts the library holds, by tag or by the resolver's owned-album check), then NAME-equal
+  artists in name-field order (`getArtistCandidates`), then alias-only matches, with one measured exception — an
+  alias act whose initials spell the query lifts above the name tier (ELO, PIL, NIN) — never MB score across both.** Owned rows still rank first (0.48.4). 0.37.0 had built the list from the services' artist searches
+  with no recorded reason, and the likely ones no longer hold (the mirror's search index was unbuilt until
+  2026-07-12; name search is fuzzy, which the exact name-or-alias gate answers). The 0.43.0 "Other artists
+  with this name" section is GONE as a section: those artists are the list, a repeated name carries its MB
+  description on line2. Do not propose going back to service-first rows, and do not re-add the 2+ rule
+  (it dropped a lone artist: Hawkwind). `getArtistCandidates` (name field only) is deliberately unchanged:
+  the bio's shared-name guard reads it, and an alias match is not "shares this name"; the plan's ranked list
+  reads it as its name tier. Pinned in `tools/t_mbcands.pl` and `tools/t_mbfirst.pl`.
+
 ### A3. DISPROVEN — a review WILL re-derive these from the code; each was measured
 
 **Why this section exists (Simon, 2026-09-19).** A finding that a review "checked and cleared"
@@ -489,8 +507,8 @@ curl -s http://plex:9000/jsonrpc.js -d '{"id":1,"method":"slim.request","params"
 ```
 Discography/
 ├── Plugin.pm       # OPMLBased entry point (tag 'discography', is_app); prefs; canonical `dbg` (API/Browse/Sources delegate); Material custom action REGISTERED once (`_registerMaterialActions`) + old actions.json entry stripped at startup (`_clearMaterialActions`); Settings under WEBUI; registers the `imageproxy/dsc/artist/<name>` artwork handler
-├── Browse.pm       # topLevel ($VAR guard, %lastCtx stash+expand flags+page counts+visibility snapshot); app-root view (_rootView: _coverCollageRow responsive random-album-cover banner, About prose, search section, "Works best with" as ONE strip of plugin tiles (badge + name + tick/cross, role as tooltip) w/ badgeSrc imageproxy normaliser); global artist search (_searchRow type=search item in the app root ONLY; the artist page's Options carries _searchButtonRow `act:search`, which opens _rootView; go action overridden w/ search:__TAGGEDINPUT__ fixedParams -> topLevel search-param dispatch GATED on item_id being absent, so a positional walk still reaches the row's own coderef; _artistSearchView w/ 10-min merged cache, only written when every source settled OK, _searchResultRow name-drills); grouped list (bio header, Options/type/library-extras sections, Albums / Singles view toggle _viewToggleItem `act:view:<to>` (Singles view = EPs + Singles, a true tab; per-player ctx `view`), sort+Refresh, release sections as tile strips on a strip-capable Material (`header-strip`, `_useStrips`/`_stripsOn`, layout_albums/layout_singles), service badge via row `extid` (`_extid`), _pageSection 30-at-a-time Show more/less, "Also a member of" band links + "Similar artists" name-drill links w/ artist-photo thumbnails, both second-load, similar deduped against bands by _dropBandDupes — Material keys app rows by TITLE, so a repeated name loses a row); artist artwork resolver (artistImageProxy handler for `imageproxy/dsc/artist/<name>`: MAI local files -> MAI online picture w/ Deezer placeholder HEAD probe -> live service photo -> person icon, verdict cached 30d); release detail (review w/ inline expand, version rows w/ Show-other-versions toggle, MB links); _proseRow avatar-column indent; bio/review prose ported from LBF (_cleanBio HTML->structure, _bioParagraphs heading/bullet/paragraph parser, _proseBlock one styled row per block, _proseSection shared collapse/expand shape, _cleanProse the one fetch-side entry point)
-├── API.pm          # Async MusicBrainz (base = mb_base_url pref, mirror-aware _mbBase/_mbGap): artist MBID (library tag first, MB search score>=90), paginated release-group browse, url-rels links; filterRowsWithContent (dead-end/empty-verdict row filter + alias fold, then the 0.51.3 tag attach: a kept row with no artist_id is claimed by its resolved mbid — AFTER the fold, so survivor choice is unchanged; among several tagged contributors the one OWNING the most albums wins, and an id another kept row already carries is never handed to a second row); peekOfficial/warmOfficial/clearOfficial + _isOfficial (bootleg filter: artist-wide status pass -> {rg=>official?} + {release=>rg} maps, fail-open); peekLocalReleaseMap/warmLocalReleases (targeted release->rg for library albums); peekBands/warmBandMembers (member-of-band); CAA image URLs; caching
+├── Browse.pm       # topLevel ($VAR guard, %lastCtx stash+expand flags+page counts+visibility snapshot); app-root view (_rootView: _coverCollageRow responsive random-album-cover banner, About prose, search section, "Works best with" as ONE strip of plugin tiles (badge + name + tick/cross, role as tooltip) w/ badgeSrc imageproxy normaliser); global artist search (_searchRow type=search item in the app root ONLY; the artist page's Options carries _searchButtonRow `act:search`, which opens _rootView; go action overridden w/ search:__TAGGEDINPUT__ fixedParams -> topLevel search-param dispatch GATED on item_id being absent, so a positional walk still reaches the row's own coderef; _artistSearchView w/ 10-min merged cache, only written when every source settled OK; the list is MusicBrainz-first (_mbFirstRows, 0.56.0): MB artists by name or alias with the service/library rows joined by mbid, _searchResultRow name-drills, _mbCandidateRow mbid-drills); grouped list (bio header, Options/type/library-extras sections, Albums / Singles view toggle _viewToggleItem `act:view:<to>` (Singles view = EPs + Singles, a true tab; per-player ctx `view`), sort+Refresh, release sections as tile strips on a strip-capable Material (`header-strip`, `_useStrips`/`_stripsOn`, layout_albums/layout_singles), service badge via row `extid` (`_extid`), _pageSection 30-at-a-time Show more/less, "Also a member of" band links + "Similar artists" name-drill links w/ artist-photo thumbnails, both second-load, similar deduped against bands by _dropBandDupes — Material keys app rows by TITLE, so a repeated name loses a row); artist artwork resolver (artistImageProxy handler for `imageproxy/dsc/artist/<name>`: MAI local files -> MAI online picture w/ Deezer placeholder HEAD probe -> live service photo -> person icon, verdict cached 30d); release detail (review w/ inline expand, version rows w/ Show-other-versions toggle, MB links); _proseRow avatar-column indent; bio/review prose ported from LBF (_cleanBio HTML->structure, _bioParagraphs heading/bullet/paragraph parser, _proseBlock one styled row per block, _proseSection shared collapse/expand shape, _cleanProse the one fetch-side entry point)
+├── API.pm          # Async MusicBrainz (base = mb_base_url pref, mirror-aware _mbBase/_mbGap): artist MBID (library tag first, MB search score>=90), searchArtistCandidates (the search list's MB artists, name OR alias, 0.56.0), paginated release-group browse, url-rels links; filterRowsWithContent (dead-end/empty-verdict row filter + alias fold, then the 0.51.3 tag attach: a kept row with no artist_id is claimed by its resolved mbid — AFTER the fold, so survivor choice is unchanged; among several tagged contributors the one OWNING the most albums wins, and an id another kept row already carries is never handed to a second row); peekOfficial/warmOfficial/clearOfficial + _isOfficial (bootleg filter: artist-wide status pass -> {rg=>official?} + {release=>rg} maps, fail-open); peekLocalReleaseMap/warmLocalReleases (targeted release->rg for library albums); peekBands/warmBandMembers (member-of-band); CAA image URLs; caching
 ├── Sources.pm      # Source engine: Q/T/D adapters (artist-FIRST candidate fetch, per-adapter query_enc, shared _renderAlbums + _albumArray envelope unwrap), Local pseudo-source (sync albums query, db:album.id play; localAlbums resolves IDENTITY FIRST — localArtistsByMbid/localArtistIdsByMbid read the library's own Contributor.musicbrainz_id tag, ALL matching contributors, before the name ladder; an explicit artist_id still outranks both UNLESS it performs on no album and the page builder opts in via `Browse::_idFallback` — then tag, then name, name never on a shared-name page); localTracks (the track-link pool: Various Artists compilation tracks ONLY, performance roles checked on the per-role ids from `tags:S` because `titles` ignores role_id, same empty-id fallback gated on owning no album), matcher (fleet-synced), matchesFor/peekPool+peekMatches/claimedLocalIds, LL favurl handshake; global artist search (searchArtists parallel per-service artist-type legs + Local CLI leg, cb(\%bySvc, \%failed) — the 2nd arg names services that ERRORED/TIMED OUT, since a failure settles as an empty list and callers must not persist an incomplete set; mergeArtistHits pure norm-keyed dedupe/rank + relevance gate vs the typed query, rows carry the service's own artist photo); artistImage/_svcArtistImage/isPlaceholderImage (live per-service artist photo via each plugin's OWN url builder, priority order; an exact-name photo ends the walk, a token-subset photo is only a fallback when NO service knows the exact name, and an exact entity without a photo vetoes it; Deezer placeholders in both forms, md5('') and the empty `/images/artist//` hash; 30d cache); serviceStatus takes an OPTIONAL pre-built adapters list (omitted = probe); randomAlbumCovers (app-root banner, sort:random — measured ~20ms/2900 albums, cheap)
 ├── Settings.pm     # Web settings: source priorities (detection), view options (type checkboxes->CSV), release page, integration
 ├── install.xml     # <extension> + <optionsURL>; version lives here; repo.xml (repo root) points at the dev zip
@@ -1108,6 +1126,55 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   likewise deliberately LBF-only and outside the shared engine.
 
 ## Development Log
+
+### 0.56.0 (2026-09-25) — search is MUSICBRAINZ-FIRST — code + suites done, NOT BUILT, not installed
+- **SUPERSEDED BEFORE BUILD — DO NOT BUILD THIS AS IS (2026-09-25).** Simon: search and the artist-link path must
+  share ONE resolver, not a second lookup. Measuring the design against all 1,117 library album artists on the
+  mirror then found a regression in it: ordering name-or-alias matches by MusicBrainz SCORE puts nicknames and
+  aliases ahead of the real act (Luna -> DJ Luna, Tennis -> DJ Tennis, James -> Harry James, Love -> =LOVE,
+  Cast -> "[theatre]"), and the second service pass would then search the services under those names. Replaced by
+  `docs/unified-artist-resolver-plan.md`. The code below is uncommitted working tree, kept as the starting point.
+- **Field (Simon): searching "Hawkwind" and "ELO" both failed**, although MusicBrainz puts each first. Measured
+  live on 0.55.1 with `debug_log`: Qobuz is OFF on the rig (`svc_priority_qobuz` 0) and Spotty's token refresh
+  400s, so every service leg was empty. Two defects then decided the result, neither of them the services:
+  - **Hawkwind:** MB has exactly one, and MB artists were shown only in the 0.43.0 same-name section, which
+    needed 2+ (`@$cands < 2` early return) — "No artists found".
+  - **ELO:** the candidate query was `artist:"ELO"` (NAME field only) filtered to name-equal hits, so
+    Electric Light Orchestra (alias "ELO") was never a candidate: `artist:"ELO"` -> Korean singer 100,
+    `artist:"ELO" OR alias:"ELO"` -> Electric Light Orchestra 100 (mirror, same day).
+- **Simon: "It should be searching MB first to get the discography then streaming to make matches."** The
+  artist PAGE always was; the search LIST was service-first since 0.37.0 with no recorded reason. Now:
+  - **`API::searchArtistCandidates`** — `artist:"X" OR alias:"X"` (unquoted retry on a miss), kept only when
+    the NAME or an ALIAS equals the query after `_nameKey`; aliases ride inline on each hit, so no extra
+    request. MB's special entities dropped. Cached `dsc:asrchcand:1:` for `CAND_TTL`. The exact gate is what
+    keeps Kate Bush (score 100) out of "Bush". `getArtistCandidates` untouched (see the A2 entry).
+  - **`Browse::_mbFirstRows`** builds the list: each live MB artist in score order, as the service/library row
+    that resolved to it (joined on `_mbid`, stamped by `filterRowsWithContent` from the resolution it already
+    ran, or the library tag `_ident_mbid`), else an MB row entered by mbid; then every row MB did not return,
+    in merge order; then owned first (0.48.4). Public API (no filter, no `_mbid`): the 0.43.2 name rule stands
+    in, unowned rows only. An MB row the library holds by tag says Local and carries that `artist_id` (the
+    contributor owning most albums, never an id another row carries — 0.51.3 / 0.51.11 rules).
+  - **The second service pass** (0.45.2) now takes its canonical name from the TOP candidate, so "ELO" also
+    searches the services as "Electric Light Orchestra"; no candidate -> `getArtistMbid` exactly as before.
+  - `_mbCandidateRow` shows the matched alias (`aka ELO`) and a leading `Local`; `_searchResultItems` deleted
+    (no caller); the "Other artists with this name" header string is now unused (left in strings.txt).
+- **Suites:** `t_mbcands.pl` (19, the measured mirror answers) and `t_mbfirst.pl` (26, the Hawkwind / ELO /
+  Madness shapes + controls); `t_searchrank.pl` stubs retargeted, its four assertions unchanged. **Mutation-tested
+  ten ways, every one red**: no alias match (4), name field only (11), no special-entity guard (2), no mbid join
+  (5), no public-API name rule (1), no owned-first sort (7), id cloned to a second row (1), no owner pick (1), no
+  description on a repeated name (1), MB row without its library id (2). All 46 suites (1,246 + the TAP one)
+  green; `syntax_check.sh` clean. No shared matcher sub touched.
+- **Known, accepted:** on the PUBLIC API (the row filter does not run) an UNTAGGED owned row is never joined
+  by name, so it and its MB artist can both show; on a mirror the filter resolves library rows too and they
+  join. The name-only resolver (`_artistMbidByName`, the Artists-row/name drill) still prefers an EXACT name
+  over an alias, so a service row literally named "ELO" resolves to the Korean singer as before; the search now
+  offers Electric Light Orchestra as its own row instead.
+- **Rig state, not code:** Qobuz is off in Discography's settings and Spotty needs re-authorising, so search
+  rows will carry no streaming sources until those change.
+- **LIVE CHECK after install:** search `Hawkwind` -> one Hawkwind row; `ELO` -> Electric Light Orchestra first
+  (Local if tagged, `aka ELO`), then the ELO acts with their descriptions; `Madness` -> the ska band once (with
+  its services) plus the other acts; `Radiohead` unchanged. Log: `search candidates '<q>': N by name or alias`
+  and `MB-first - N MB artist(s), M joined`.
 
 ### 0.55.1 (2026-09-25) — "Also on streaming" merges across services on the TITLE — BUILT + committed, NOT installed
 - **Found by the whole-code Spotify review** (Simon: review everything the change can touch, not only the diff).
