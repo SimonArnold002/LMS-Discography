@@ -1058,7 +1058,9 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
-### 0.55.0 (2026-09-25) — Spotify via Spotty — BUILT + committed, NOT installed, NOT live-tested
+### 0.55.0 (2026-09-25) — Spotify via Spotty — BUILT + committed, INSTALLED; failure half VERIFIED LIVE, matching NOT live-tested
+
+**Live check (plan §6, failure half), 2026-09-25 on plex:9000:** Spotify 1, Local 1, Qobuz/Tidal/Deezer 0, `hide_unmatched` ON, Spotty in its dead-token state. Radiohead cleared then rendered cold (4.6s, 66 rows): Spotty token refresh 400 -> `Spotify: artist search 'Radiohead' returned nothing ... left unresolved` -> `candidates Spotify: no pool`; the Spotify pool is then a cache HIT, yet unmatched releases (Kid A, In Rainbows...) still render with hide_unmatched on, which Browse only allows when `!$peek->{resolved}` - so the HIT is the unresolved marker, not a resolved-empty pool. Warm re-render 0.2s, same 66 rows. No Discography errors in the log since the restart. NB a menu-mode `discography items` render needs a PLAYER id; with "" the jsonrpc connection just closes (no log line). Matching + playback still need a signed-in Spotty.
 - Zip sha1 `ae13133e800bb3666fb2553dc4acfd2499be0748`; CACHE_VERSION 0.55.0 (clears every Discography cache on install); repo.xml bumped with it.
 - **Also fixes a broken manifest shipped on dev in 59bba8b:** the MAI description edit dropped `</description>`, so `install.xml` did not parse and LMS would skip the plugin. `tools/syntax_check.sh` now XML-parses `install.xml` and `repo.xml` (verified to fail on the broken file).
 - Per `docs/spotify-adapter-plan.md` (D1 = PFR's adapter fields, D3 = priority 5). Staged, each stage tested first:

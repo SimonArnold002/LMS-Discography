@@ -1,6 +1,6 @@
 # Spotify (via Spotty) for Discography — build plan
 
-**Status: BUILT in the working tree, 2026-09-25 (§4.1–§4.8, D1 = PFR's adapter fields, D3 = 5). Built as 0.55.0 and committed; not installed, not live-tested.** Originally Written from code, not from a live Spotify
+**Status: BUILT, 2026-09-25 (§4.1–§4.8, D1 = PFR's adapter fields, D3 = 5). 0.55.0 committed and installed; the §6 failure half is VERIFIED LIVE (dead token -> pool unresolved, every release still shown with hide_unmatched on); matching and playback are not live-tested.** Originally Written from code, not from a live Spotify
 account: Simon no longer subscribes. Every claim below was checked against Discography's source,
 against Spotty 4.62.2's source (`michaelherger/Spotty-Plugin` master), and against the Spotify
 work already done in LBF, PFR and LL. Where a line number is given it was read on 2026-09-25 and
@@ -278,7 +278,7 @@ Harness traps both siblings hit:
 
 - **On the rig now (dead-token state):** Spotify at priority 1, others 0 → an artist page must
   show every release (unmatched), log the Spotify pool as unresolved, and not cache the artist
-  search. This proves the failure half.
+  search. This proves the failure half. **PASSED 2026-09-25** (0.55.0, Radiohead, hide_unmatched ON; evidence in CLAUDE.md dev log 0.55.0).
 - **If a free Spotify account can sign into Spotty** (untested: Spotify's search API is not
   Premium-only, but how Spotty handles a free login is unknown), matching can be tested on the rig;
   only playback needs Premium.
