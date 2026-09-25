@@ -26,7 +26,7 @@ PLUGIN_DISCOGRAPHY_ABOUT_1
 	EN	Browse an artist's complete discography - every album, EP, single and compilation that's listed in MusicBrainz. Each release plays from your local library or your chosen streaming services if available. Each release displays with artwork, original release dates, reviews and biographies. Releases are grouped together so you can play which version you prefer, e.g. Deluxe, Remastered etc. (Currently supports Qobuz, Tidal & Deezer.)
 
 PLUGIN_DISCOGRAPHY_ABOUT_2
-	EN	Search for any artist above, or browse to an artist in your library and choose "Discography" from the context menu in Material Skin.
+	EN	Search for any artist below, or browse to an artist in your library and choose "Discography" from the context menu in Material Skin. Requires the Music and Artist Information plugin (bundled with LMS), which provides biographies, reviews, artist photos and similar artists.
 
 PLUGIN_DISCOGRAPHY_PLUGINS_HDR
 	EN	Works best with

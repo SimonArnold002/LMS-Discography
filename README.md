@@ -30,10 +30,10 @@ Tested on LMS 9.x with the **Material Skin**.
 
 - **Lyrion Music Server 9.0.0+**.
 - **Material Skin 6.4.6 or later** for the *Discography* entry on the artist menu. Without it, the plugin is still under **My Apps**.
+- **The Music and Artist Information plugin, enabled.** It comes with LMS and is on by default. Discography needs it for biographies, reviews, artist photos and similar artists; with it turned off, those parts of the plugin don't work.
 - To play releases you don't own: the **Qobuz**, **Tidal** and/or **Deezer** plugin, installed and signed in.
-- For biographies, reviews, artist photos and similar artists: the **Music and Artist Information** plugin.
 
-Every integration is optional. A service that isn't installed is simply skipped.
+The streaming services are optional. A service that isn't installed is simply skipped.
 
 ---
 

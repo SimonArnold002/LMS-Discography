@@ -1,7 +1,7 @@
 # Discography — LMS Plugin
 
 ## Project Overview
-A plugin for Lyrion Music Server (LMS) that shows an artist's **full discography** — not just what's in the library. The discography spine comes from **MusicBrainz release-groups** (original/first release dates, primary types), artwork from the **Cover Art Archive**, and each release resolves to playable sources: the **local library** and/or the user's streaming services (**Qobuz / Tidal / Deezer** — deliberately no Bandcamp; Spotify maybe later). Entry point is a **"Discography"** custom action on the artist context menu in Material Skin, **registered** with Material 6.4.6+ (`registerCustomAction`) since 0.52.0. Targets LMS 9.x.
+A plugin for Lyrion Music Server (LMS) that shows an artist's **full discography** — not just what's in the library. The discography spine comes from **MusicBrainz release-groups** (original/first release dates, primary types), artwork from the **Cover Art Archive**, and each release resolves to playable sources: the **local library** and/or the user's streaming services (**Qobuz / Tidal / Deezer** — deliberately no Bandcamp; Spotify via Spotty is PLANNED, not built: `docs/spotify-adapter-plan.md`). Entry point is a **"Discography"** custom action on the artist context menu in Material Skin, **registered** with Material 6.4.6+ (`registerCustomAction`) since 0.52.0. Targets LMS 9.x.
 
 Long-term context: this is **Phase 1** of a bigger idea — an integrated Material artist view (bio header + library albums + full discography inline). Phase 1 deliberately needs **zero Material changes**; the integrated view would be a later local Material patch and, eventually, an upstream ask for a generic "artist-view section provider" hook.
 
@@ -83,6 +83,8 @@ because line numbers rot on the next edit.
 | Albums / Singles is a toggle row, not tabs; the Singles view hides bio/extras/links | A2 | `SINGLES IS A TRUE TAB` |
 | `extid` on our rows changing Material favourites | A3 | `Material's only other `extid` reader` |
 | Qobuz badge off-centre on tiles = our wrong icon | A3 | `badge off-centre on strip tiles` |
+| Anything that only happens with MAI disabled (MAI is required) | A2 | `MAI OFF IS NOT A SUPPORTED STATE` |
+| A multi-artist collaboration missing on the second-named artist's page (`artists[0]`) — accepted, not fixed | A2 | `A COLLABORATION CAN MISS ON THE SECOND-NAMED` |
 
 **Two standing rules that kill most repeat findings:**
 
@@ -327,6 +329,28 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   singles-only artist keeps them (no toggle, no Albums view). The Singles view holds EPs too, as its own
   section (Simon, 2026-09-24, "Singles & EPs"); Live etc. stay on Albums until asked for. The choice is per artist per player (ctx), not a pref. The TARGET rides in the row id (`act:view:singles` / `act:view:albums`, review 2026-09-24): a tap is dispatched by rebuilding the page from the server's CURRENT view, so a fixed id flipped relative to that state (double tap, second window). A stale tap now misses `_findRow` and changes nothing. Pinned in `tools/t_view.pl`.
 
+- **MAI OFF IS NOT A SUPPORTED STATE** (Simon, 2026-09-25). Music & Artist Information is required for the plugin to
+  work (bios, reviews, artist photos, similar artists). A finding that only happens with MAI disabled is NOT a
+  finding: e.g. `Browse::_artistImg`'s "MAI off, a service on" gate at `orderedAdapters()`. The code's MAI-off
+  fallbacks (`isEnabled('Plugins::MusicArtistInfo::Plugin')` checks, the person-icon returns) stay because they cost
+  nothing, but they are not tested and need no fixing. MAI ships enabled with LMS; a user who turns it off is out
+  of scope. Moving to the hosted community API instead is possible later but costs more calls, so MAI stays for now.
+  **LMS has NO plugin-dependency field in `install.xml`** (read in 9.1 `Slim/Utils/PluginManager.pm`: the loader
+  checks only `targetApplication`, `targetPlatform`, `enforce`, `needsMySB`, `defaultState`), so the requirement can
+  only be stated in the description / README / settings page, or checked at startup by the plugin itself.
+  Stated in three places (Simon, 2026-09-25): the `install.xml` description, README Requirements, and the home
+  page's About text (`PLUGIN_DISCOGRAPHY_ABOUT_2`). No startup check.
+
+- **A COLLABORATION CAN MISS ON THE SECOND-NAMED ARTIST'S PAGE — accepted, not fixed** (`_filterForeignArtist`,
+  `_albumArtistId`, `artists[0]`, the Spotify plan's reshaping step §4.2; Simon, 2026-09-25). Raised by the review of
+  `docs/spotify-adapter-plan.md`: a service that credits a collaboration as several artists ([Panda Bear, Sonic Boom])
+  reads the first as the album's artist, so on Sonic Boom's page the id filter and the matcher's artist gate can drop
+  that copy. **Simon: services are not consistent about collaboration credits, the same thing happens on the others,
+  and we do not fix what a service breaks.** The approach is to look each artist up individually, and the joint
+  credit when neither works (0.47.0 / 0.48.5 / 0.48.6); the collaboration is reachable from the first-named artist's
+  page and from a joint-credit search (Simon checked in the Spotify app, 2026-09-25: searching "Panda Bear Sonic
+  Boom" returns the collaboration albums, as each artist's own page does). Re-raise only with a named release that is unreachable by ALL of those routes.
+
 ### A3. DISPROVEN — a review WILL re-derive these from the code; each was measured
 
 **Why this section exists (Simon, 2026-09-19).** A finding that a review "checked and cleared"
@@ -376,7 +400,7 @@ session — one line, with the reason. A decision that lives only in a chat
 transcript will be rediscovered as a finding within days.
 
 ## Phase-1 Scope (locked decisions)
-- **Services: Qobuz / Tidal / Deezer only.** No Bandcamp (cookie-dependent search + event-loop-blocking parsing in its plugin — excluded on purpose). Spotify deferred (Spotty has no `getAPIHandler`; its adapter is real work, not a free port).
+- **Services: Qobuz / Tidal / Deezer only.** No Bandcamp (cookie-dependent search + event-loop-blocking parsing in its plugin — excluded on purpose). Spotify deferred, and now PLANNED in `docs/spotify-adapter-plan.md` (reviewed against the code 2026-09-25). The old reason given here, "Spotty has no `getAPIHandler`", was WRONG: it has one (a CLASS method that needs a client). The real cost is that Discography is artist-first, so it needs Spotty's artist search + artist-albums calls, which no sibling uses.
 - **Spine = MusicBrainz release-groups** browsed by artist MBID (`release-group?artist=<mbid>&limit=100&offset=N`, serial pagination at MB's 1 req/s). `first-release-date` drives the date sort; primary type (Album/EP/Single/Compilation) + secondary types (Live/Remix — excluded by default) drive filtering. Art: CAA release-group front.
 - **Artist MBID**: prefer the library's `contributor.musicbrainz_id`; fall back to MB name search (port of LBF `getArtistMbidByName`).
 - **Resolver = trimmed port** of the LBF `_findPlayable` engine (the same port Pitchfork Reviews proved) — NOT a runtime dependency on LBF. New layer on top: `_resolveArtistBatch` — one artist-only search per service, matched against ALL release groups in a single pass (≈1 API call per service per artist, not per album). Known limit: service search caps ~50 albums; the v1.1 fix is the services' artist-discography endpoints.
@@ -970,7 +994,7 @@ field mapping + the two hard rules (mandatory `X-LMS-Plugin-ID` header, one requ
 
 ## Service Plugin APIs — VERIFIED SIGNATURES (2026-07-10, from upstream source)
 
-**ADDING A NEW SERVICE — READ `LMS-ListenBrainz-New-Releases/docs/streaming-adapter-spec.md` FIRST** (the adapter contract: what a service's own plugin must expose (R1-R8), the leg semantics (`undef` = inconclusive vs `[]` = a real miss, and the TTL each picks), the item fields to stamp, and the acceptance tests). **The spec covers the RELEASED plugins only — this repo is not listed in it, so its own out-of-table sites are recorded here: `_svcArtistImage` (`Sources.pm:1154`) and `_playUrl` (`Browse.pm:3123`) both branch per service, and want `artist_image` / `play_url` fields on the adapter entry. `adapters` (`Sources.pm:92`) also carries an `artists` leg the spec doesn't describe.** Add this repo to the spec at release.
+**SPOTIFY (Spotty): the verified call signatures are in `docs/spotify-adapter-plan.md` §2; its row goes into this table when the adapter is built.** **ADDING A NEW SERVICE — READ `LMS-ListenBrainz-New-Releases/docs/streaming-adapter-spec.md` FIRST** (the adapter contract: what a service's own plugin must expose (R1-R8), the leg semantics (`undef` = inconclusive vs `[]` = a real miss, and the TTL each picks), the item fields to stamp, and the acceptance tests). **The spec covers the RELEASED plugins only — this repo is not listed in it, so its own out-of-table sites are recorded here: `_svcArtistImage` (`Sources.pm:1154`) and `_playUrl` (`Browse.pm:3123`) both branch per service, and want `artist_image` / `play_url` fields on the adapter entry. `adapters` (`Sources.pm:92`) also carries an `artists` leg the spec doesn't describe.** Add this repo to the spec at release.
 Don't guess these; the adapters break silently when they drift. Sources fetched from GitHub
 (the installed server copies are the same code):
 
@@ -1033,6 +1057,11 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   likewise deliberately LBF-only and outside the shared engine.
 
 ## Development Log
+
+### (2026-09-25, docs — no version bump) — Spotify adapter plan reviewed; MAI declared a requirement
+- **`docs/spotify-adapter-plan.md` reviewed against the code:** every Discography-side claim holds; outcomes in its new §8. Two decisions logged in §A2: `A COLLABORATION CAN MISS ON THE SECOND-NAMED` (accepted, not fixed) and `MAI OFF IS NOT A SUPPORTED STATE`. Nothing built.
+- **MAI requirement stated** in the `install.xml` description, README Requirements and the home page About text (`PLUGIN_DISCOGRAPHY_ABOUT_2`, which also now says the search box is BELOW it, as it has been since 0.39.0). LMS has no dependency field in `install.xml`. Not built: the text ships with the next build.
+- The Phase-1 Scope line claiming Spotty has no `getAPIHandler` is corrected, and the Service Plugin APIs section points at the plan.
 
 ### 0.54.9 (2026-09-24) — review fix: the view toggle carries its target in its id — BUILT, not installed
 - Zip sha1 `70703431e0042774a060b511dd443fa019a6d946`; CACHE_VERSION 0.54.9; repo.xml bumped with it.
