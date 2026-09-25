@@ -1058,6 +1058,17 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
+### 0.55.0 (2026-09-25) — Spotify via Spotty — BUILT + committed, NOT installed, NOT live-tested
+- Zip sha1 `ae13133e800bb3666fb2553dc4acfd2499be0748`; CACHE_VERSION 0.55.0 (clears every Discography cache on install); repo.xml bumped with it.
+- **Also fixes a broken manifest shipped on dev in 59bba8b:** the MAI description edit dropped `</description>`, so `install.xml` did not parse and LMS would skip the plugin. `tools/syntax_check.sh` now XML-parses `install.xml` and `repo.xml` (verified to fail on the broken file).
+- Per `docs/spotify-adapter-plan.md` (D1 = PFR's adapter fields, D3 = priority 5). Staged, each stage tested first:
+  1. **D1 refactor, no behaviour change:** `rebuild` on each adapter entry; `_reattach($adapter, ...)` reads it; `%REATTACH` gone. Its two callers (`getCandidates` cache hit, `peekPool`) already held the entry. `tools/t_adapters.pl` (37): part A (public paths) passed on the OLD code too, part B red before / green after; a crossed-wire mutant is caught.
+  2. **The adapter** (`_searchSpotify`, `_artistsSpotify`, `_spotifyAlbum`, `_renderSpotifyAlbums`, `_spotifyEmpty`, `_spottyRateLimited`, `_spotifyBackingOff`, `$SPOTIFY_REFUSED_AT`): zero raw results -> undef; own serial paging (50 x 4, no appears_on); a refused later page -> the whole list undef; placeholder cover never `_cover`; `native_favurl` skip in `matchesFor`; `artist_image => 0` filtered before the photo walk; `serviceStatus` lists Spotify (so "Works best with" shows six tiles).
+  3. **Size** via the reshaped copy, `_candSize` untouched (see the plan §4.5).
+  4. **Sites:** `_playUrl` `spotify://album:<id>`, `%EMBLEM` spotify, `svc_priority_spotify => 5`, both Settings lists.
+- `tools/t_spotify.pl` (83) drives the real code against a fake Spotty built from Spotty 4.62.2's source; 20 mutants of the new code, all but one caught (the one is an equivalent mutant: a redundant guard). New `tools/t_playurl.pl` (11) pins every `_playUrl` branch for the first time; `t_extid`, `t_settings` (section 8) and `t_worksbest` (six tiles, stub tied to the real list) extended. 43 suites, 1227 assertions green; every pre-existing suite's count unchanged except the three deliberately extended.
+- **Not yet done:** the live check (plan §6: dead-token state on the rig), README/CHANGELOG at the main merge, the Spotty row in the Service Plugin APIs table.
+
 ### (2026-09-25, docs — no version bump) — Spotify adapter plan reviewed; MAI declared a requirement
 - **`docs/spotify-adapter-plan.md` reviewed against the code:** every Discography-side claim holds; outcomes in its new §8. Two decisions logged in §A2: `A COLLABORATION CAN MISS ON THE SECOND-NAMED` (accepted, not fixed) and `MAI OFF IS NOT A SUPPORTED STATE`. Nothing built.
 - **MAI requirement stated** in the `install.xml` description, README Requirements and the home page About text (`PLUGIN_DISCOGRAPHY_ABOUT_2`, which also now says the search box is BELOW it, as it has been since 0.39.0). LMS has no dependency field in `install.xml`. Not built: the text ships with the next build.

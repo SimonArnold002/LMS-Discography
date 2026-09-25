@@ -69,6 +69,7 @@ my %DEFAULTS = (
     sort_order => 'newest', show_types => 'ALBUMS,EPS', mb_base_url => '',
     layout_albums => 'tiles', layout_singles => 'list',
     svc_priority_local => 1, svc_priority_qobuz => 2, svc_priority_tidal => 3, svc_priority_deezer => 4,
+    svc_priority_spotify => 5,
 );
 sub reset_store { %STORE = %DEFAULTS; $BASE_RAN = 0 }
 
@@ -81,6 +82,7 @@ sub form_post {
         pref_layout_albums => 'tiles', pref_layout_singles => 'list',
         pref_svc_priority_local => 1, pref_svc_priority_qobuz => 2,
         pref_svc_priority_tidal => 3, pref_svc_priority_deezer => 4,
+        pref_svc_priority_spotify => 5,
         dsc_type_ALBUMS => 1, dsc_type_EPS => 1,
     );
     $p{"pref_$_"} = 1 for keys %ticked;
@@ -161,6 +163,29 @@ open my $fh2, '<', "$FindBin::Bin/../Discography/HTML/EN/plugins/Discography/set
 my $page = do { local $/; <$fh2> };
 ok(scalar(() = $page =~ /name="pref_layout_(?:albums|singles)" value="(?:tiles|list)"/g) == 4,
    '7: the page has a Tiles and a List radio for each layout');
+
+# ===================================================================================
+section('8. the Spotify priority (docs/spotify-adapter-plan.md)');
+my (undef, @pn) = Plugins::Discography::Settings->prefs;
+ok(scalar(grep { $_ eq 'svc_priority_spotify' } @pn), '8: svc_priority_spotify is in prefs() (the base saves it)');
+reset_store();
+$p = form_post(); $p->{pref_svc_priority_spotify} = 1;
+Plugins::Discography::Settings->handler(undef, $p);
+ok($STORE{svc_priority_spotify} == 1, '8: a posted Spotify priority saves');
+reset_store();
+$p = form_post(); $p->{pref_svc_priority_spotify} = 42;
+Plugins::Discography::Settings->handler(undef, $p);
+ok($STORE{svc_priority_spotify} == 9, '8: clamped to 9, like the others');
+reset_store(); $STORE{svc_priority_spotify} = 3;
+$p = form_post(); delete $p->{pref_svc_priority_spotify};
+Plugins::Discography::Settings->handler(undef, $p);
+ok($STORE{svc_priority_spotify} == 3, '8: an absent field keeps the current value, never 0');
+ok($STORE{svc_priority_qobuz} == 2 && $STORE{svc_priority_deezer} == 4, '8: the other priorities are untouched');
+{
+    open my $pf, '<', "$FindBin::Bin/../Discography/Plugin.pm" or die $!;
+    my $plug = do { local $/; <$pf> };
+    ok(scalar($plug =~ /svc_priority_spotify\s*=>\s*5\b/), '8: Plugin.pm default is 5, last (D3)');
+}
 
 printf "\n%d passed, %d failed\n", $pass, $fail;
 exit($fail ? 1 : 0);

@@ -80,6 +80,7 @@ $prefs->init({
     svc_priority_qobuz  => 2,
     svc_priority_tidal  => 3,
     svc_priority_deezer => 4,
+    svc_priority_spotify => 5,     # last (as LBF); docs/spotify-adapter-plan.md D3
 
     # Which release-type sections to show (CSV of Browse.pm group keys).
     show_types => 'ALBUMS,EPS,SINGLES,COMPILATIONS,LIVE,OTHER',

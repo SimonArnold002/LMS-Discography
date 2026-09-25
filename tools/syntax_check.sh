@@ -132,4 +132,18 @@ else
     fail=1
 fi
 
+# The manifests must PARSE. LMS reads install.xml with XMLin and skips a plugin
+# whose manifest does not parse ("Unable to parse XML"), so a broken tag means the
+# plugin silently never loads. Found 2026-09-25: a description edit dropped
+# </description> and nothing here read the file as XML.
+for x in Discography/install.xml repo.xml; do
+    printf '%-14s ' "XML"
+    if err=$(perl -MXML::Parser -e 'XML::Parser->new->parsefile($ARGV[0])' "$x" 2>&1 \
+             || python3 -c 'import sys,xml.etree.ElementTree as E; E.parse(sys.argv[1])' "$x" 2>&1); then
+        echo "OK ($x)"
+    else
+        echo "FAIL - $x does not parse: $(printf '%s' "$err" | head -1)"; fail=1
+    fi
+done
+
 exit $fail

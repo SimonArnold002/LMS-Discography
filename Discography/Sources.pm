@@ -32,7 +32,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.54.9';
+use constant CACHE_VERSION => '0.55.0';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
@@ -101,6 +101,7 @@ sub adapters {
     push @adapters, {
         name => 'Qobuz', icon => _pluginIcon('Plugins::Qobuz::Plugin'),
         run  => \&_searchQobuz, artists => \&_artistsQobuz, query_enc => 'chars',
+        rebuild => Plugins::Qobuz::Plugin->can('QobuzGetTracks'),
     } if Plugins::Qobuz::Plugin->can('getAPIHandler')
       && Plugins::Qobuz::Plugin->can('_albumItem')
       && Plugins::Qobuz::Plugin->can('QobuzGetTracks');
@@ -108,6 +109,7 @@ sub adapters {
     push @adapters, {
         name => 'Tidal', icon => _pluginIcon('Plugins::TIDAL::Plugin'),
         run  => \&_searchTidal, artists => \&_artistsTidal, query_enc => 'chars',
+        rebuild => Plugins::TIDAL::Plugin->can('getAlbum'),
     } if Plugins::TIDAL::Plugin->can('getAPIHandler')
       && Plugins::TIDAL::Plugin->can('getAlbum')
       && Plugins::TIDAL::Plugin->can('_renderAlbum');
@@ -115,9 +117,28 @@ sub adapters {
     push @adapters, {
         name => 'Deezer', icon => _pluginIcon('Plugins::Deezer::Plugin'),
         run  => \&_searchDeezer, artists => \&_artistsDeezer, query_enc => 'bytes',
+        rebuild => Plugins::Deezer::Plugin->can('getAlbum'),
     } if Plugins::Deezer::Plugin->can('getAPIHandler')
       && Plugins::Deezer::Plugin->can('_renderAlbum')
       && Plugins::Deezer::Plugin->can('getAlbum');
+
+    # Spotify via Spotty (docs/spotify-adapter-plan.md). Probes exactly the
+    # three Spotty subs it calls. Spotty ships its OWN working favurl
+    # (`spotify:album:<id>`), and decorating it would break a saved favourite:
+    # its album() takes the id with a greedy /album:(.*)/ (native_favurl).
+    # Kept out of the artist-photo walk (artist_image => 0): the walk runs with
+    # no client, which Spotty's getAPIHandler refuses, and _svcArtistImage has
+    # no Spotify branch, so an exact Spotify artist without a photo would only
+    # veto another service's.
+    push @adapters, {
+        name => 'Spotify', icon => _pluginIcon('Plugins::Spotty::Plugin'),
+        run  => \&_searchSpotify, artists => \&_artistsSpotify, query_enc => 'chars',
+        rebuild       => Plugins::Spotty::OPML->can('album'),
+        native_favurl => 1,
+        artist_image  => 0,
+    } if Plugins::Spotty::Plugin->can('getAPIHandler')
+      && Plugins::Spotty::OPML->can('_albumItem')
+      && Plugins::Spotty::OPML->can('album');
 
     return @adapters;
 }
@@ -784,7 +805,8 @@ sub _localAlbumTracks {
 # render instead of once per consumer. Omitted = probe here, as before.
 sub serviceStatus {
     my ($adapters) = @_;
-    my @known = ( [ 'qobuz', 'Qobuz' ], [ 'tidal', 'Tidal' ], [ 'deezer', 'Deezer' ] );
+    my @known = ( [ 'qobuz', 'Qobuz' ], [ 'tidal', 'Tidal' ], [ 'deezer', 'Deezer' ],
+                  [ 'spotify', 'Spotify' ] );
     my %installed = map { lc($_->{name}) => 1 }
         (ref $adapters eq 'ARRAY' ? @$adapters : adapters());
     return [ map {
@@ -835,18 +857,17 @@ sub _candKey {
 }
 
 # Native play/browse coderefs can't live in the cache — stripped on write,
-# reattached per service on read. A service that's since been disabled or
-# uninstalled yields no coderef and the item is dropped.
-my %REATTACH = (
-    Qobuz  => sub { Plugins::Qobuz::Plugin->can('QobuzGetTracks') && \&Plugins::Qobuz::Plugin::QobuzGetTracks },
-    Tidal  => sub { Plugins::TIDAL::Plugin->can('getAlbum')       && \&Plugins::TIDAL::Plugin::getAlbum },
-    Deezer => sub { Plugins::Deezer::Plugin->can('getAlbum')      && \&Plugins::Deezer::Plugin::getAlbum },
-);
-
+# reattached on read from the adapter entry's own `rebuild` sub (PFR's shape;
+# it replaced a %REATTACH map keyed by service name, D1 in
+# docs/spotify-adapter-plan.md). $adapter is an adapters()/orderedAdapters()
+# entry. Every rebuild sub is one adapters() already probed with ->can, and
+# both callers rebuild that list per call, so a service that's since been
+# disabled or uninstalled is simply not there; an entry without a rebuild sub
+# yields nothing, and its items are dropped rather than left without a url.
 sub _reattach {
-    my ($svc, $cached) = @_;
-    my $getter = $REATTACH{$svc} or return [];
-    my $code   = $getter->()     or return [];
+    my ($adapter, $cached) = @_;
+    my $code = ref $adapter eq 'HASH' ? $adapter->{rebuild} : undef;
+    return [] unless ref $code eq 'CODE';
     return [ map { my %x = %$_; $x{url} = $code; \%x } @{ $cached || [] } ];
 }
 
@@ -915,7 +936,7 @@ sub getCandidates {
         my $key = _candKey($svc, $artist, $mbid);
 
         if (!$force && (my $c = $cache->get($key))) {
-            $out{$svc} = _reattach($svc, $c->{items});
+            $out{$svc} = _reattach($a, $c->{items});
             $cb->(\%out) unless --$pending;
             next;
         }
@@ -1308,7 +1329,10 @@ sub artistImage {
     my $key = _artImgKey($name);
     if (defined(my $c = $cache->get($key))) { return $cb->($c || undef, 1) }
 
-    my @adapters = orderedAdapters();
+    # Only services that can supply a photo (artist_image => 0 opts one out;
+    # absent means yes). Filtered BEFORE the walk, so an opted-out service can
+    # neither answer nor veto.
+    my @adapters = grep { !defined $_->{artist_image} || $_->{artist_image} } orderedAdapters();
     return $cb->(undef, 1) unless @adapters;
 
     my $want  = _norm($name);
@@ -2145,7 +2169,10 @@ sub matchesFor {
             my $k = join('|', $it->{name} // '', $it->{line2} // '');
             next if $seen{$k}++;
             my %item = %$it;   # per-release copy — never decorate the shared cache entry
-            _attachFavUrl(\%item, $svc, $item{_cover}, $artist) unless $a->{local};
+            # native_favurl (Spotify): the service's own favurl already works, and
+            # decorating it would break it — keep it exactly as rendered.
+            _attachFavUrl(\%item, $svc, $item{_cover}, $artist)
+                unless $a->{local} || $a->{native_favurl};
             push @matched, \%item;
             last if @matched >= MAX_PER_SVC;
         }
@@ -2288,7 +2315,7 @@ sub peekPool {
         # service) must NOT count as "streaming was checked" — otherwise an
         # empty pool hides every release behind hide_unmatched.
         $resolved = 1 unless $c->{unresolved};
-        my $items = _reattach($a->{name}, $c->{items});
+        my $items = _reattach($a, $c->{items});
         $bySvc{ $a->{name} } = $items;
 
         # First-token title index for this service's pool, built ONCE per render
@@ -3035,6 +3062,199 @@ sub _renderDeezerAlbums {
     # (the artist-albums endpoint) — mirrors the plugin's own use.
     return _renderAlbums($albums, $svc, $artistName,
         sub { Plugins::Deezer::Plugin::_renderAlbum($_[0], 0, $artistName) });
+}
+
+# ---------------------------------------------------------------------------
+# SPOTIFY, via the Spotty plugin (docs/spotify-adapter-plan.md; Spotty 4.62.2's
+# source read 2026-09-25). Same artist-first shape as _searchTidal, with three
+# differences that all come from how Spotty answers:
+#
+#   1. EVERY FAILURE LOOKS LIKE SUCCESS. A 429, a dead token (a lapsed
+#      subscription keeps its cached credentials: the handler exists and every
+#      token refresh fails) and a 502 all reach us as an EMPTY list; undef never
+#      does. So a Spotify search that returns ZERO raw results answers undef
+#      (unresolved: CAND_ERR_TTL, and peekPool does not count it as resolved,
+#      so hide_unmatched hides nothing on a failure nobody confirmed). LBF's
+#      `_emptyResultIsError`. PFR declined it only because its warm would
+#      re-search an absent album hourly for ever; this plugin has no warm and
+#      re-asks only when someone opens that artist.
+#   2. The title is `name` and `artist` is a STRING, so every album is reshaped
+#      on a COPY (_spotifyAlbum) before the shared code sees it.
+#   3. We page artistAlbums OURSELVES, one request at a time, at limit 50.
+#      Spotty's Pipeline would otherwise fetch every page after the first in
+#      PARALLEL, and a 429 part-way drops pages silently: a SHORTENED pool,
+#      cached as found for three days.
+#
+# The refusal stamp is our own clock (PFR's shape), not Spotty's flag, which
+# clears only on the next SUCCESSFUL response. Nothing here slows a view; the
+# clock is kept so a later pump could read it. Declared above first use: `our`
+# is lexically scoped, and a suite places the stamp.
+# ---------------------------------------------------------------------------
+use constant SPOTIFY_PAGE           => 50;    # Spotty sends ONE request per call at <= 50
+use constant SPOTIFY_MAX_PAGES      => 4;     # 200 albums
+use constant SPOTIFY_INCLUDE        => 'album,single,compilation';   # no appears_on
+use constant SPOTIFY_ARTIST_LIMIT   => 25;    # Spotty's own default is 200 = 4 requests
+use constant SPOTIFY_BACKOFF_WINDOW => 30;    # seconds; Spotify's observed Retry-After was 3-7s
+our $SPOTIFY_REFUSED_AT = 0;
+
+# Spotty's rate-limit flag, guarded so an older or reshaped Spotty reads as
+# "no signal" rather than taking a resolve down.
+sub _spottyRateLimited {
+    my $f = Plugins::Spotty::API->can('hasError429') or return 0;
+    return eval { $f->('Plugins::Spotty::API') } ? 1 : 0;
+}
+
+sub _spotifyBackingOff {
+    return (time() - ($SPOTIFY_REFUSED_AT || 0)) < SPOTIFY_BACKOFF_WINDOW ? 1 : 0;
+}
+
+# An EMPTY answer from Spotty is never a verdict (see 1 above). Stamps the
+# refusal clock when Spotty says it is rate-limiting, and logs which.
+sub _spotifyEmpty {
+    my ($what) = @_;
+    my $refused = _spottyRateLimited();
+    $SPOTIFY_REFUSED_AT = time() if $refused;
+    _dbg("Spotify: $what returned nothing - "
+        . ($refused ? 'Spotify is rate-limiting (429)' : 'no answer (dead token, 502 or genuinely none)')
+        . ' - left unresolved');
+    return undef;
+}
+
+# The reshaping step, on a COPY (Spotty caches the hash it hands us):
+#   title  <- name       (_decorate's _candTitle, peekPool's title index)
+#   artist <- artists[0] (the {id,name} hash: _albumArtistId, _filterForeignArtist
+#                         and _renderAlbums' _candArtist all read a HASH artist)
+# The fields Spotty's _albumItem reads (name, artists, release_date, image, uri)
+# are untouched, so what it renders cannot change.
+sub _spotifyAlbum {
+    my ($al) = @_;
+    return undef unless ref $al eq 'HASH';
+    my %c = %$al;
+    $c{title} = $c{name} if defined $c{name} && !defined $c{title};
+    $c{artist} = $c{artists}[0]
+        if ref $c{artists} eq 'ARRAY' && ref $c{artists}[0] eq 'HASH';
+
+    # SIZE, in the words the shared _candSize already reads, so that sub stays
+    # untouched for every other service. Spotify has no duration, so the
+    # 30-minute rule cannot promote a 5-6 track LP: its `album_type` decides
+    # for an album or compilation. It files EPs under `single`, so a single is
+    # sized by its track count (1-3 single, 4-6 EP, more an album), the rule
+    # the Qobuz copies get. No type, or a single with no count: unknown, which
+    # matches exactly as before.
+    my $type = lc($c{album_type} // '');
+    if ($type eq 'album' || $type eq 'compilation') {
+        $c{record_type} = 'album';
+    }
+    elsif ($type eq 'single' && defined $c{total_tracks} && $c{total_tracks} =~ /^\d+$/) {
+        $c{tracks_count} = $c{total_tracks};
+    }
+    return \%c;
+}
+
+sub _searchSpotify {
+    my ($client, $query, $svc, $collect, $spine, $aliases, $strict) = @_;
+
+    # A CLASS method, and it needs a client: none -> no handler -> unresolved
+    # (never a confirmed miss). hasCredentials is deliberately never called: it
+    # rescans cache folders on every call while empty.
+    my $api = eval { Plugins::Spotty::Plugin->getAPIHandler($client) };
+    unless ($api) { _dbg('Spotify: no API handler (no player, or signed out)'); $collect->(undef); return }
+
+    # One page at a time; a short page ends the list, SPOTIFY_MAX_PAGES caps it.
+    # An empty FIRST page is a failure (see 1 above). An empty LATER page ends
+    # the list, unless Spotty is rate-limiting: then the whole list is undef,
+    # never a shortened pool. (A 502 on a later page cannot be told from the
+    # end of an exactly-50-album list; that is the residual.) A refusal answers
+    # synchronously, so this recurses at most SPOTIFY_MAX_PAGES deep.
+    my $fetch = sub {
+        my ($id, $done) = @_;
+        my @albums;
+        my $page = sub {
+            my ($self, $n) = @_;
+            $api->artistAlbums(sub {
+                my $got = shift;
+                my @l = ref $got eq 'ARRAY' ? grep { ref $_ eq 'HASH' && defined $_->{id} } @$got : ();
+                unless (@l) {
+                    return $done->(_spotifyEmpty("artist $id albums page 1")) unless $n;
+                    return $done->(_spotifyEmpty("artist $id albums page " . ($n + 1)))
+                        if _spottyRateLimited();
+                }
+                push @albums, @l;
+                if (@l >= SPOTIFY_PAGE && $n + 1 < SPOTIFY_MAX_PAGES) {
+                    return $self->($self, $n + 1);
+                }
+                _dbg("Spotify: artist $id album list capped at " . scalar(@albums))
+                    if @l >= SPOTIFY_PAGE;
+                $done->(_filterForeignArtist([ map { _spotifyAlbum($_) } @albums ],
+                    'Spotify', $id, $query));
+            }, { uri => "spotify:artist:$id", limit => SPOTIFY_PAGE,
+                 offset => $n * SPOTIFY_PAGE, include => SPOTIFY_INCLUDE });
+        };
+        $page->($page, 0);
+    };
+
+    my $search = sub {
+        my ($name, $done) = @_;
+        $api->search(sub { $done->(ref $_[0] eq 'ARRAY' ? $_[0] : []) },
+            { query => $name, type => 'artist', limit => SPOTIFY_ARTIST_LIMIT });
+    };
+
+    $api->search(sub {
+        my $artists = shift;
+        return $collect->(_spotifyEmpty("artist search '$query'"))
+            unless ref $artists eq 'ARRAY' && @$artists;
+        _resolveArtist('Spotify', $query, $artists, $spine, $fetch,
+            sub {
+                my ($artist, $albums) = @_;
+                unless ($artist) {
+                    if ($spine && %$spine) { return $collect->(undef) }
+                    _dbg("Spotify: no artist hit for '$query' - album-search fallback");
+                    return _spotifyAlbumSearch($api, $client, $query, $svc, $collect);
+                }
+                return $collect->(undef) unless $albums && @$albums;
+                $collect->(_renderSpotifyAlbums($client, $albums, $svc, $artist->{name}));
+            }, $aliases, $search, $strict);
+    }, { query => $query, type => 'artist', limit => SPOTIFY_ARTIST_LIMIT });
+}
+
+sub _spotifyAlbumSearch {
+    my ($api, $client, $query, $svc, $collect) = @_;
+    $api->search(sub {
+        my $albums = shift;
+        return $collect->(_spotifyEmpty("album search '$query'"))
+            unless ref $albums eq 'ARRAY' && @$albums;
+        $collect->(_renderSpotifyAlbums($client,
+            [ map { _spotifyAlbum($_) } grep { ref $_ eq 'HASH' } @$albums ], $svc, undef));
+    }, { query => $query, type => 'album', limit => SPOTIFY_PAGE });
+}
+
+# $albums are already reshaped. Spotty puts its own album.png placeholder in
+# `image` for an album without art, and tiles prefer _cover over Cover Art
+# Archive art (Browse::_releaseItem), so only a real http(s) cover may become
+# _cover; the row itself keeps the placeholder as its icon. Done here, not in
+# the shared _decorate: no other service sends a placeholder that way.
+sub _renderSpotifyAlbums {
+    my ($client, $albums, $svc, $artistName) = @_;
+    my $out = _renderAlbums($albums, $svc, $artistName,
+        sub { Plugins::Spotty::OPML::_albumItem($client, $_[0]) });
+    for my $it (@{ $out || [] }) {
+        delete $it->{_cover} unless defined $it->{_cover} && $it->{_cover} =~ m{^https?://}i;
+    }
+    return $out;
+}
+
+# The artist-search leg (Browse's artist search). Zero raw results answer undef,
+# so searchArtists marks Spotify FAILED and the merged list is not cached.
+sub _artistsSpotify {
+    my ($client, $query, $svc, $collect) = @_;
+    my $api = eval { Plugins::Spotty::Plugin->getAPIHandler($client) };
+    unless ($api) { $collect->(undef); return }
+    $api->search(sub {
+        my $list = shift;
+        return $collect->(_spotifyEmpty("artist search '$query'"))
+            unless ref $list eq 'ARRAY' && @$list;
+        $collect->(_artistHits($list, $svc));
+    }, { query => $query, type => 'artist', limit => SEARCH_MAX });
 }
 
 # Same-title release-groups ("rivals") compete for one candidate.

@@ -1,6 +1,6 @@
 # Spotify (via Spotty) for Discography — build plan
 
-**Status: PLAN ONLY, 2026-09-25. Nothing built.** Written from code, not from a live Spotify
+**Status: BUILT in the working tree, 2026-09-25 (§4.1–§4.8, D1 = PFR's adapter fields, D3 = 5). Built as 0.55.0 and committed; not installed, not live-tested.** Originally Written from code, not from a live Spotify
 account: Simon no longer subscribes. Every claim below was checked against Discography's source,
 against Spotty 4.62.2's source (`michaelherger/Spotty-Plugin` master), and against the Spotify
 work already done in LBF, PFR and LL. Where a line number is given it was read on 2026-09-25 and
@@ -158,7 +158,8 @@ That's the correct outcome: nothing is hidden on a failure nobody confirmed.
   `album.png` placeholder in `image` for an album without art, and tiles prefer `_cover` over Cover
   Art Archive art (Browse `_releaseItem`), so a placeholder would replace real CAA art. Do this in
   the Spotify code, not in the shared `_decorate`.
-- **Size:** today `_candSize` reads neither `total_tracks` nor `album_type`, so every Spotify copy
+- **Size — BUILT DIFFERENTLY (2026-09-25):** `_candSize` is NOT changed. `_spotifyAlbum` writes Spotify's size onto its copy in the fields `_candSize` already reads (`album_type` album/compilation -> `record_type => 'album'`; `single` -> `tracks_count` from `total_tracks`), so the shared sub, and the other three services, are untouched. Pinned in `t_spotify.pl` §10, not `t_size.pl`. The original plan follows.
+  Today `_candSize` reads neither `total_tracks` nor `album_type`, so every Spotify copy
   is **unknown**. Unknown passes the "an album is not a single" gate but **fails the album-only
   edition gate** (`matchesFor` `$titleHit`, the `@eds` loop). Change `_candSize`:
   - `album_type` `album` or `compilation` → `album` (reliable on Spotify; needed because there is no

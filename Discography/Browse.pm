@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # Dedicated, version-scoped cache namespace -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.54.9';
+use constant CACHE_VERSION => '0.55.0';
 my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -3803,6 +3803,9 @@ sub _searchResultRow {
 #   Qobuz  -> qobuz://album:<id>.qbz
 #   Tidal  -> tidal://album:<id>
 #   Deezer -> deezer://album:<id>
+#   Spotify -> spotify://album:<id>  (Spotty's protocol-handler form; its favurl
+#              is spotify:album:<id>. explodePlaylist -> tracksFromURI matches
+#              `:album:` -> album(), read in Spotty 4.62.2)
 sub _playUrl {
     my ($it) = @_;
     return undef unless ref $it eq 'HASH';
@@ -3812,7 +3815,7 @@ sub _playUrl {
     my $id  = $it->{_albumid};
     return undef unless length $svc && defined $id && length $id;
     return "qobuz://album:$id.qbz" if $svc eq 'qobuz';
-    return "$svc://album:$id"      if $svc eq 'tidal' || $svc eq 'deezer';
+    return "$svc://album:$id"      if $svc eq 'tidal' || $svc eq 'deezer' || $svc eq 'spotify';
 
     # Unknown service: fall back to the favurl minus our private query params.
     my $u = $it->{favorites_url};
@@ -3828,7 +3831,7 @@ sub _playUrl {
 # own streaming items use. A node that already carries its own extid keeps it. Local has
 # no emblem, so a library copy is never badged. Callers set the result on a row COPY,
 # never on the cached candidate, so no candidate cache-version bump is needed.
-my %EMBLEM = map { $_ => $_ } qw(qobuz tidal deezer);
+my %EMBLEM = map { $_ => $_ } qw(qobuz tidal deezer spotify);
 sub _extid {
     my ($it) = @_;
     return undef unless ref $it eq 'HASH';

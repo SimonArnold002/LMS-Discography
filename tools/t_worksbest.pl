@@ -45,7 +45,7 @@ BEGIN {
         ({ name => 'Qobuz', icon => 'plugins/Qobuz/html/images/icon.png' }) };
     *{'Plugins::Discography::Sources::serviceStatus'} = sub {
         [ { name => 'Qobuz', installed => 1 }, { name => 'Tidal', installed => 0 },
-          { name => 'Deezer', installed => 0 } ] };
+          { name => 'Deezer', installed => 0 }, { name => 'Spotify', installed => 0 } ] };
     *{'Plugins::Discography::Sources::_pluginIcon'} = sub { 'https://www.herger.net/slim-plugins/icons/mai.svg' };
     for my $e (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Strings)) {
         push @{"${e}::ISA"}, 'Exporter';
@@ -100,9 +100,9 @@ ok(scalar($html =~ /display:flex;flex-wrap:wrap/), '1: the tiles wrap (flex-wrap
 
 # 2. The tiles.
 my @t = tiles($html);
-ok(scalar(@t == 5), '2: five tiles: Qobuz, Tidal, Deezer, MAI, Material Skin');
+ok(scalar(@t == 6), '2: six tiles: Qobuz, Tidal, Deezer, Spotify, MAI, Material Skin');
 my %by = map { my ($n) = /<div>([^<]*?) <span/; (($n // '') => $_) } @t;
-ok(scalar(join(',', sort keys %by) eq join(',', sort ('Qobuz', 'Tidal', 'Deezer', 'Music &amp; Artist Information', 'Material Skin'))),
+ok(scalar(join(',', sort keys %by) eq join(',', sort ('Qobuz', 'Tidal', 'Deezer', 'Spotify', 'Music &amp; Artist Information', 'Material Skin'))),
    '2: each tile names its plugin (HTML-escaped)');
 ok(scalar(($by{Qobuz} // '') =~ /&#10003;/ && ($by{Qobuz} // '') !~ /opacity:\.55/), '2: installed -> tick, not dimmed');
 ok(scalar(($by{Qobuz} // '') =~ m{<img src='/plugins/Qobuz/html/images/icon\.png'}), '2: installed -> its own badge, root-anchored');
@@ -112,6 +112,14 @@ ok(scalar(($by{Tidal} // '') !~ /<img/ && ($by{Tidal} // '') =~ /background:rgba
 ok(scalar(($by{'Music &amp; Artist Information'} // '') =~ m{src='/imageproxy/https%3A%2F%2Fwww\.herger\.net}),
    '2: a remote icon still goes through the imageproxy');
 ok(scalar(($by{'Material Skin'} // '') =~ /&#10007;/), '2: Material Skin disabled -> cross');
+ok(scalar(($by{Spotify} // '') =~ /&#10007;/ && ($by{Spotify} // '') =~ /opacity:\.55/),
+   '2: Spotify (Spotty not installed) -> cross, dimmed, like any missing service');
+# The stub above mirrors the REAL list; pin that it does, or this suite could drift from it.
+{
+    my $src = do { local (@ARGV, $/) = ("$FindBin::Bin/../Discography/Sources.pm"); <> };
+    my ($known) = $src =~ /my \@known = \((.*?)\);/s;
+    ok(scalar(($known // '') =~ /'spotify', 'Spotify'/), "2: Sources::serviceStatus's real list includes Spotify");
+}
 
 # 3. The role is the tooltip, escaped for a single-quoted attribute.
 ok(scalar(($by{Qobuz} // '') =~ m{^<div title='Streaming &#39;source&#39;'}), '3: tooltip = the role, quotes escaped');

@@ -8,11 +8,11 @@
 
 <module>Plugins::Discography::Plugin</module>
 
-<version>0.54.9</version>
+<version>0.55.0</version>
 
 <icon>plugins/Discography/html/images/DiscographyIcon_svg.png</icon>
 
-<description>Browse an artist's full discography (via MusicBrainz) and play each release from your local library or streaming service (Qobuz / Tidal / Deezer). Adds a "Discography" entry to the artist context menu in Material Skin. Requires the Music and Artist Information plugin (bundled with LMS).
+<description>Browse an artist's full discography (via MusicBrainz) and play each release from your local library or streaming service (Qobuz / Tidal / Deezer / Spotify). Adds a "Discography" entry to the artist context menu in Material Skin. Requires the Music and Artist Information plugin (bundled with LMS).</description>
 
 <creator>CrystalGipsy</creator>
 

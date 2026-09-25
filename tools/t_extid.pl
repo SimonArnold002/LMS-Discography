@@ -100,6 +100,8 @@ sub sec    { my ($svc, @items) = @_; { svc => $svc, items => \@items } }
 ok(scalar(($extid->(qobuz())  // '') eq 'qobuz:album:0724352774'), '1: Qobuz  -> qobuz:album:<id>');
 ok(scalar(($extid->(tidal())  // '') eq 'tidal:album:1234567'),    '1: Tidal  -> tidal:album:<id>');
 ok(scalar(($extid->(deezer()) // '') eq 'deezer:album:99887'),     '1: Deezer -> deezer:album:<id>');
+ok(scalar(($extid->({ _svc => 'Spotify', _albumid => '4qpB1EXFCmq0a209JGCsZt' }) // '') eq 'spotify:album:4qpB1EXFCmq0a209JGCsZt'),
+   '1: Spotify -> spotify:album:<id> (the key is in Material emblems.json)');
 ok(scalar(!defined $extid->(lib())), '1: Local has no emblem -> no extid');
 ok(scalar(!defined $extid->({ _svc => 'Bandcamp', _albumid => 1 })), '1: a service outside the set -> no extid');
 ok(scalar(!defined $extid->(undef) && !defined $extid->('x')), '1: not a hash -> no extid');

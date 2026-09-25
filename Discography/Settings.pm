@@ -34,7 +34,7 @@ sub page { 'plugins/Discography/settings.html' }
 
 sub prefs {
     return ($prefs, qw(
-        svc_priority_local svc_priority_qobuz svc_priority_tidal svc_priority_deezer
+        svc_priority_local svc_priority_qobuz svc_priority_tidal svc_priority_deezer svc_priority_spotify
         sort_order layout_albums layout_singles show_types hide_unmatched show_bio show_library_extras
         show_streaming_extras
         show_all_versions material_action mb_base_url debug_log
@@ -57,7 +57,7 @@ sub handler {
         # Normalise priorities to integers 0-9 (0 = never use). An absent field
         # (partial/non-form POST) keeps the CURRENT value rather than forcing 0,
         # which would silently disable that source (fleet convention).
-        for my $src (qw(local qobuz tidal deezer)) {
+        for my $src (qw(local qobuz tidal deezer spotify)) {
             my $p = $params->{"pref_svc_priority_$src"};
             if (defined $p && $p =~ /^\d+$/) {
                 $p = 9 if $p > 9;
