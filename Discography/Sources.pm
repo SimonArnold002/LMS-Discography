@@ -31,7 +31,7 @@ my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.0';
+use constant CACHE_VERSION => '0.56.2';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
@@ -3292,7 +3292,7 @@ sub _rivalOwner {
 # A library album tagged MUSICBRAINZ_ALBUMID carries a RELEASE mbid; MB models
 # reissues, box sets and bonus-disc editions as releases under ONE release
 # group, so the release->group map (API::peekReleaseMap, free from the bootleg
-# browse) answers "is this album this tile?" with no string comparison at all.
+# check) answers "is this album this tile?" with no string comparison at all.
 # This is what makes "The Beatles and Esher Demos" resolve to the White Album:
 # the titles share nothing the matcher can use, but they are the same group.
 # Some taggers write the GROUP mbid instead, so accept a direct hit too.

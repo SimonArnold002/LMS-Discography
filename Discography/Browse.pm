@@ -33,7 +33,7 @@ my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.0';
+use constant CACHE_VERSION => '0.56.2';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -81,9 +81,9 @@ use constant PAGE_LESS    => IMG_BASE . 'dsc-pg_MTL_icon_unfold_less.png';
 use constant PAGE_SIZE => 30;
 
 # Seconds the first render waits for the bootleg map (API::warmOfficial) before
-# giving up and showing the unfiltered list. One MB request per 100 releases, so
-# a normal artist resolves in one; 15s covers ~1500 releases. Pref
-# `official_wait` overrides; 0 opts out of waiting entirely.
+# giving up and showing the unfiltered list. One MB request per 100 groups on
+# the page (stage 2), so at most 6, about 7s on the public API: every artist's
+# check fits. Pref `official_wait` overrides; 0 opts out of waiting entirely.
 use constant OFFICIAL_WAIT_DEFAULT => 15;
 
 # Seconds the first render waits for a COLD streaming pool when hide_unmatched
@@ -221,6 +221,20 @@ sub _idGroups {
         $g{ $rg->{mbid} } = 1;
     }
     return \%g;
+}
+
+# The owned albums' MusicBrainz ids that the bootleg check did not place, each
+# once: neither a group on the page (a GROUP id in the tag places the copy
+# directly, Sources::_idGroup) nor a release the check mapped ($known, from
+# API::peekReleaseMap). Stage 2 looks up only these, after the render
+# (API::warmLocalReleases), for the next visit. $known undef means the check
+# failed, and then every owned id goes.
+sub _unplacedReleases {
+    my ($local, $rgs, $known) = @_;
+    my %onPage = map { $_->{mbid} => 1 } grep { $_->{mbid} } @{ $rgs || [] };
+    my %seen;
+    return [ grep { !$onPage{$_} && !($known && $known->{$_}) && !$seen{$_}++ }
+             grep { $_ } map { $_->{_mbid} } @{ $local || [] } ];
 }
 
 # Which EDITION titles each release group may match by (review 2026-09-19).
@@ -1325,6 +1339,10 @@ sub _discographyView {
             Plugins::Discography::API->getReleaseGroups(
                 mbid    => $mbid,
                 force   => $opts->{force},
+                # The artist read first: the band lookup below needs it anyway,
+                # and under 25 groups it carries the whole spine, so no browse
+                # is sent (stage 2). It then finds the bands already cached.
+                read    => 1,
                 onDone  => sub {
                     $rgs = shift;
 
@@ -1384,9 +1402,10 @@ sub _discographyView {
                     }
                     else { $warm->(_spineTitles($rgs)) }
 
-                    # Library albums, fetched ONCE here (sync DB) so we know which
-                    # release MBIDs to pre-resolve; the same list is handed to
-                    # _buildList so it doesn't query again.
+                    # Library albums, fetched ONCE here (sync DB) so the chain
+                    # knows which owned releases the bootleg check leaves
+                    # unplaced; the same list is handed to _buildList so it
+                    # doesn't query again.
                     #
                     # The shared-name suppression applies ONLY to a NAME-resolved
                     # entry. `localAlbums($artist_id, ...)` is ID-keyed whenever an
@@ -1413,52 +1432,61 @@ sub _discographyView {
                                  $opts->{artist_id}, $opts->{artist}, $mbid,
                                  { fallback => _idFallback($opts) });
 
-                    # Release MBIDs the artist-wide browse hasn't already resolved
-                    # -> resolve them directly (a few requests) so a library
-                    # album's exact-MBID match is ready on THIS render, not after
-                    # a re-entry. Empty when the big map is already warm.
-                    my $known = Plugins::Discography::API->peekReleaseMap($mbid) || {};
-                    my @needMbids = grep { $_ && !$known->{$_} }
-                                    map  { $_->{_mbid} } @$local;
-
                     # AWAITED, bounded. The bootleg map (a group is a bootleg only
                     # if NONE of its releases is official) can't be used partial,
                     # so the first render either waits for it or shows bootlegs —
-                    # we wait. One MB request per 100 releases: one for a normal
-                    # artist, 33 for The Beatles; the deadline caps that and the
-                    # pass finishes in the background for the next entry.
+                    # we wait. One MB request per 100 groups on the page, at most
+                    # 6 (stage 2); the deadline still caps it, and a check that
+                    # misses it finishes in the background for the next entry.
                     #
                     # ONE serial MB chain (never parallel — 2 chains break MB's
-                    # 1 req/s etiquette): the few targeted library lookups FIRST
-                    # (they fix the visible orphan and finish inside the
-                    # deadline), THEN the full bootleg browse.
+                    # 1 req/s etiquette): the band lookup, then the bootleg
+                    # check, then, after the render, the owned-album lookups and
+                    # the collaboration vetting. The check maps every release of
+                    # every group on the page, owned ones included, so the
+                    # owned-album lookups no longer go first: they are for what
+                    # the check could not place, and serve the next visit.
                     my $wait = $prefs->get('official_wait');
                     $wait = OFFICIAL_WAIT_DEFAULT unless defined $wait;
 
                     my $startBootleg = sub {
                         my ($await) = @_;
-                        # LAST in the chain, and deliberately so: vetting the
-                        # collaboration links costs one spaced MB request per
-                        # candidate (up to 8), which ahead of the bootleg pass would
-                        # blow the `official_wait` deadline on a public-API
-                        # install and render the page with bootlegs unfiltered.
-                        # The section is cache-only at render time anyway, so it
-                        # simply appears on the next entry (review 2026-09-19).
+                        # AFTER the check, both for the next visit. The owned
+                        # releases it did not place (all of them when it
+                        # failed; none to do when another visit's check is
+                        # still running, which does its own), then the
+                        # collaboration vetting. That costs one spaced MB request
+                        # per candidate (up to 8), which ahead of the bootleg
+                        # check would blow the `official_wait` deadline on a
+                        # public-API install and render the page with bootlegs
+                        # unfiltered. The section is cache-only at render time
+                        # anyway, so it simply appears on the next entry (review
+                        # 2026-09-19).
                         my $then = sub {
-                            Plugins::Discography::API->warmCollaborations($mbid);
+                            my ($state) = @_;
+                            my $collabs = sub {
+                                Plugins::Discography::API->warmCollaborations($mbid);
+                            };
+                            return $collabs->()
+                                if ($state // '') eq 'busy' || !@{ $rgs || [] };
+                            Plugins::Discography::API->warmLocalReleases(
+                                _unplacedReleases($local, $rgs,
+                                    Plugins::Discography::API->peekReleaseMap($mbid)),
+                                $collabs);
                         };
                         if ($await) {
-                            Plugins::Discography::API->warmOfficial($mbid, sub {
+                            Plugins::Discography::API->warmOfficial($mbid, $rgs, sub {
+                                my @state = @_;
                                 unless ($offDone) {
                                     $offDone = 1;
                                     Slim::Utils::Timers::killTimers(undef, $await);
                                     $render->();
                                 }
-                                $then->();
+                                $then->(@state);
                             });
                         }
                         else {
-                            Plugins::Discography::API->warmOfficial($mbid, $then);
+                            Plugins::Discography::API->warmOfficial($mbid, $rgs, $then);
                         }
                     };
 
@@ -1467,10 +1495,8 @@ sub _discographyView {
                         # settled here too — it must never reintroduce a wait
                         # the user has explicitly turned off.
                         $offDone = 1; $extDone = 1; $render->();
-                        Plugins::Discography::API->warmLocalReleases(\@needMbids, sub {
-                            Plugins::Discography::API->warmBandMembers($mbid, sub {
-                                $startBootleg->(undef);
-                            });
+                        Plugins::Discography::API->warmBandMembers($mbid, sub {
+                            $startBootleg->(undef);
                         });
                         return;
                     }
@@ -1490,18 +1516,17 @@ sub _discographyView {
                     };
                     Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + $wait, $deadline);
 
-                    Plugins::Discography::API->warmLocalReleases(\@needMbids, sub {
-                        # Then the band-member lookup (one fast call), then the
-                        # slow bootleg pass — one serial MB chain. Both the local
-                        # release map and the band list are cached before the
-                        # bootleg leg sets $offDone, so both are ready for the
-                        # first render (deadline permitting).
-                        # The MAI/Last.fm extras leg is NOT in this chain: it is
-                        # not a MusicBrainz request, so it owes no etiquette gap
-                        # and runs in parallel (0.47.4).
-                        Plugins::Discography::API->warmBandMembers($mbid, sub {
-                            $startBootleg->($deadline);
-                        });
+                    # The band-member lookup, then the bootleg check — one serial
+                    # MB chain. The lookup is normally a cache hit: the artist
+                    # read that answers it came first, with the spine. The band
+                    # list and the release map are both cached before the check
+                    # sets $offDone, so both are ready for the first render
+                    # (deadline permitting).
+                    # The MAI/Last.fm extras leg is NOT in this chain: it is
+                    # not a MusicBrainz request, so it owes no etiquette gap
+                    # and runs in parallel (0.47.4).
+                    Plugins::Discography::API->warmBandMembers($mbid, sub {
+                        $startBootleg->($deadline);
                     });
                 },
                 # EVERY $render flag must be settled here, $poolDone included:
@@ -1549,7 +1574,9 @@ sub _resolveArtistMbid {
             my ($mbid, $fromTag) = @_;
             return $cb->($mbid) unless $mbid && $fromTag && defined $name && length $name;
 
-            $api->getReleaseGroups(mbid => $mbid,
+            # This is the page's own spine (the page then finds it cached), so
+            # it is asked for the page's way: the artist read first (stage 2).
+            $api->getReleaseGroups(mbid => $mbid, read => 1,
                 onError => sub { $cb->($mbid) },
                 onDone  => sub {
                     my $rgs = shift;
@@ -2193,17 +2220,17 @@ sub _buildList {
     # Filled by the release loop below: { svc => { album-id => 1 } }.
     my %claimedSvc;
 
-    # Bootleg filter: { rg-mbid => 0|1 } for the whole artist, or undef until
-    # the background release browse has completed once. A release-group MISSING
-    # from a present map was never seen (page cap) — fail open, like undef.
+    # Bootleg filter: { rg-mbid => 0|1 } for the groups on the page, or undef
+    # until the bootleg check has completed once. A release-group MISSING from
+    # a present map was never classified — fail open, like undef.
     my $officialMap = Plugins::Discography::API->peekOfficial($mbid);
 
     # { release-mbid => release-group-mbid }: lets a library album's
     # MUSICBRAINZ_ALBUMID match its tile by identity — the title matcher can't
     # get "The Beatles and Esher Demos" to the White Album. Two sources merged:
-    # the artist-wide browse (all releases, but ~36s on a huge artist) and the
-    # targeted per-library-album lookups (a few requests, ready first render).
-    # Whichever is warm answers; the targeted map covers the deadline gap.
+    # the bootleg check (every release of every group on the page) and the
+    # per-album lookups for what it could not place (made after an earlier
+    # render, API::warmLocalReleases). The lookups win where both answer.
     my $relMap = { %{ Plugins::Discography::API->peekReleaseMap($mbid) || {} },
                    %{ Plugins::Discography::API->peekLocalReleaseMap(
                           [ map { $_->{_mbid} } grep { $_->{_mbid} } @$local ] ) } };

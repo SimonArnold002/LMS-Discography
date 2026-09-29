@@ -170,7 +170,7 @@ my %SPINE = (
     ],
 );
 
-our %RELEASES;   # artist mbid -> release-browse items (release + its group)
+our %BYID;   # release-group id -> its releases, as the by-id search lists them
 
 # PAGINATED, like the real endpoint: the slice honours limit/offset while the
 # COUNT stays the full total, which is the only thing that makes both pagers
@@ -189,9 +189,14 @@ sub _page {
 }
 sub response_for {
     my ($url) = @_;
-    if ($url =~ m{/release\?artist=([^&]+)}) {
-        my $r = $RELEASES{$1} || [];
-        return { releases => _page($url, $r), 'release-count' => scalar @$r };
+    # The bootleg check (stage 2): `release-group?query=rgid:A OR rgid:B ...`,
+    # ':' and ' ' percent-encoded, '-' raw. Each group asked for that %BYID
+    # knows comes back with its releases, in the search's shape.
+    if ($url =~ m{/release-group\?query=}) {
+        my @ids = $url =~ /rgid%3A([A-Za-z0-9-]+)/g;
+        my @hits = map { { id => $_, title => $_, count => scalar @{ $BYID{$_} },
+                           releases => $BYID{$_} } } grep { $BYID{$_} } @ids;
+        return { 'release-groups' => \@hits, count => scalar @hits };
     }
     my ($mbid) = $url =~ m{release-group\?artist=([^&]+)};
     return { 'release-groups' => [], 'release-group-count' => 0 } unless $mbid;
@@ -425,29 +430,27 @@ ok(!matches($byId{'rg-mensch'}, 'The Man-Machine Recreated'),
 }
 
 # ---------------------------------------------------------------------------
-# 11. EDITION TITLES come free with the release browse (review 2026-09-19).
+# 11. EDITION TITLES come free with the bootleg check (review 2026-09-19; the
+#     check asks by id since stage 2, 2026-09-29).
 #     MusicBrainz names a release GROUP after its first edition; Kraftwerk's
 #     2003 "Tour de France Soundtracks" group holds the 2009/2015/2020 editions
-#     titled plain "Tour de France" — Simon's copy. The bootleg pass already
-#     fetches every release with its group, so the titles cost no request.
+#     titled plain "Tour de France" — Simon's copy. The bootleg check already
+#     fetches every release of the group, so the titles cost no request.
 #     Only OFFICIAL (or status-less) editions count: a bootleg's title must not
 #     become a way into a real album.
 # ---------------------------------------------------------------------------
 {
-    local %RELEASES = ($KRAFTX => [
-        { id => 'r1', title => 'Tour de France Soundtracks', status => 'Official',
-          'release-group' => { id => 'rg-tdfs', title => 'Tour de France Soundtracks' } },
-        { id => 'r2', title => 'Tour de France', status => 'Official',
-          'release-group' => { id => 'rg-tdfs', title => 'Tour de France Soundtracks' } },
-        { id => 'r3', title => 'Tour de France', status => 'Official',
-          'release-group' => { id => 'rg-tdfs', title => 'Tour de France Soundtracks' } },
-        { id => 'r4', title => 'Live in Paris Bootleg', status => 'Bootleg',
-          'release-group' => { id => 'rg-tdfs', title => 'Tour de France Soundtracks' } },
-        { id => 'r5', title => 'Tour de France', status => undef,
-          'release-group' => { id => 'rg-tdf83', title => 'Tour de France' } },
-    ]);
-    %CACHE = ();
-    $API->warmOfficial($KRAFTX, sub {});
+    local %BYID = (
+        'rg-tdfs' => [
+            { id => 'r1', title => 'Tour de France Soundtracks', status => 'Official' },
+            { id => 'r2', title => 'Tour de France', status => 'Official' },
+            { id => 'r3', title => 'Tour de France', status => 'Official' },
+            { id => 'r4', title => 'Live in Paris Bootleg', status => 'Bootleg' } ],
+        'rg-tdf83' => [
+            { id => 'r5', title => 'Tour de France', status => undef } ],
+    );
+    my $kx = spine($KRAFTX);
+    $API->warmOfficial($KRAFTX, $kx, sub {});
     my $ed = $API->can('peekEditions') ? $API->peekEditions($KRAFTX) : undef;
     my %t = map { $_ => 1 } @{ ($ed || {})->{'rg-tdfs'} || [] };
     ok($t{'Tour de France'}, 'the group records its edition titled "Tour de France"');
@@ -456,11 +459,11 @@ ok(!matches($byId{'rg-mensch'}, 'The Man-Machine Recreated'),
 }
 
 # ---------------------------------------------------------------------------
-# BOTH PAGERS WALK PAST THE FIRST PAGE. `getReleaseGroups` and `warmOfficial`
-# each ask for the next page from inside their own response handler, and that
-# self-call is the one line in either sub that the rest of this file never
-# reaches: every other fixture fits in a single page, so a pager that silently
-# stopped at 100 would have passed everything above.
+# BOTH WALK PAST THE FIRST 100. `getReleaseGroups` asks for the next page, and
+# `warmOfficial` for the next 100 ids, from inside their own response handler,
+# and that self-call is the one line in either sub that the rest of this file
+# never reaches: every other fixture fits in a single request, so a walk that
+# silently stopped at 100 would have passed everything above.
 #
 # It is also the line that changed shape when both closures were rewritten to
 # pass themselves rather than capture a lexical (the 0.30.1 leak fix), so it
@@ -468,7 +471,7 @@ ok(!matches($byId{'rg-mensch'}, 'The Man-Machine Recreated'),
 # ---------------------------------------------------------------------------
 {
     my $PAGED = 'mbid-paged';
-    my $N     = 150;                      # > RG_PAGE_SIZE/REL_PAGE_SIZE (100)
+    my $N     = 150;                      # > RG_PAGE_SIZE / RGID_BATCH_MAX (100)
     local $SPINE{$PAGED} = [ map {
         { id => "rg-p$_", title => "Paged Album $_", 'first-release-date' => '1990',
           'primary-type' => 'Album' }
@@ -484,13 +487,14 @@ ok(!matches($byId{'rg-mensch'}, 'The Man-Machine Recreated'),
     ok(scalar($got && $got->[-1]{mbid} eq "rg-p$N"),
        '... including the last one, which only the second page carries');
 
-    local %RELEASES = ($PAGED => [ map {
-        { id => "r-p$_", title => "Paged Release $_", status => 'Official',
-          'release-group' => { id => "rg-p$_", title => "Paged Album $_" } }
-    } 1 .. $N ]);
+    local %BYID = map {
+        ("rg-p$_" => [ { id => "r-p$_", title => "Paged Release $_", status => 'Official' } ])
+    } 1 .. $N;
     %CACHE = (); @QUERIES = ();
-    $API->warmOfficial($PAGED, sub {});
-    ok(scalar(@QUERIES == 2), 'the release browse asks for a second page too');
+    $API->warmOfficial($PAGED, $got, sub {});
+    ok(scalar(@QUERIES == 2), 'the bootleg check asks for the groups in two requests');
+    ok(scalar($QUERIES[0] =~ /&limit=100&/ && $QUERIES[1] =~ /&limit=50&/),
+       '... of 100 and then the other 50');
     my $map = $API->peekReleaseMap($PAGED);
     ok(scalar($map && keys(%$map) == $N),
        "... and maps all $N releases to their groups");

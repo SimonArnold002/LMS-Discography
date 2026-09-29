@@ -56,7 +56,7 @@ my $prefs = preferences('plugin.discography');
 # first module to call DB->store() sets it and later calls are ignored.
 # tools/syntax_check.sh asserts all three agree and match install.xml.
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.0';
+use constant CACHE_VERSION => '0.56.2';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 # The families DB.pm keeps across builds, by their CURRENT key prefix, so rows
 # written under an older key version are retired at open. Taken from the key
@@ -559,6 +559,12 @@ use constant RG_TTL => 14 * 86400;
 use constant RG_PAGE_SIZE => 100;
 use constant RG_MAX_PAGES => 6;
 # (RG_PAGE_GAP removed in 0.51.17 — the queue supplies the gap, once.)
+
+# An ARTIST lookup lists at most 25 of its release groups
+# (`artist/<id>?inc=release-groups`) and gives no count, so exactly 25 may be
+# cut short. Fewer is the whole list, and _readArtist caches it as the spine
+# (stage 2; measured identical to the browse, see _readArtist).
+use constant ARTIST_RG_LIST_MAX => 25;
 
 # Bump when the cached release-group shape or filtering changes — versioned key
 # invalidates every stale entry at once (the fleet's bump-every-layer rule).
@@ -2056,10 +2062,19 @@ sub mbGap { _mbGap($_[1] // 1.1) }
 # MBID -> release groups
 # ---------------------------------------------------------------------------
 
-# getReleaseGroups(mbid => $m, force => 0|1, onDone => sub(\@rgs), onError => sub($msg))
+# getReleaseGroups(mbid => $m, force => 0|1, read => 0|1,
+#                  onDone => sub(\@rgs), onError => sub($msg))
 # Each entry: { mbid, title, date ('YYYY[-MM[-DD]]' or ''), type (primary,
 # may be ''), secondary => [..] }. Cached whole; force bypasses the read (the
 # write still happens, so Refresh renews the entry).
+#
+# read => 1 is the ARTIST PAGE's way in (stage 2, 2026-09-29): read the artist
+# first (_readArtist), because the page makes that request anyway for its band
+# members, and for an artist with fewer than 25 groups the reply carries the
+# whole spine, so the browse is not sent at all. At 25 or more, or when the read
+# fails, the browse runs as before. Every other caller (the same-name
+# disambiguation, the release page, play) leaves it off and browses: for them
+# the read would be an extra request.
 # Sync cache read of an artist's release groups — undef when not yet fetched.
 # The detail page needs the same MB title spine the list used (to resolve the
 # same service artist) and cannot afford an async fetch mid-render.
@@ -2115,29 +2130,8 @@ sub getReleaseGroups {
                 }
 
                 for my $rg (@{ $data->{'release-groups'} }) {
-                    next unless $rg->{id} && defined $rg->{title};
-                    # Alias NAMES only, deduped, and never the title itself —
-                    # the matcher tries the title first, so repeating it here
-                    # would just cost a second identical comparison. Stored
-                    # only when non-empty to keep the cached spine small.
-                    my (@aka, %seenAka);
-                    if (ref $rg->{aliases} eq 'ARRAY') {
-                        for my $a (@{ $rg->{aliases} }) {
-                            my $n = ref $a eq 'HASH' ? $a->{name} : undef;
-                            next unless defined $n && length $n;
-                            next if $n eq $rg->{title};
-                            push @aka, $n unless $seenAka{$n}++;
-                        }
-                    }
-                    push @all, {
-                        mbid      => lc $rg->{id},
-                        title     => $rg->{title},
-                        date      => $rg->{'first-release-date'} // '',
-                        type      => $rg->{'primary-type'}       // '',
-                        secondary => ref $rg->{'secondary-types'} eq 'ARRAY'
-                                       ? $rg->{'secondary-types'} : [],
-                        (@aka ? (aliases => \@aka) : ()),
-                    };
+                    my $e = _rgEntry($rg) or next;
+                    push @all, $e;
                 }
 
                 my $total = $data->{'release-group-count'} // scalar @all;
@@ -2154,27 +2148,7 @@ sub getReleaseGroups {
                 $log->warn("release-group list truncated at " . scalar(@all) . " of $total for $mbid")
                     if $offset + RG_PAGE_SIZE < $total;
 
-                # An alias that is ANOTHER group's canonical title already has
-                # an owner, so drop it. MB aliases The B-52's box "3 Original
-                # CDs" as "The B‐52’s", the title of one of its releases and of
-                # the 1979 debut group. Through the alias pass the box claimed
-                # the user's copy of the debut (field, 2026-09-19). Done here,
-                # once, so every reader of {aliases} (the list, the detail
-                # page, claimedLocalIds, the index keys) sees the same spine.
-                my %owners;
-                push @{ $owners{ Plugins::Discography::Sources::_norm($_->{title}) } }, $_->{mbid}
-                    for @all;
-                for my $rg (grep { $_->{aliases} } @all) {
-                    my @keep = grep {
-                        my $own = $owners{ Plugins::Discography::Sources::_norm($_) } || [];
-                        !grep { $_ ne $rg->{mbid} } @$own;
-                    } @{ $rg->{aliases} };
-                    if (@keep < @{ $rg->{aliases} }) {
-                        _dbg("aliases of '$rg->{title}': dropped "
-                            . (@{ $rg->{aliases} } - @keep) . " that another group owns");
-                    }
-                    if (@keep) { $rg->{aliases} = \@keep } else { delete $rg->{aliases} }
-                }
+                _pruneAliases(\@all);
 
                 eval { $cache->set($key, \@all, RG_TTL); 1 }
                     or $log->warn("release-group cache set failed: $@");
@@ -2189,7 +2163,72 @@ sub getReleaseGroups {
             timeout => 20);
     };
 
+    if ($a{read}) {
+        # The read caches the spine itself when it carries the whole list
+        # (fewer than 25 groups); otherwise it answers without one.
+        _readArtist($mbid, sub {
+            my ($r) = @_;
+            return $onDone->($r->{rgs}) if $r && $r->{rgs};
+            $fetchPage->($fetchPage, 0);
+        });
+        return;
+    }
     $fetchPage->($fetchPage, 0);
+}
+
+# One MusicBrainz release group -> its spine entry, or undef without an id or a
+# title. The browse and the artist read give a group the same fields, so both
+# build their entries here. Alias NAMES only, deduped, and never the title
+# itself — the matcher tries the title first, so repeating it here would just
+# cost a second identical comparison. Stored only when non-empty to keep the
+# cached spine small.
+sub _rgEntry {
+    my ($rg) = @_;
+    return undef unless ref $rg eq 'HASH' && $rg->{id} && defined $rg->{title};
+    my (@aka, %seenAka);
+    if (ref $rg->{aliases} eq 'ARRAY') {
+        for my $al (@{ $rg->{aliases} }) {
+            my $n = ref $al eq 'HASH' ? $al->{name} : undef;
+            next unless defined $n && length $n;
+            next if $n eq $rg->{title};
+            push @aka, $n unless $seenAka{$n}++;
+        }
+    }
+    return {
+        mbid      => lc $rg->{id},
+        title     => $rg->{title},
+        date      => $rg->{'first-release-date'} // '',
+        type      => $rg->{'primary-type'}       // '',
+        secondary => ref $rg->{'secondary-types'} eq 'ARRAY'
+                       ? $rg->{'secondary-types'} : [],
+        (@aka ? (aliases => \@aka) : ()),
+    };
+}
+
+# An alias that is ANOTHER group's canonical title already has an owner, so
+# drop it. MB aliases The B-52's box "3 Original CDs" as "The B‐52’s", the title
+# of one of its releases and of the 1979 debut group. Through the alias pass
+# the box claimed the user's copy of the debut (field, 2026-09-19). Done once
+# per spine, before it is cached, so every reader of {aliases} (the list, the
+# detail page, claimedLocalIds, the index keys) sees the same spine, whichever
+# request built it. Edits the entries in place.
+sub _pruneAliases {
+    my ($all) = @_;
+    my %owners;
+    push @{ $owners{ Plugins::Discography::Sources::_norm($_->{title}) } }, $_->{mbid}
+        for @$all;
+    for my $rg (grep { $_->{aliases} } @$all) {
+        my @keep = grep {
+            my $own = $owners{ Plugins::Discography::Sources::_norm($_) } || [];
+            !grep { $_ ne $rg->{mbid} } @$own;
+        } @{ $rg->{aliases} };
+        if (@keep < @{ $rg->{aliases} }) {
+            _dbg("aliases of '$rg->{title}': dropped "
+                . (@{ $rg->{aliases} } - @keep) . " that another group owns");
+        }
+        if (@keep) { $rg->{aliases} = \@keep } else { delete $rg->{aliases} }
+    }
+    return;
 }
 
 sub clearReleaseGroups {
@@ -2319,27 +2358,34 @@ sub clearArtistCache {
 #
 # Status is NOT available on the release-group browse we build the spine from
 # ("status is not a valid parameter unless releases are requested"), and
-# `inc=releases` is rejected there too. It IS available, for every release-group
-# at once, on the RELEASE browse: `release?artist=<arid>&inc=release-groups`
-# returns each release's status alongside its release-group id. That is one pass
-# over the artist's releases (33 pages for The Beatles, 1 for most artists) and
-# classifies EVERY release-group — versus one 1-req/s lookup per suspicious
-# group, which was both slower (96 requests for The Beatles) and blind to
-# bootlegs whose title collides with nothing.
+# `inc=releases` is rejected there too. The release-group SEARCH carries it:
+# each hit lists every release of the group with its id, title and status.
+# Asked BY ID for the groups on the page (`rgid:A OR rgid:B ...`, 100 to a
+# request) it classifies them all in at most 6 requests (stage 2, 2026-09-29;
+# docs/mb-efficiency-and-community-api-analysis.md A11). It replaced a browse of
+# every RELEASE of the artist (`release?artist=<arid>&inc=release-groups`),
+# which took 34 requests for The Beatles and could not finish inside the first
+# render's deadline, so a big artist's first page showed its bootlegs.
 #
-# FAIL-OPEN, deliberately, everywhere: a release-group we never saw (not yet
-# warmed, HTTP failure, or beyond the page cap) shows, and so does one whose
-# releases carry NO status. MB leaves status unset on plenty of obscure releases
-# — the real White Album has 2 status-less releases among its 25 — and hiding a
-# real album is far worse than showing a bootleg.
+# NOT asked by ARTIST (`arid:<arid>`, paged): its pages overlap and groups go
+# missing (Kraftwerk, 162 of 167 over two pages, the same five lost on every
+# run, measured). So the ids come from the browse, which lists them whole.
+#
+# FAIL-OPEN, deliberately, everywhere: a release-group we never classified (not
+# yet warmed, HTTP failure, listed with no releases, or newer than the search
+# index) shows, and so does one whose releases carry NO status. MB leaves status
+# unset on plenty of obscure releases — the real White Album has 2 status-less
+# releases among its 25 — and hiding a real album is far worse than showing a
+# bootleg.
 # ---------------------------------------------------------------------------
 
 use constant OFFICIAL_TTL       => 14 * 86400;
-use constant REL_PAGE_SIZE      => 100;
-use constant REL_MAX_PAGES      => 40;     # 4000 releases; The Beatles need 33
-# (REL_PAGE_GAP removed in 0.51.17 — see RG_PAGE_GAP.)
+# Groups per by-id query: MusicBrainz's largest page, so one query is one page
+# and is never paged. MEASURED: 100 ids make a 5,160-character URL, HTTP 200,
+# all 100 returned (Kraftwerk, public API, 2026-09-29).
+use constant RGID_BATCH_MAX     => 100;
 
-sub _officialKey { 'dsc:rgo:v4:' . $_[0] }   # v4 adds t = edition titles
+sub _officialKey { 'dsc:rgo:v5:' . $_[0] }   # v5: built by id from the search (stage 2)
 
 # 1 unless the release carries an explicit non-official status. A status-less
 # release counts as official (see FAIL-OPEN above).
@@ -2351,7 +2397,7 @@ sub _isOfficial {
 
 # Cache-only, sync, safe in the render path: returns the artist's
 # { rg-mbid => 0|1 } map, or undef when not yet warmed. A release-group ABSENT
-# from a present map was never seen in the release browse -> caller fails open.
+# from a present map was never classified by the check -> caller fails open.
 sub peekOfficial {
     my ($class, $artistMbid) = @_;
     my $c = $cache->get(_officialKey($artistMbid)) or return undef;
@@ -2359,8 +2405,9 @@ sub peekOfficial {
 }
 
 # { release-mbid => release-group-mbid } for the same artist, or undef. Falls
-# out of the SAME browse as the officialness map (each release carries its
-# group), so exact MBID matching of local albums costs no extra request. A
+# out of the SAME check as the officialness map (each group lists its
+# releases), so exact MBID matching of local albums costs no extra request. It
+# holds every release of every group on the page, whoever it is credited to. A
 # library album tagged MUSICBRAINZ_ALBUMID holds a RELEASE mbid, and MB models
 # reissues/box sets as releases under one group — which is exactly the mapping
 # the title matcher can't do ("The Beatles and Esher Demos" -> White Album).
@@ -2371,7 +2418,7 @@ sub peekReleaseMap {
 }
 
 # { release-group-mbid => [ distinct official edition titles ] }, or undef —
-# the same browse again. Browse::_editionTitles decides which a group may
+# the same check again. Browse::_editionTitles decides which a group may
 # actually match by.
 sub peekEditions {
     my ($class, $artistMbid) = @_;
@@ -2382,16 +2429,16 @@ sub peekEditions {
 # ---------------------------------------------------------------------------
 # Targeted release -> release-group lookups for the LIBRARY's own albums.
 #
-# The artist-wide browse above resolves every release, but for a 3000-release
-# artist it needs ~33 paginated requests (~36s) — past the first-render
-# deadline, so on a big artist a library album's exact-MBID match wasn't ready
-# and it fell into "Also in your library" until a re-entry (Simon's Esher Demos,
-# 2026-07-10). The user owns only a handful of albums, so resolve THOSE release
-# MBIDs directly instead: one search for up to 50 of them at a time, and a
-# `release/<mbid>?inc=release-groups` lookup for any the search does not
-# return (see warmLocalReleases), done well inside the deadline. Cached per
-# release (14d), so a revisit — or the full browse landing later — costs
-# nothing.
+# Written (2026-07-10, Simon's Esher Demos) when the release map came from a
+# release browse that took ~33 requests for a big artist and missed the first
+# render. Since stage 2 (2026-09-29) the bootleg check maps every release of
+# every group on the page within the deadline, owned ones included, so this
+# runs AFTER the render, only for the owned releases the check did not place
+# (Browse::_unplacedReleases: normally none), or for all of them when the check
+# failed. The next visit uses its answers. One search for up to 50 of them at a
+# time, and a `release/<mbid>?inc=release-groups` lookup for any the search
+# does not return (see warmLocalReleases). Cached per release (14d), so a
+# revisit costs nothing.
 # ---------------------------------------------------------------------------
 
 use constant REL2RG_TTL => 14 * 86400;
@@ -2729,6 +2776,19 @@ sub warmCollaborations {
 # now one. Every other artist pays the one request it always paid, and gets its
 # aliases with it.
 #
+# AND THE SPINE, for an artist with fewer than 25 groups (stage 2, 2026-09-29;
+# docs/mb-efficiency-and-community-api-analysis.md A11). `+release-groups` adds
+# the artist's release groups WITH their aliases, at most 25 and with no count.
+# MEASURED on the public API, library artists under 25 groups: the same groups,
+# titles, types, dates and aliases as the release-group browse (10 of 10), and
+# the same order once sorted by group id (9 of 9); the lookup itself orders by
+# type then date, a one-page browse by group id, and the list's date sort keeps
+# the input order for equal dates, so the sort is not cosmetic. Such a list is
+# cached as the spine, exactly as the browse would have cached it, so the page
+# (getReleaseGroups with read => 1) sends no browse. A list of 25 may be cut
+# short and is ignored: the browse runs. The extra bytes: Radiohead 19,956 ->
+# 29,704, Bonny Light Horseman 2,028 -> 4,473.
+#
 # A CALLER THAT ARRIVES MID-FLIGHT WAITS (getArtistCandidates' pattern, 0.47.4).
 # The old warmBandMembers answered it at once with nothing cached, which was
 # harmless while the band lookup was its own only caller. Now the streaming
@@ -2738,7 +2798,8 @@ sub warmCollaborations {
 # watchdog.
 #
 # $cb->($r): $r = { aliases, bands, cands } (arrayrefs, each cached as it
-# always was) when a readable response arrived; undef otherwise, and then
+# always was), plus rgs (the spine, cached) when the reply listed fewer than 25
+# groups, when a readable response arrived; undef otherwise, and then
 # NOTHING is cached, so the next visit asks again. (The alias fetch used to
 # cache an EMPTY list for ALIAS_TTL on an unreadable reply, while the band
 # lookup cached nothing. One request gets one rule, and it is the one that
@@ -2765,7 +2826,7 @@ sub _readArtist {
         $_->($r) for @{ $queued || [] };
     };
 
-    _netGet(_mbBase() . "artist/$mbid?inc=aliases+artist-rels&fmt=json",
+    _netGet(_mbBase() . "artist/$mbid?inc=aliases+artist-rels+release-groups&fmt=json",
         sub {
             my $d = eval { from_json(shift->content) };
             if ($@ || ref $d ne 'HASH') {
@@ -2837,7 +2898,23 @@ sub _readArtist {
                  . ' candidate(s) to vet'
                  . (@cands ? ': ' . join(', ', map { $_->{name} } @cands) : ''));
 
-            $settle->({ aliases => \@names, bands => \@bands, cands => \@cands });
+            # THE SPINE, when the list is whole (see the header). Built and
+            # pruned as the browse builds it, in the browse's order.
+            my $spine;
+            my $list = $d->{'release-groups'};
+            if (ref $list eq 'ARRAY' && @$list < ARTIST_RG_LIST_MAX) {
+                my @all = sort { $a->{mbid} cmp $b->{mbid} }
+                          grep { $_ } map { _rgEntry($_) } @$list;
+                _pruneAliases(\@all);
+                eval { $cache->set(_rgKey($mbid), \@all, RG_TTL); 1 }
+                    or $log->warn("release-group cache set failed: $@");
+                $log->info("release groups for $mbid: " . scalar(@all)
+                           . ' from the artist read (no browse needed)');
+                $spine = \@all;
+            }
+
+            $settle->({ aliases => \@names, bands => \@bands, cands => \@cands,
+                        ($spine ? (rgs => $spine) : ()) });
         },
         sub {
             _dbg("artist read: lookup failed for $mbid (aliases + band members): "
@@ -2868,105 +2945,142 @@ sub warmBandMembers {
 
 my %officialInFlight;
 
-# One paginated pass over the artist's releases; builds the whole map, then
-# caches it. Nothing is cached until the pass COMPLETES: a release-group is a
-# bootleg only when NONE of its releases is official, so a partial map cannot
-# prove bootleg-ness and must never be used to hide anything.
+# The bootleg check for the groups on the page: $rgs is the spine the page
+# renders. The release-group search is asked for them BY ID, RGID_BATCH_MAX to a
+# request, and each hit lists the group's releases with their status and title.
+# Builds the whole map, then caches it. Nothing is cached until every request
+# has answered: a release-group is a bootleg only when NONE of its releases is
+# official, so a partial map cannot prove bootleg-ness and must never be used
+# to hide anything.
 #
-# $cb (optional) fires exactly once when the map is usable (or provably won't
-# be): cache hit, pass complete, HTTP failure, or a chain already in flight for
-# this artist. That lets the caller AWAIT the map before its first render — see
-# Browse::_discographyView, which does so under a deadline.
+# Only the groups asked for are read from a reply. A group listed with no
+# releases, or not returned at all (newer than the search index), stays out of
+# the map, i.e. shown: the release browse this replaced never saw such a group
+# either (The Beatles' "Last Night in Hamburg" is listed with none). A group
+# whose own `count` says it has more releases than are listed gets a verdict
+# only from an official one among them. Every list measured was whole, up to
+# 151 releases.
+#
+# $cb (optional) fires exactly once: with no argument when the map is cached
+# (a cache hit, or the check done); 'busy' when another visit's check for this
+# artist is still running; 'failed' when a request failed or a reply could not
+# be read, and then nothing is cached and the next visit asks again. The page
+# AWAITS it before its first render, under a deadline, and uses the argument to
+# decide which owned albums still need a lookup — see
+# Browse::_discographyView.
 sub warmOfficial {
-    my ($class, $artistMbid, $cb) = @_;
+    my ($class, $artistMbid, $rgs, $cb) = @_;
     $cb ||= sub {};
 
     return $cb->() unless $artistMbid;
     return $cb->() if defined $cache->get(_officialKey($artistMbid));
 
-    # Every rebuild (drill, sort, back) re-enters here; one chain per artist.
-    # A caller arriving mid-pass renders unfiltered rather than waiting on
-    # someone else's chain — the map lands for the next render either way.
-    return $cb->() if $officialInFlight{$artistMbid};
-    $officialInFlight{$artistMbid} = 1;
+    # Every rebuild (drill, sort, back) re-enters here; one check per artist.
+    # A caller arriving mid-check renders unfiltered rather than waiting on
+    # someone else's — the map lands for the next render either way.
+    return $cb->('busy') if $officialInFlight{$artistMbid};
+
+    my (%want, @ids);
+    for my $rg (@{ $rgs || [] }) {
+        my $id = ref $rg eq 'HASH' ? lc($rg->{mbid} // '') : '';
+        push @ids, $id if length $id && !$want{$id}++;
+    }
+    my $asked = scalar @ids;
 
     my (%official, %rgOf, %editions);
-    my $page = 0;
+    my $finish = sub {
+        eval { $cache->set(_officialKey($artistMbid),
+                           { o => \%official, r => \%rgOf,
+                             t => { map { $_ => [ sort keys %{ $editions{$_} } ] } keys %editions } },
+                           OFFICIAL_TTL); 1 }
+            or $log->warn("official-status cache set failed: $@");
+
+        my $boot = grep { !$official{$_} } keys %official;
+        _dbg("official-status: $artistMbid -> " . scalar(keys %official) . " of $asked"
+             . " release-groups classified, $boot bootleg-only, "
+             . scalar(keys %rgOf) . " releases mapped to groups");
+
+        delete $officialInFlight{$artistMbid};
+        $cb->();
+    };
+    # No groups on the page: nothing to ask, and an empty map says so.
+    return $finish->() unless @ids;
+
+    $officialInFlight{$artistMbid} = 1;
+    my $fail = sub {
+        my ($why) = @_;
+        # Nothing cached: the view keeps showing everything and the check is
+        # asked again on a later visit.
+        _dbg("official-status: $why - nothing cached, retried next visit");
+        delete $officialInFlight{$artistMbid};
+        $cb->('failed');
+    };
+
+    my @batches;
+    push @batches, [ splice(@ids, 0, RGID_BATCH_MAX) ] while @ids;
 
     # Self-passing closure, not a captured lexical (the 0.30.1 leak fix): this
-    # release browse runs once per artist page whose official map is cold.
-    my $fetchPage = sub {
-        my ($self, $offset) = @_;
-        my $url = _mbBase() . 'release?artist=' . $artistMbid
-                . '&inc=release-groups&limit=' . REL_PAGE_SIZE
-                . '&offset=' . $offset . '&fmt=json';
+    # runs once per artist page whose official map is cold.
+    my $fetch = sub {
+        my ($self) = @_;
+        my $batch = shift @batches or return $finish->();
+
+        # Everything but letters, digits and '-' is percent-encoded. The ids
+        # come from MusicBrainz, so this is Lucene's own syntax; leaving '-'
+        # raw keeps 100 ids at 5,160 characters (5,960 encoded, also accepted).
+        my $q = join ' OR ', map { "rgid:$_" } @$batch;
+        (my $safe = $q) =~ s/([^A-Za-z0-9-])/sprintf('%%%02X', ord($1))/ge;
+        # `limit` is required: the search answers 25 by default.
+        my $url = _mbBase() . 'release-group?query=' . $safe
+                . '&limit=' . scalar(@$batch) . '&fmt=json';
 
         _netGet($url,
             sub {
                 my $data = eval { from_json(shift->content) };
-                if ($@ || ref $data ne 'HASH' || ref $data->{releases} ne 'ARRAY') {
-                    _dbg("official-status: unparseable release page (offset $offset) - abandoning, nothing cached");
-                    delete $officialInFlight{$artistMbid};
-                    $cb->(); return;
+                return $fail->('unreadable reply')
+                    unless !$@ && ref $data eq 'HASH' && ref $data->{'release-groups'} eq 'ARRAY';
+
+                for my $g (@{ $data->{'release-groups'} }) {
+                    next unless ref $g eq 'HASH';
+                    my $id = lc($g->{id} // '');
+                    next unless $want{$id};
+                    my $rels = ref $g->{releases} eq 'ARRAY' ? $g->{releases} : [];
+                    next unless @$rels;
+                    my $any = 0;
+                    for my $rel (@$rels) {
+                        next unless ref $rel eq 'HASH';
+                        # A release-group is official if ANY of its releases is.
+                        my $off = _isOfficial($rel->{status});
+                        $any ||= $off;
+                        # ... and every release points back at its group, which
+                        # is how a library album's MUSICBRAINZ_ALBUMID finds its
+                        # tile.
+                        $rgOf{ lc $rel->{id} } = $id if $rel->{id};
+                        # ... and each OFFICIAL edition's own title. MusicBrainz
+                        # names a group after its first edition, so later
+                        # editions sold under another name ("Tour de France",
+                        # 2009, inside the 2003 "Tour de France Soundtracks")
+                        # are only findable here. A bootleg's title never
+                        # becomes a way in.
+                        $editions{$id}{ $rel->{title} } = 1
+                            if $off && defined $rel->{title} && length $rel->{title};
+                    }
+                    if ($any) {
+                        $official{$id} = 1;
+                    }
+                    elsif (!defined $g->{count} || $g->{count} <= @$rels) {
+                        $official{$id} //= 0;
+                    }
                 }
-
-                for my $rel (@{ $data->{releases} }) {
-                    my $rg = $rel->{'release-group'} or next;
-                    my $id = lc($rg->{id} // '') or next;
-                    # A release-group is official if ANY of its releases is.
-                    $official{$id} ||= _isOfficial($rel->{status});
-                    # ... and every release points back at its group, which is
-                    # how a library album's MUSICBRAINZ_ALBUMID finds its tile.
-                    $rgOf{ lc $rel->{id} } = $id if $rel->{id};
-                    # ... and each OFFICIAL edition's own title. MusicBrainz
-                    # names a group after its first edition, so later editions
-                    # sold under another name ("Tour de France", 2009, inside
-                    # the 2003 "Tour de France Soundtracks") are only findable
-                    # here. A bootleg's title never becomes a way in.
-                    $editions{$id}{ $rel->{title} } = 1
-                        if _isOfficial($rel->{status})
-                        && defined $rel->{title} && length $rel->{title};
-                }
-
-                my $total = $data->{'release-count'} // 0;
-                $page++;
-                if ($offset + REL_PAGE_SIZE < $total && $page < REL_MAX_PAGES) {
-                    # As the release-group pager: serial already, and _netGet
-                    # owns the gap (0.51.17).
-                    $self->($self, $offset + REL_PAGE_SIZE);
-                    return;
-                }
-
-                $log->warn("release list truncated at " . ($page * REL_PAGE_SIZE)
-                           . " of $total for $artistMbid - unseen groups stay visible")
-                    if $offset + REL_PAGE_SIZE < $total;
-
-                eval { $cache->set(_officialKey($artistMbid),
-                                   { o => \%official, r => \%rgOf,
-                                     t => { map { $_ => [ sort keys %{ $editions{$_} } ] } keys %editions } },
-                                   OFFICIAL_TTL); 1 }
-                    or $log->warn("official-status cache set failed: $@");
-
-                my $boot = grep { !$official{$_} } keys %official;
-                _dbg("official-status: $artistMbid -> " . scalar(keys %official)
-                     . " release-groups, $boot bootleg-only, "
-                     . scalar(keys %rgOf) . " releases mapped to groups");
-
-                delete $officialInFlight{$artistMbid};
-                $cb->();
+                $self->($self);
             },
-            sub {
-                # Nothing cached: the view keeps showing everything and the pass
-                # is retried on a later visit.
-                _dbg("official-status: release browse failed: " . (shift->error // 'HTTP error'));
-                delete $officialInFlight{$artistMbid};
-                $cb->();
-            },
+            sub { $fail->('request failed (' . (shift->error // 'HTTP error') . ')') },
             timeout => 20);
     };
 
-    _dbg("official-status warm: starting release browse for $artistMbid");
-    $fetchPage->($fetchPage, 0);
+    _dbg("official-status warm: $asked release-group(s) by id for $artistMbid, "
+         . scalar(@batches) . ' request(s)');
+    $fetch->($fetch);
 }
 
 sub clearOfficial {

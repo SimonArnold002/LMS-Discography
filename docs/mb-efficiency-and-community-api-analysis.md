@@ -10,27 +10,41 @@
 > (`CLAUDE.md` dev log, "MusicBrainz efficiency stage 1"). Its code review (2026-09-29) fixed four
 > findings: Refresh now clears a composer-only id's owned releases, a last batch of one id is a lookup not a
 > search, two stale comments, and DB.pm's orphan cleanup follows its column list; 47 suites, 1,449 assertions,
-> 0 failures. Stage 1 is still unbuilt and has no live check yet.
+> 0 failures. **Built as 0.56.1 and VERIFIED LIVE on the mirror and the public API (2026-09-29)**, see §A10.
 > **§A7 #4 is HELD for the resolver work** (Part C of `docs/community-api-and-resolver-plan.md`): the combined
-> query changes which artist a name resolves to. Measured: HAIM would open Haïm (§A7). Stages 2–4 not started.
+> query changes which artist a name resolves to. Measured: HAIM would open Haïm (§A7). Stages 3–4 not started.
+>
+> **Stage 2 re-measured and re-designed, 2026-09-29 (§A11).** The route in §A1–§A5 was wrong twice.
+> Paging the release-group search by artist LOSES groups, and demoting the alias browse to the background would
+> have made foreign-titled albums match a visit late for no saving. Stage 2 is now the bootleg check BY ID
+> (§F.2): the page's groups are asked for by id, 100 per request, and the release-group browse stays the spine
+> and alias source. An artist with fewer than 25 groups gets its spine from the artist read the page already
+> makes. §0, §A1–§A6, §A9, §C5, §D and §E carry the corrections. **Built as 0.56.2 and VERIFIED LIVE on the
+> public API 2026-09-29 (all four checks pass); committed on dev.**
 
 ---
 
 ## 0. Summary in ten lines
 
-1. There is a MusicBrainz route we have never used: the **release-group SEARCH**
-   (`release-group?query=arid:<mbid>`). It returns, per group, the type, the date **and the
-   group's full release list with each release's id, title and status**.
-2. That single route does the job of BOTH heavy calls we make today — the release-group browse
-   *and* the up-to-40-page release browse.
-3. The Beatles go from **40 requests (~44s) to 6 (~7s)**. Radiohead 18 → 4. Kraftwerk 8 → 2.
-4. It also removes a spine page cap for free (a known limit, not a defect): today the spine
-   stops at 600 groups, so 450 of the Beatles' groups are never fetched.
+1. There is a MusicBrainz route we have never used: the **release-group SEARCH**. It returns,
+   per group, the type, the date **and the group's full release list with each release's id,
+   title and status**. *(Corrected 2026-09-29, §A11: paged by artist, `arid:<mbid>`, it LOSES
+   groups. Asked by id, `rgid:A OR rgid:B …`, 100 per request, it is exact.)*
+2. Asked by id for the page's groups, it does the job of the up-to-40-page release browse: the
+   bootleg map, the release→group map and the edition titles. *(Corrected 2026-09-29: it does
+   NOT replace the release-group browse. It cannot list groups it is not given, and it carries no
+   group aliases. The browse stays the spine; under 25 groups the artist read carries it.)*
+3. Spine + bootleg filter: The Beatles **40 → 12 requests**, Radiohead 18 → 12, Kraftwerk 8 → 4,
+   an artist under 25 groups 2 → 1. *(Corrected 2026-09-29: the paged figures, 40 → 6, assumed a
+   complete paged search. Whole cold page: §A11.)*
+4. *(Withdrawn 2026-09-29.)* It was said to remove the 600-group spine cap. It does not: the ids
+   come from the browse, which keeps the cap (a known limit, not a defect).
 5. Four smaller savings on top: one artist call instead of two, one batched lookup instead of N,
    one collaboration call instead of two, one name query instead of up to three. *(2026-09-29: the
    first three are built; the fourth is held for the resolver, §A7.)*
-6. The search route has **one hard limit**: MusicBrainz refuses search results past 500. Above
-   that (Elvis, Miles Davis, Bach) we keep today's browse. Rare.
+6. MusicBrainz refuses search results past 500. *(Corrected 2026-09-29: that limits only a PAGED
+   search. A by-id query is one page of at most 100, so stage 2 never reaches it, Elvis and Miles
+   Davis included.)*
 7. **Five places still behave differently on the public API than on a mirror.** All five *skip*
    work rather than pace it. Section B lists them and what each costs a public user.
 8. The two search types (a row from **Artists** vs a row from **our search**) are identical on a
@@ -93,12 +107,14 @@ Side of the Moon). So the sub-list is not capped and not filtered by the query.
 `release-group?artist=`: The Beatles 1050 = 1050, Willie Nelson 489 = 489, Kraftwerk 167 = 167.
 Second-credited groups are included.
 
-**The one thing that must be guarded: a mirror with an unbuilt Solr index.** A search is the one
-MusicBrainz route a freshly imported `musicbrainz-docker` cannot answer — it returns 0 results
-where the browse works fine. The plugin already knows this shape (`_mbSearchVerdict`, the
-mirror→public retry for artist searches). The release-group search needs the same net, or a
-mirror user gets an empty discography page. This is a mirror safety net, not a public/mirror
-behaviour difference, so it is allowed under the standing rule.
+> **Wrong, 2026-09-29 (§A11).** Those are the COUNTS. Paged 100 at a time, the pages overlap:
+> Kraftwerk's 2 pages hold 162 distinct groups of 167, the same five lost on 3 runs of 3, five others
+> returned twice. So the search cannot build the spine or its bootleg map by paging. Asked for the page's
+> groups by id (`rgid:A OR rgid:B …`, one page per 100 ids) it returned every group asked for, for four
+> artists, with complete release lists. That is how stage 2 uses it.
+
+*(A paragraph on guarding a mirror whose search index is unbuilt was here. Dropped 2026-09-29: no user
+runs a mirror, so nothing is built for one.)*
 
 ### A2. The one thing the search does not carry
 
@@ -113,7 +129,18 @@ about: *Radio‐Aktivität* → "Radio-Activity", *Computerwelt* → "Computer W
 **background** off the render path, until Herger's agreed alias field ships. A foreign-titled
 album matches one visit later instead of never.
 
+> **Withdrawn 2026-09-29 (§A11).** "Only on the browse" was wrong: the artist lookup
+> (`artist/<id>?inc=aliases+release-groups`) carries them for an artist with fewer than 25 groups, and the
+> release browse carries them too, once per release. The recommendation was wrong as well. The browse is the
+> spine and stays on the render path, so its aliases cost nothing; demoting it would have made every
+> foreign-titled album match a visit late to save nothing. Aliases can leave MusicBrainz only when the
+> community API carries them (request 1, agreed, not there on 2026-09-29) AND second-credited groups have
+> another source (§F.4).
+
 ### A3. The 500-result cap (the limit that decides the design)
+
+> **Superseded 2026-09-29 (§A11).** The cap limits a PAGED search, and paging loses groups anyway. The
+> by-id query stage 2 uses is one page of at most 100, so it never reaches 500. Kept for the record.
 
 MusicBrainz refuses a search past 500 results:
 
@@ -161,6 +188,9 @@ exact.
 
 **Requests for the spine + bootleg filter:**
 
+> **The "with the search" column is superseded (2026-09-29):** it assumed a complete paged search.
+> The by-id costs are in §A11. The "today" column still holds (§A10 re-measured Kraftwerk's 8 live).
+
 | artist | today | with the search | at 1.1s spacing |
 |---|---|---|---|
 | Sonic Boom | 2 | **1** | 2.2s → 1.1s |
@@ -177,6 +207,9 @@ Splitting an over-cap artist by primary type does **not** rescue it: Elvis offic
 
 ### A5. It also removes a spine cap (a known limit, not a defect)
 
+> **Wrong, 2026-09-29.** The by-id search needs the group ids, which come from the browse, and the browse
+> keeps its 600-group cap. Nothing in stage 2 changes the cap.
+
 The page caps are logged as a known limit, not a finding. Noting it only because this route
 happens to remove one for free. `RG_MAX_PAGES = 6` caps the spine at 600 groups; The Beatles
 have 1050, so **450 groups are never fetched**. The search route returns the official set
@@ -192,6 +225,10 @@ complete (330 + 28), so the page becomes *more* complete while costing less.
 
 The Beatles move ~3.6 MB either way. What changes is 40 round trips → 6. Parsing is not a
 concern: LMS ships `JSON::XS`, and the biggest page costs under 5 ms.
+
+*(2026-09-29: the by-id query has the same shape as the search page above: 100 Kraftwerk groups came to
+190 KB, and 100 Beatles groups are ~950 KB. So the Beatles' bytes are unchanged and the round trips go
+from 34 to 6, not to 6 overall; §A11.)*
 
 ### A7. Four smaller savings
 
@@ -245,6 +282,8 @@ name field cannot answer, once per 30 days.
 
 ### A9. New cold-page budget, public API, The Beatles
 
+> **Superseded 2026-09-29 by §A11's table** (the "after" column assumed the paged search).
+
 | stage | today | after |
 |---|---|---|
 | same-name candidates | 1 | 1 |
@@ -256,6 +295,121 @@ name field cannot answer, once per 30 days.
 
 The `official_wait` deadline is 15s. Today it **always** fires for a big artist, so the user waits
 15 seconds *and still sees bootlegs*. At 10s the page renders filtered and complete instead.
+
+### A10. Stage 1 measured live (0.56.1, 2026-09-29, public API)
+
+`mb_base_url` = `https://musicbrainz.org/ws/2/`; every request 1.1 s apart; URLs read from LMS's own
+`network.asynchttp` log at DEBUG (the plugin does not log its URLs). Both artists cleared cold first.
+
+| cold page | requests, in order | total | before stage 1 | render |
+|---|---|---|---|---|
+| Kraftwerk (6 owned) | name search ×2, release-group browse ×2, **`reid:` ×1**, **artist read ×1**, release browse ×6 | 12 | 17 | 12.4 s, bootleg map complete |
+| Brian Eno (2 owned) | name search ×2, release-group browse ×2, **`reid:` ×1**, **artist read ×1**, release browse ×6; then **vetting ×3** | 12 + 3 | 13 + 6 | 12.5 s |
+
+"Before" is the same page's count with the pre-stage-1 code: one lookup per owned album, and two requests
+per vetted collaboration. Neither name is ambiguous, so the artist read was one request before too (the
+alias half was not fetched). The spine + bootleg filter is 2 + 6 = **8 for Kraftwerk, exactly §A4's figure**,
+so §A4's baseline for stage 2 still holds. Same answers as the mirror: Fripp & Eno and Harmonia 76 kept,
+N.M.L. dropped; Kraftwerk 169 groups, 106 bootleg-only.
+
+**Found in the live run: the name is searched TWICE on every cold name-entered page.**
+`_artistMbidByName` sends `artist?query=artist:"X"&limit=8`, and `getArtistCandidates` sends the SAME quoted
+query with `limit=15` 1.1 s later (both runs above, and every earlier cold page). One `limit=15` answer could
+serve both, saving one request (1.1 s on the render path) per cold page, if the first 8 hits of the
+`limit=15` reply are always the `limit=8` reply, which is what the exact-name pick reads. **Measure that
+across the 1,117 library artists before building it** (the §A7 #4 lesson: a change that re-orders the hits
+changes the answer). The resolver plan (`docs/unified-artist-resolver-plan.md` §1) already makes the link path
+read `getArtistCandidates` as its name tier, so this saving can come with that work rather than on its own.
+
+### A11. Stage 2 re-measured (2026-09-29, public API): paging loses groups, asking by id does not
+
+Measured on `https://musicbrainz.org/ws/2/`, one request at a time, 1.15 s apart, and compared **by group
+id**, not by count (§A1's mistake). The scripts are not kept; the results are.
+
+**1. Paging the search loses groups.**
+
+| query | `count` | pages | distinct groups returned |
+|---|---|---|---|
+| `arid:<Kraftwerk>` | 167 | 2 | **162**, on 3 runs of 3: the same 5 lost each run, 5 others returned twice |
+| `arid:<The Beatles> AND status:official` (the resolver plan's route) | 330 | 4 | **257**: 73 returned twice |
+| `arid:<Radiohead> AND status:official` | 101 | 2 | 101 |
+
+Each of Kraftwerk's lost groups matches on its own (`arid:X AND rgid:Y` counts 1), so the index has them and the
+paging drops them. Every hit scores 100, so nothing keeps the order stable from one page to the next.
+
+**2. Asked by id, it is exact.** `release-group?query=rgid:A OR rgid:B …&limit=<n>` for the groups on today's
+page (the browse, at most 600), 100 ids per request, against today's release browse over the same groups:
+
+| artist | page groups | requests by id (release browse today) | returned | bootleg map | release map | edition titles |
+|---|---|---|---|---|---|---|
+| Jamie Cullum | 35 | 1 (2) | 35 of 35 | 1 differs | 146 (145 today) | same |
+| Kraftwerk | 167 | 2 (6) | 167 of 167 | same | 550 = 550 | same |
+| Radiohead | 585 | 6 (12) | 585 of 585 | same | 1149 (1148) | 1 extra |
+| The Beatles | 600 of 1050 | 6 (34) | 600 of 600 | 2 differ, both skipped (below) | 2789 (2787), 2 disagree | 2 extra |
+
+Every group's release list was complete (`count` = releases listed), up to Dark Side of the Moon's 151
+(Nevermind 98, Abbey Road 73 too). What each difference is:
+
+- **Jamie Cullum, "Jamie Cullum, Volume One": shown today, hidden by id.** Its only release is a Promotion
+  credited to Various Artists. The artist's release browse never sees it, so today the group fails open; the
+  group's own release list shows it has no official release. The new answer is the right one.
+- **The Beatles, "Last Night in Hamburg" and "Beatles in Tokyo":** the search lists them with NO releases.
+  Today they are absent from the map and shown. Stage 2 skips a group with no releases listed, so they stay
+  shown: no difference once built.
+- **The Beatles, 2 releases:** the search still files them under "Strawberry Fields Forever / Penny Lane"; the
+  database has moved them to "Strawberry Fields Forever". Index lag, healed by MusicBrainz's own indexing. An
+  owned copy tagged with one of those two releases would sit on the older single's tile until then.
+- **The extra edition titles** (Radiohead 1, The Beatles 2) are each the group's own title, which
+  `Browse::_editionTitles` drops. No effect.
+- **The extra release in the release map** (Jamie Cullum's promo; one for Radiohead): a release credited to
+  another artist. The map now holds every release of every page group.
+
+100 ids make a 5,160-character URL with `-` left raw (5,960 encoded), HTTP 200 both ways, ~190 KB for 100
+Kraftwerk groups.
+
+**3. Where release-group aliases can come from** (Kraftwerk's Radio‐Aktivität, alias "Radio-Activity"):
+
+| route | group aliases? | cost |
+|---|---|---|
+| the release-group browse, `inc=aliases` (today's spine) | yes | free: the spine request itself |
+| the search, by artist or by id, with or without `inc=aliases` | **no**, the artist's aliases only | — |
+| the artist lookup, `inc=release-groups+aliases` | yes, for the groups it lists (at most 25) | free: the artist read the page already makes |
+| the release browse, `inc=release-groups+aliases` | yes, repeated once per release | ~3x the release browse's pages |
+| one `release-group/<id>?inc=aliases` per group | yes | 13 requests for Kraftwerk, 45 for Radiohead |
+| the search field `alias:*` | counts the aliased groups (13), returns no text | — |
+| the community API `/discography` | **no**: request 1, agreed, not there on 2026-09-29 | — |
+
+**4. The artist read carries a small artist's whole spine.** `artist/<id>?inc=aliases+artist-rels+release-groups`
+lists up to 25 groups with their aliases, and no count. For library artists under 25 groups the list was the
+browse's exactly: the same groups with the same title, type, secondary types, date and aliases (10 of 10), in the
+same ORDER once sorted by group id (9 of 9; unsorted 0 of 8, because the lookup orders by type then date and a
+one-page browse by group id). At exactly 25 it may be cut short (Califone has 25; Kings of Convenience 26, Orange
+Juice 36 and The xx 47 also list 25), so the browse runs. The extra list costs bytes only: Radiohead 19,956 →
+29,704 B, Bonny Light Horseman 2,028 → 4,473 B.
+
+**5. A cold page in requests.** One name search per page; the double name search of §A10 adds 1 to both
+columns. "Today" assumes the artist has tagged owned albums (one `reid:` search); without them it is 1 less.
+
+| artist | today (0.56.1) | stage 2 | what goes from the render path |
+|---|---|---|---|
+| under 25 groups (Bonny Light Horseman, 9) | 5: name, browse 1, `reid:` 1, artist read, release browse 1 | **3**: name, artist read, by id 1 | the browse (the read carries it), the release browse, the `reid:` search |
+| Jamie Cullum (35) | 6: name, browse 1, `reid:`, read, release browse 2 | **4**: name, read, browse 1, by id 1 | the release browse, the `reid:` search |
+| Kraftwerk (167) | 11: name, browse 2, `reid:`, read, release browse 6 | **6**: name, read, browse 2, by id 2 | the same |
+| Radiohead (585) | 21: name, browse 6, `reid:`, read, release browse 12 | **14**: name, read, browse 6, by id 6 | the same |
+| The Beatles (600 of 1050) | 43: name, browse 6, `reid:`, read, release browse 34 | **14**: name, read, browse 6, by id 6 | the same |
+
+The bootleg check is at most 6 requests, about 7 s on the public API, inside the 15 s `official_wait` for every
+artist. Today The Beatles' 34 pages cannot finish in time, so their first page shows bootlegs.
+
+The `reid:` search leaves the render path because the by-id check maps every release of every page group, owned
+ones included. `warmLocalReleases` still runs AFTER the render, for owned albums the check did not place
+(normally none) or for all of them when the check failed, and the next visit uses its answers (Simon,
+2026-09-29: *"if we need next visit to get what we need lets look to use it but implement as efficiently as
+possible"*).
+
+**6. What does not change:** the bootleg rule (a group is official if any release is; a status-less release is
+official; a group never classified is shown), the per-visit snapshot, the `official_wait` deadline, the one serial
+MusicBrainz queue, the browse for artists with 25 or more groups, and its 600-group cap.
 
 ---
 
@@ -401,7 +555,9 @@ The community API and the MusicBrainz search are **complementary, not alternativ
 - The hosted call is one un-throttled request and covers the first-credit spine completely, but
   misses second-credited groups, aliases and edition titles.
 - The MusicBrainz search is 1–6 throttled requests and covers everything including second-credit
-  and edition titles, but misses aliases and caps at 500.
+  and edition titles, but misses aliases and caps at 500. *(Corrected 2026-09-29, §A11: paged by
+  artist it loses groups. It is exact only by id, so it classifies the groups it is given and cannot
+  list them. The browse stays the only complete MusicBrainz list, second-credited groups included.)*
 
 Running **both in parallel** and merging by release-group id gives a first visit that is complete
 on every axis except release-group aliases — and the hosted call costs nothing against the
@@ -414,8 +570,8 @@ alone still renders a correct page.
 
 | request | still needed? | why |
 |---|---|---|
-| **1 — release-group aliases** | **Yes, more than before.** | The MusicBrainz *search* does not carry them and the hosted API does not either. Only the group *browse* has them. Without the request we keep a background browse purely for aliases, on both routes. |
-| **2 — release titles in `releases`** | **Yes, but the reason has changed.** | The stated reason was "otherwise we keep a 40-page MusicBrainz release browse". **That is no longer true** — the search gives us `releases[].title` for free. The request is still right, because without it the hosted call cannot stand alone and always needs a MusicBrainz companion for edition titles. Worth saying so if it comes up, rather than letting a stale justification stand. |
+| **1 — release-group aliases** | **Yes, more than before.** | The MusicBrainz *search* does not carry them and the hosted API does not either. Only the group *browse* has them. Without the request we keep a background browse purely for aliases, on both routes. *(Corrected 2026-09-29, §A11: the artist lookup has them too, under 25 groups, and nothing runs "in the background": the browse is the spine, so its aliases are free. The request lets the browse go only if second-credited groups get another source, §F.4.)* |
+| **2 — release titles in `releases`** | **Yes, but the reason has changed.** | The stated reason was "otherwise we keep a 40-page MusicBrainz release browse". **That is no longer true** — the search gives us `releases[].title` for free. The request is still right, because without it the hosted call cannot stand alone and always needs a MusicBrainz companion for edition titles. Worth saying so if it comes up, rather than letting a stale justification stand. *(Still true 2026-09-29: the by-id search carries the titles.)* |
 | 3 — unknown mbid | retracted by Simon | we check the returned mbid ourselves |
 
 ---
@@ -431,6 +587,11 @@ alone still renders a correct page.
 | batched `arid:A OR arid:B …` as a "has releases?" test | unsound — 3 of 8 artists appeared |
 | batched `artist:"A" OR artist:"B" …` as a name resolver | unsound — 3 of 8 names found; one common name floods the page |
 | splitting an over-500 artist by `primarytype` | insufficient — Elvis official Albums = 900, Miles official Albums = 535 |
+| paging `arid:X` 100 at a time as a complete list (2026-09-29) | loses groups: Kraftwerk 162 of 167 on 3 runs of 3, five others returned twice (§A11) |
+| paging `arid:X AND status:official` (2026-09-29) | The Beatles 257 of 330, 73 returned twice; Radiohead 101 of 101 |
+| `inc=aliases` on the release-group search (2026-09-29) | ignored: only the artist-credit's aliases come back |
+| the artist lookup's `inc=release-groups` as a full list (2026-09-29) | capped at 25 with no count; complete only below 25 |
+| one `release-group/<id>?inc=aliases` per group (2026-09-29) | works, but 13 requests for Kraftwerk and 45 for Radiohead, against 0 from the browse |
 
 Also observed: the MusicBrainz **search** cluster sheds more readily than the browse cluster. Four
 requests today came back *"The MusicBrainz web server is currently busy"* — the documented shed
@@ -446,14 +607,34 @@ Each stage: suites green before and after, then a live check **on the public API
 1. **The four cheap ones (A7).** No design change, no new route: fold aliases into the band-member
    call, batch the owned-release lookups, fold the collaboration vetting, combine the name and
    alias query. Saves ~10 requests on a typical cold page and needs no new caching.
-   **Status 2026-09-29: the first three are in the code and reviewed (committed on `dev`, not built, no
-   live check yet). Combining the name and alias query is HELD for the resolver's Part C (§A7).**
-2. **The search route (A1–A5).** New `getReleaseList` that runs the search and fills the spine,
-   `o`, `r` and `t` from one place, with the >500 fallback to today's browses, and the
-   `inc=aliases` browse demoted to the background. This is the one that turns 40 requests into 6.
-   **Open question (from the stage-1 review):** the search fills `r` for the whole catalogue, so
-   `warmLocalReleases` is then needed only above 500 groups and for owned albums credited to another
-   artist. Decide whether it stays on the render path or runs only for what `r` does not answer.
+   **Status 2026-09-29: the first three are built (0.56.1) and VERIFIED LIVE on the public API (§A10).
+   Combining the name and alias query is HELD for the resolver's Part C (§A7). The live run found one more
+   saving of the same kind (§A10, "Found in the live run"), not built.**
+2. **The bootleg check by id (re-designed 2026-09-29, §A11).** *The original plan (a new
+   `getReleaseList` paging the search, with the alias browse demoted to the background) is withdrawn:
+   paging loses groups, and the demotion saved nothing.* Instead:
+   - **The spine stays the release-group browse**, with its free aliases. An artist with fewer than 25
+     groups takes it from the artist read the page already makes (`_readArtist`, now
+     `inc=aliases+artist-rels+release-groups`, sorted by group id), so that artist's browse request
+     goes. The page asks for the read FIRST (`getReleaseGroups(read => 1)`); the other callers
+     (the same-name disambiguation, the release page, play) keep the browse alone, as today.
+   - **`warmOfficial` asks the search for the page's groups by id**, 100 per request (at most 6), and
+     builds `o`, `r` and `t` from each group's release list, with the same rules. A group listed with no
+     releases, or not returned, stays unclassified (shown). The 40-page release browse is deleted.
+   - **The open question is answered: `warmLocalReleases` leaves the render path.** The check maps every
+     release of every page group, so it runs after the render, only for owned releases the check did not
+     place (normally none), or for all of them when the check failed. The next visit uses its answers.
+   - **A failed check caches nothing** and is asked again on the next visit, as before.
+   - Cost, cold page: under 25 groups 5 → 3 requests, Jamie Cullum 6 → 4, Kraftwerk 11 → 6, Radiohead
+     21 → 14, The Beatles 43 → 14 (§A11). Aliases stay on the first visit at no extra cost.
+   **Status 2026-09-29: built as 0.56.2, installed, VERIFIED LIVE on the public API, committed on dev**
+   (`CLAUDE.md` dev log, 0.56.2). 49 suites, 1,564 assertions, 0 failures; 16 mutants caught. On the rig, cold,
+   requests before the render: Ladyhawke 4 (the 3 above plus the name search an artist with no library tag
+   already needs), Kraftwerk 6 (click to render 6.0 s; 0.56.1 took 12.4 s), The Beatles 14 (14.8 s; the check
+   7.9 s, 598 of 600 classified, bootlegs hidden on the first visit), Brian Eno 7 including one retried shed
+   (7.0 s; 0.56.1 took 12.5 s). Eno's two owned albums off the page were looked up after the render. The
+   by-id search runs in MusicBrainz's SEARCH zone, which sheds when busy; the queue's shed retry covered the
+   one seen live.
 3. **Un-gate the five divergences (B).** Only once 1 and 2 have made the work affordable. #1 and
    #3–#5 must move together, or the row path poisons the shared name cache.
    **Carried in from the stage-1 review (2026-09-29):** once gate #1 is gone, the search-row fold's
@@ -465,6 +646,13 @@ Each stage: suites green before and after, then a live check **on the public API
    `/aliases?mbid=` (stage 4, §C3).
 4. **Add the community API alongside (C).** One request helper, mbid echo check, merged with the
    search result. It is additive: if it is down, everything still works.
+   **To decide here (added 2026-09-29, §A11):** the community API's aliases (request 1) let the
+   release-group browse go only if second-credited groups come from somewhere else. The community API
+   lists first credits only, the artist read lists at most 25 groups, and paging the search loses groups,
+   so for an artist with 25 or more groups the browse is the only complete list. The choice is to keep the
+   browse (its aliases stay free and request 1 saves nothing here), or to fetch second-credited groups a
+   visit late (Simon allowed next visit where it is needed, 2026-09-29). Its status map would replace
+   the by-id requests for first-credited groups either way.
 
 Stage 1 is independent of everything else and could go in on its own.
 
@@ -502,4 +690,5 @@ Suites the changes in section F would need before they are called done: `t_netqu
 `reid` query is a new URL shape through the one queue), `t_mirror` (the five gates), `t_thelas` and
 `t_fuzzy` (the combined `artist OR alias` query changes scoring), `t_local` and `t_zerorg` (the
 `o`/`r`/`t` maps built from a search payload instead of a browse payload), and a new suite for the
-500-cap fallback.
+500-cap fallback. *(2026-09-29: the by-id design has no 500-cap fallback; the suites stage 2 touched
+are listed in `CLAUDE.md`'s stage-2 dev log.)*
