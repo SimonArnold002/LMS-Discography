@@ -322,15 +322,6 @@ sub _netNoteLimit {
     return $s->{delay};
 }
 
-# Seconds until the named bucket may send again (0 = now). For diagnostics.
-sub netQueueWait {
-    my (undef, $b) = @_;
-    my $s = $NET{ $b || 'mb' } or return 0;
-    my $now = Time::HiRes::time();
-    my $at  = $s->{nextAt} > $s->{busyUntil} ? $s->{nextAt} : $s->{busyUntil};
-    return $at > $now ? $at - $now : 0;
-}
-
 sub _netGet {
     my ($url, $onOk, $onErr, %opt) = @_;
     my $job = { url => $url, ok => ($onOk || sub {}), err => ($onErr || sub {}),
@@ -460,7 +451,6 @@ sub _netSend {
     sub code    { return 0 }
     sub error   { return 'no callback' }
     sub content { return '' }
-    sub headers { return {} }
 }
 
 # Auto-detect a LOCAL MusicBrainz mirror on the SAME host — the common
@@ -2236,11 +2226,6 @@ sub _pruneAliases {
     return;
 }
 
-sub clearReleaseGroups {
-    my ($class, $mbid) = @_;
-    $cache->remove(_rgKey($mbid)) if $mbid;
-}
-
 # Drop the cached artist-name -> MBID entry (found OR the '' miss sentinel), so
 # the next lookup re-queries. Keyed exactly like _artistMbidByName. Used by the
 # "not found" view's Refresh to bust a stale miss without waiting out the TTL.
@@ -2610,9 +2595,10 @@ sub warmLocalReleases {
 # is often tagged only as COMPOSER on their own band's record (Marc Almond is
 # COMPOSER-only on Soft Cell's "Non-Stop Erotic Cabaret"), identical to Dylan
 # writing one track on a covers comp. MusicBrainz DOES know, via the artist's
-# "member of band" relationships. One cached call per artist yields the bands;
-# Sources::bandAlbums then pulls each band's OWN (album-artist) library albums,
-# which are clean by construction.
+# "member of band" relationships. One cached call per artist yields the bands,
+# which the page lists as "Also a member of" links (Browse::_bandLinkRow): browse
+# the band itself for its albums, which are not folded into the member's page
+# (Simon's call, 2026-07-11).
 # ---------------------------------------------------------------------------
 
 use constant BANDS_TTL => 14 * 86400;
@@ -3088,11 +3074,6 @@ sub warmOfficial {
     _dbg("official-status warm: $asked release-group(s) by id for $artistMbid, "
          . scalar(@batches) . ' request(s)');
     $fetch->($fetch);
-}
-
-sub clearOfficial {
-    my ($class, $artistMbid) = @_;
-    $cache->remove(_officialKey($artistMbid)) if $artistMbid;
 }
 
 # CAA cover by release-group MBID — a plain URL; CAA redirects to the front

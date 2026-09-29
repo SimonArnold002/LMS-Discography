@@ -759,30 +759,6 @@ sub _bandContributorId {
     return undef;
 }
 
-# Library albums by the BANDS an artist is a member of (API::peekBands feeds the
-# list). Each band's OWN album-artist records via localAlbums — so a member
-# tagged COMPOSER-only on their band's album (the case the role filter drops)
-# comes back through the band, WITHOUT the write-only chaff (the band IS the
-# album artist). $exclude {album_id=>1} skips albums already shown for the
-# browsed artist; it is updated as we go so two bands can't double-list a split.
-sub bandAlbums {
-    my ($class, $bands, $exclude) = @_;
-    return [] unless $bands && @$bands;
-    $exclude ||= {};
-    my @out;
-    for my $b (@$bands) {
-        my $id = _bandContributorId($b->{mbid}, $b->{name});
-        next unless $id;
-        for my $a (@{ $class->localAlbums($id, $b->{name}) }) {
-            next if $exclude->{ $a->{_albumid} }++;
-            $a->{_band} = $b->{name};
-            push @out, $a;
-        }
-    }
-    _dbg("band albums: " . scalar(@out) . " from " . scalar(@$bands) . " band(s)");
-    return \@out;
-}
-
 sub _localAlbumTracks {
     my ($client, $cb, $args, $pass) = @_;
     my $req = eval {

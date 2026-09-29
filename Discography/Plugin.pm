@@ -30,7 +30,6 @@ use Slim::Control::Request;
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use Slim::Utils::PluginManager;
-use Slim::Utils::Strings qw(string cstring);
 
 my $log = Slim::Utils::Log->addLogCategory({
     'category'     => 'plugin.discography',

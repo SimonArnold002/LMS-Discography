@@ -2553,7 +2553,8 @@ sub _buildList {
         my @extras  = grep { !$claimed->{ $_->{_albumid} } } @{ $local || [] };
 
         # NOTE: a band's owned albums are NO LONGER folded in here (they used to
-        # land in "Appearances" via Sources::bandAlbums). They now live behind
+        # land in "Appearances" via Sources::bandAlbums, removed 2026-09-30 as
+        # dead code). They now live behind
         # the "Also a member of" links section below — browse the band itself to
         # see its discography, rather than mixing it into this solo spine
         # (Simon's call, 2026-07-11). This section is now the artist's OWN library
