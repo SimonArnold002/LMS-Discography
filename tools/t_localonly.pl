@@ -30,6 +30,7 @@ BEGIN {
     *{'Slim::Utils::Log::logger'}        = sub { bless {}, 'T::Null' };
     *{'Slim::Utils::Prefs::preferences'} = sub { bless {}, 'T::Null' };
     *{'Slim::Utils::Cache::new'}         = sub { bless {}, 'T::Null' };
+    *{'Plugins::Discography::DB::store'} = sub { bless {}, 'T::Null' }; $INC{'Plugins/Discography/DB.pm'} = 1;
     *{'Slim::Utils::Strings::cstring'}   = sub { $_[1] };   # returns the token
     *{'Plugins::Discography::Plugin::dbg'} = sub { };
     # Browse builds %GENERIC_TITLE via Sources::_norm at load — a light stub is

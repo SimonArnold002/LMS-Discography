@@ -227,7 +227,7 @@ sub _cliClearCache {
     # LIST context: the second value is the mbid actually cleared, which this
     # sub cannot derive itself when only a name was given (see clearArtistCache).
     my ($cleared, $usedMbid) = Plugins::Discography::API->clearArtistCache(
-        name => $artist, mbid => $mbid);
+        name => $artist, mbid => $mbid, artist_id => $artistId);
     $mbid = $usedMbid if $usedMbid;
     if (defined $artist && length $artist) {
         # $mbid matters: pools are scoped to the MB artist (0.43.2), so clearing

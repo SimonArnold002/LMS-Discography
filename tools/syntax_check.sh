@@ -70,7 +70,7 @@ done
 ln -sfn "$ROOT/Discography" "$S/Plugins/Discography"
 
 fail=0
-for f in Sources API Browse Settings; do
+for f in DB Sources API Browse Settings; do
   printf '%-10s ' "$f"
   if perl -I"$S" -I"$ROOT" -c "$S/Plugins/Discography/$f.pm" 2>&1 | grep -q 'syntax OK'; then
     echo OK
@@ -90,10 +90,10 @@ fi
 
 # ---------------------------------------------------------------------------
 # CACHE_VERSION must be identical in all three modules AND match install.xml.
-# Slim::Utils::Cache->new returns the EXISTING instance for a namespace and
-# ignores later args, so whichever module loads first decides the version --
-# a mismatch would silently leave stale caches behind, which is the exact
-# failure this mechanism exists to prevent.
+# DB->store() keeps the version from the FIRST call and ignores later ones, so
+# whichever module loads first decides it -- a mismatch would silently leave
+# stale caches behind, which is the exact failure this mechanism exists to
+# prevent.
 plugin_ver=$(sed -n 's|.*<version>\(.*\)</version>.*|\1|p' Discography/install.xml | head -1)
 cv=$(grep -h "use constant CACHE_VERSION" Discography/API.pm Discography/Sources.pm Discography/Browse.pm \
      | sed "s/.*=> *'\([^']*\)'.*/\1/" | sort -u)

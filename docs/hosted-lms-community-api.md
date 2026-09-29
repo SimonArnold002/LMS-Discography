@@ -1,8 +1,28 @@
 # Hosted LMS-Community API (`mai-api`) — discography spine migration
 
+> **2026-09-25: the working plan is now `docs/community-api-and-resolver-plan.md`.** This file is kept for its design detail and measurements.
+
+
 **Status:** ON HOLD (Simon, 2026-09-25) until Herger's side ships. He is away for a few weeks. We sent him THREE requests (the list is in `docs/community-api-forum-post.bbcode.txt`). (1) Release-group ALIASES on each `/discography` entry (replaces our `inc=aliases` MusicBrainz call): AGREED. (2) Release TITLES in the `?withReleases=1` releases map (lets us drop the up-to-40-page MusicBrainz release browse): expected. (3) The unknown-mbid comment: RETRACTED by Simon 2026-09-25. He is happy with the usage we described. The mbid check is ours to handle (below). No code written.
 
 **The `?mbid=` rule (verified live 2026-09-25):** a mbid the API knows overrides the name completely (name "Radiohead" + the horrorcore Madness' mbid returns him). An UNKNOWN mbid (merged-away or mis-tagged) falls back to the name and returns the most popular artist of that name, and a dummy name cannot switch that off. So: always send the mbid when we have one, and treat a reply whose top-level `mbid` differs from the one sent as a miss -> normal MusicBrainz artist path. LBF's `_hostedDiscoMap` lacks this check today (its `getArtistAliases` has it); add it when this work resumes.
+
+**MEASURED 2026-09-25 — `/discography` lists ONLY groups where the artist is named FIRST in the credit.**
+Willie Nelson (668fd73c): MusicBrainz `release-group?artist=` browse = 489 groups, hosted = 423. All 67 missing
+groups credit Willie SECOND or later ("Merle Haggard & Willie Nelson", "Waylon Jennings & Willie Nelson",
+"... feat. Willie Nelson"); 0 missing where he is first or solo. They include 11 studio albums (Pancho & Lefty,
+The Winning Hand, Seashores of Old Mexico), 24 compilations, 23 singles, 5 live. Matched by TITLE too, 60 of the
+67 are absent; the other 7 only share a title with a different group (hosted "Pancho and Lefty" is the 1982
+SINGLE, 34146cb9; the Merle Haggard & Willie Nelson ALBUM is the one missing). **Not contradicted by MAI:** MAI's
+Discography menu comes from DISCOGS (`Discogs::getDiscography` -> api.discogs.com `artists/<id>/releases`, read in
+MAI master 2026-09-25); its MusicBrainz discography is commented out, and it does not call hosted `/discography`. The Beatles: 1050 vs 1039
+(not broken down). **CORRECTION (same day, checked on the rig): the CURRENT build does not show them either.** Willie Nelson's
+page on 0.55.0 (99 rows, fetched in full) has none of Pancho & Lefty, The Winning Hand, Seashores of Old
+Mexico, Augusta, Together Again, VH1 Storytellers, Live Highwaymen. So the swap loses nothing the page shows
+today; the claim that it would was mine, untested. The `releases` map and any count taken from `/discography` have the
+same hole. **No NEW requests to Herger (Simon, 2026-09-25: "Stop asking for things"); the two pending ones (aliases, release titles) stand.** Not the same as
+the A2 entry `A COLLABORATION CAN MISS ON THE SECOND-NAMED` — that is a streaming copy failing to match; this
+is the MusicBrainz group itself missing.
 
 **What it is:** `https://api.lms-community.org` — the LMS core dev's hosted MusicBrainz /
 MusicArtistInfo REST API (`mai-api`). Cloudflare-cached (`max-age` 30d), ~90ms warm, **un-throttled**.
@@ -99,6 +119,21 @@ tail. (Benchmark: even future-dated releases already appear, because MusicBrainz
   prose (dev confirmed prose bio will NOT be added). Keep MusicArtistInfo `getBiography`.
 - **"Also a member of"** — needs MB "member of band"; the API's `relatedArtists` is last.fm-similar.
 - The **streaming resolver / matcher** — unaffected; this is metadata only.
+- **Name -> artist (`_artistMbidByName`, `getArtistCandidates`, the search list).** The hosted routes answer
+  a NAME with ONE guess (`name`, `mbid`, `aliases` only — no score, no description, no second candidate).
+  Measured 2026-09-24, 22 field names: 4 confidently WRONG (The Las -> The Las Vegas Boneheads, Rossini ->
+  Rossini Quartet, ...), re-checked live 2026-09-25. A wrong guess cannot be caught, so a miss-only
+  MusicBrainz fallback does not help. Stays on MusicBrainz: page opens by name, the "every act called X"
+  search list, and which act a search row is. Once the mbid is known, everything keyed by it can move.
+  (Ledger §A3: `safe drop-in for `_artistMbidByName``.)
+- **Collaboration links (`warmCollaborations`)** — MusicBrainz `artist-rels`; no hosted route.
+- **External links on a release page (`getReleaseGroupUrls`)** — release-group `url-rels`; the hosted
+  `/album/<title>/<artist>` links are keyed by title and a RELEASE id, not safe as an identity.
+- **Second-named releases** — `/discography` lists only groups where the artist is FIRST in the credit
+  (measured 2026-09-25, top of this file).
+
+**This section was incomplete until 2026-09-25** (it listed only the first three rows), which is why checks
+of the API against the code kept coming back clean. Check against the CODE's MusicBrainz calls, not this list.
 
 ---
 

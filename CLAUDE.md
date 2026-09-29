@@ -7,6 +7,32 @@ Long-term context: this is **Phase 1** of a bigger idea — an integrated Materi
 
 **Maintain this file.** Update it with every code change: keep the File Structure annotations, mechanics notes, and the Development Log current as part of each build. Bug-fix detail goes in the Development Log; scope changes go in Phase-1 Scope.
 
+## MUSICBRAINZ: THE PUBLIC API IS WHAT WE WORK TO, NEVER THE MIRROR (Simon, standing rule)
+
+Simon, 2026-09-25 (said many times before, never written here until now): *"Public is what will be used
+as a benchmark until we move to community api ... We can use mirror to help us work things out but
+nothing should be limited to using it. We just have to obey by rate limits. We need to also check we
+cant combine what we need in less calls."*
+
+- **Same behaviour everywhere.** A feature does the same thing on the public API as on a mirror. The ONLY
+  allowed difference is pacing (the 1 req/s courtesy gap). An `mbGap` / `_mbThrottled` branch that SKIPS
+  work instead of pacing it is a defect, whatever its comment says.
+- **The mirror is fine on Simon's system; the code must run on ANY.** Simon, 2026-09-25: *"we can use
+  mirror on my system but all code needs to run across any."* The rig can stay on its mirror. But no code
+  path may depend on one: every feature works on the public API, a mirror, and later the community API.
+  Cost and speed are judged against the public API, which is the slowest of them.
+- **Slow on public means fewer calls, not a gate.** Before adding a request, find whether one already
+  made carries the data (aliases inline on search hits, `inc=`, one combined query), and combine.
+- **Allowed:** a mirror falling back to the public API when it errors or its index is unbuilt. That
+  protects a mirror; it does not change public behaviour.
+- **Known violations, OPEN (found 2026-09-25):** `API::filterRowsWithContent` returns early on the public
+  API (`return $cb->($rows, 0) if $class->mbGap(1.1)`, added 0.44.7), so public users get no dead-end row
+  hiding, no alias fold, no library attach by tag; and `Browse`'s second service search under the
+  canonical name is skipped there (`if (...->mbGap(1.1))`, 0.45.2). Both entries call this
+  "throttle-gated" / "the plugin's established policy"; **that was never Simon's decision** — it was
+  added on top of what he asked for and then cited as policy.
+- Holds until the move to the community API (`docs/hosted-lms-community-api.md`).
+
 ## Review Ledger — READ THIS BEFORE REPORTING ANY FINDING
 
 **Why this exists.** Reviews kept re-reporting things that had already been
@@ -93,6 +119,7 @@ because line numbers rot on the next edit.
 | Spotify paging at 50 still fanning out in parallel inside Spotty | A3 | `WRONG at limit 50` |
 | A cache-served Spotty page clearing `hasError429` | A3 | `cleared only by a REAL network response` |
 | Search results built from the services first, MusicBrainz only as a same-name section | A2 | `THE SEARCH LIST IS MUSICBRAINZ-FIRST` |
+| Anything that works only on a mirror, or skips work on the public API ("throttle-gated") — a DEFECT, not policy | top | `THE PUBLIC API IS WHAT WE WORK TO` |
 
 **Two standing rules that kill most repeat findings:**
 
@@ -396,7 +423,9 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   `_cover` (tiles prefer `_cover` over CAA art), and the row keeps the placeholder as its icon. Done in the Spotify
   code, not the shared `_decorate`: no other service sends a placeholder that way.
 
-- **THE SEARCH LIST IS MUSICBRAINZ-FIRST** (`Browse::_mbFirstRows`, `API::searchArtistCandidates`,
+- **THE SEARCH LIST IS MUSICBRAINZ-FIRST** — **DECISION STANDS, BUT NOT IN THE CODE (2026-09-25):** the 0.56.0/0.57.0
+  working tree that built it was reverted on Simon's instruction (kept in `git stash`, "0.56.0/0.57.0 working tree").
+  Today's code is still service-first. To be REDONE, to the public-API rule at the top of this file. (`Browse::_mbFirstRows`, `API::searchArtistCandidates`,
   `_withMbCandidates`; Simon, 2026-09-25: *"It should be searching MB first to get the discography then
   streaming to make matches."*). The rows are the MusicBrainz artists whose NAME or ALIAS equals the query
   (after `_nameKey`), in MB score order; the service/library rows attach to them by the mbid the row filter
@@ -471,7 +500,7 @@ transcript will be rediscovered as a finding within days.
 - **Resolver = trimmed port** of the LBF `_findPlayable` engine (the same port Pitchfork Reviews proved) — NOT a runtime dependency on LBF. New layer on top: `_resolveArtistBatch` — one artist-only search per service, matched against ALL release groups in a single pass (≈1 API call per service per artist, not per album). Known limit: service search caps ~50 albums; the v1.1 fix is the services' artist-discography endpoints.
 - **Tiles**: render instantly from MB data; playable via **resolve-on-play**; Material **emblems** appear opportunistically from cache (`extid` prefixed `qobuz:`/`tidal:`/`deezer:`). Drill-in shows every version: Local (real `album_id`) + per-service matches + "View on MusicBrainz" weblink.
 - **Settings live in the plugin** (not Material settings): default sort (newest/oldest), service priority (`svc_priority_*`, 0 = never, LBF convention), release types shown, hide-unmatched.
-- **Cache keys**: `dsc:mbid:<norm-artist>` 30d · `dsc:rg:<mbid>:vN` 14d · `dsc:cand:vN:<svc>:<norm-artist>` 3d found / 1d empty / 1h error · `dsc:urls:` · `dsc:bio:` · `dsc:rev:` · `dsc:mbmirror:v1` 1d (auto-detected same-host MB mirror base; URL=found, `''`=probed-none) · `dsc:asearch:2:<lc query>` 10min (merged artist-search results — written ONLY when every source settled OK, so a service timeout can't pin a degraded list; see 0.42.2). There is **no match-result cache** — candidates are cached RAW and matching runs live per render, so a matcher change takes effect immediately and only needs `dsc:cand` bumped when the cached candidate SHAPE changes. No background warming while a library scan runs.
+- **Cache keys** (stored in the plugin's own `DB.pm`, not Slim::Utils::Cache, since the SQLite conversion; the key names are unchanged): `dsc:mbid:<norm-artist>` 30d · `dsc:rg:<mbid>:vN` 14d · `dsc:cand:vN:<svc>:<norm-artist>` 3d found / 1d empty / 1h error · `dsc:urls:` · `dsc:bio:` · `dsc:rev:` · `dsc:mbmirror:v1` 1d (auto-detected same-host MB mirror base; URL=found, `''`=probed-none) · `dsc:asearch:2:<lc query>` 10min (merged artist-search results — written ONLY when every source settled OK, so a service timeout can't pin a degraded list; see 0.42.2). There is **no match-result cache** — candidates are cached RAW and matching runs live per render, so a matcher change takes effect immediately and only needs `dsc:cand` bumped when the cached candidate SHAPE changes. No background warming while a library scan runs.
 
 ## Build Order / Status
 1. ✅ **Skeleton + entry point** (v0.1.1, 2026-07-09) — plugin registers, custom action written, placeholder feed proves the `artist_id` handoff end-to-end. **VERIFIED on the server**: artist context menu → skeleton view with DB-resolved artist name ("13th Floor Elevators").
@@ -507,10 +536,11 @@ curl -s http://plex:9000/jsonrpc.js -d '{"id":1,"method":"slim.request","params"
 ```
 Discography/
 ├── Plugin.pm       # OPMLBased entry point (tag 'discography', is_app); prefs; canonical `dbg` (API/Browse/Sources delegate); Material custom action REGISTERED once (`_registerMaterialActions`) + old actions.json entry stripped at startup (`_clearMaterialActions`); Settings under WEBUI; registers the `imageproxy/dsc/artist/<name>` artwork handler
-├── Browse.pm       # topLevel ($VAR guard, %lastCtx stash+expand flags+page counts+visibility snapshot); app-root view (_rootView: _coverCollageRow responsive random-album-cover banner, About prose, search section, "Works best with" as ONE strip of plugin tiles (badge + name + tick/cross, role as tooltip) w/ badgeSrc imageproxy normaliser); global artist search (_searchRow type=search item in the app root ONLY; the artist page's Options carries _searchButtonRow `act:search`, which opens _rootView; go action overridden w/ search:__TAGGEDINPUT__ fixedParams -> topLevel search-param dispatch GATED on item_id being absent, so a positional walk still reaches the row's own coderef; _artistSearchView w/ 10-min merged cache, only written when every source settled OK; the list is MusicBrainz-first (_mbFirstRows, 0.56.0): MB artists by name or alias with the service/library rows joined by mbid, _searchResultRow name-drills, _mbCandidateRow mbid-drills); grouped list (bio header, Options/type/library-extras sections, Albums / Singles view toggle _viewToggleItem `act:view:<to>` (Singles view = EPs + Singles, a true tab; per-player ctx `view`), sort+Refresh, release sections as tile strips on a strip-capable Material (`header-strip`, `_useStrips`/`_stripsOn`, layout_albums/layout_singles), service badge via row `extid` (`_extid`), _pageSection 30-at-a-time Show more/less, "Also a member of" band links + "Similar artists" name-drill links w/ artist-photo thumbnails, both second-load, similar deduped against bands by _dropBandDupes — Material keys app rows by TITLE, so a repeated name loses a row); artist artwork resolver (artistImageProxy handler for `imageproxy/dsc/artist/<name>`: MAI local files -> MAI online picture w/ Deezer placeholder HEAD probe -> live service photo -> person icon, verdict cached 30d); release detail (review w/ inline expand, version rows w/ Show-other-versions toggle, MB links); _proseRow avatar-column indent; bio/review prose ported from LBF (_cleanBio HTML->structure, _bioParagraphs heading/bullet/paragraph parser, _proseBlock one styled row per block, _proseSection shared collapse/expand shape, _cleanProse the one fetch-side entry point)
-├── API.pm          # Async MusicBrainz (base = mb_base_url pref, mirror-aware _mbBase/_mbGap): artist MBID (library tag first, MB search score>=90), searchArtistCandidates (the search list's MB artists, name OR alias, 0.56.0), paginated release-group browse, url-rels links; filterRowsWithContent (dead-end/empty-verdict row filter + alias fold, then the 0.51.3 tag attach: a kept row with no artist_id is claimed by its resolved mbid — AFTER the fold, so survivor choice is unchanged; among several tagged contributors the one OWNING the most albums wins, and an id another kept row already carries is never handed to a second row); peekOfficial/warmOfficial/clearOfficial + _isOfficial (bootleg filter: artist-wide status pass -> {rg=>official?} + {release=>rg} maps, fail-open); peekLocalReleaseMap/warmLocalReleases (targeted release->rg for library albums); peekBands/warmBandMembers (member-of-band); CAA image URLs; caching
+├── Browse.pm       # topLevel ($VAR guard, %lastCtx stash+expand flags+page counts+visibility snapshot); app-root view (_rootView: _coverCollageRow responsive random-album-cover banner, About prose, search section, "Works best with" as ONE strip of plugin tiles (badge + name + tick/cross, role as tooltip) w/ badgeSrc imageproxy normaliser); global artist search (_searchRow type=search item in the app root ONLY; the artist page's Options carries _searchButtonRow `act:search`, which opens _rootView; go action overridden w/ search:__TAGGEDINPUT__ fixedParams -> topLevel search-param dispatch GATED on item_id being absent, so a positional walk still reaches the row's own coderef; _artistSearchView w/ 10-min merged cache, only written when every source settled OK; the list is SERVICE-first (streaming + library rows, then the MusicBrainz same-name section; the MusicBrainz-first redo is not in the code, see `THE SEARCH LIST IS MUSICBRAINZ-FIRST`), _searchResultRow name-drills, _mbCandidateRow mbid-drills); grouped list (bio header, Options/type/library-extras sections, Albums / Singles view toggle _viewToggleItem `act:view:<to>` (Singles view = EPs + Singles, a true tab; per-player ctx `view`), sort+Refresh, release sections as tile strips on a strip-capable Material (`header-strip`, `_useStrips`/`_stripsOn`, layout_albums/layout_singles), service badge via row `extid` (`_extid`), _pageSection 30-at-a-time Show more/less, "Also a member of" band links + "Similar artists" name-drill links w/ artist-photo thumbnails, both second-load, similar deduped against bands by _dropBandDupes — Material keys app rows by TITLE, so a repeated name loses a row); artist artwork resolver (artistImageProxy handler for `imageproxy/dsc/artist/<name>`: MAI local files -> MAI online picture w/ Deezer placeholder HEAD probe -> live service photo -> person icon, verdict cached 30d); release detail (review w/ inline expand, version rows w/ Show-other-versions toggle, MB links); _proseRow avatar-column indent; bio/review prose ported from LBF (_cleanBio HTML->structure, _bioParagraphs heading/bullet/paragraph parser, _proseBlock one styled row per block, _proseSection shared collapse/expand shape, _cleanProse the one fetch-side entry point)
+├── API.pm          # Async MusicBrainz (base = mb_base_url pref, mirror-aware _mbBase/_mbGap): artist MBID (library tag first, MB search score>=90), paginated release-group browse, url-rels links; filterRowsWithContent (dead-end/empty-verdict row filter + alias fold, then the 0.51.3 tag attach: a kept row with no artist_id is claimed by its resolved mbid — AFTER the fold, so survivor choice is unchanged; among several tagged contributors the one OWNING the most albums wins, and an id another kept row already carries is never handed to a second row); peekOfficial/warmOfficial/clearOfficial + _isOfficial (bootleg filter: artist-wide status pass -> {rg=>official?} + {release=>rg} maps, fail-open); peekLocalReleaseMap/warmLocalReleases (targeted release->rg for library albums); peekBands/warmBandMembers (member-of-band); CAA image URLs; caching
 ├── Sources.pm      # Source engine: Q/T/D adapters (artist-FIRST candidate fetch, per-adapter query_enc, shared _renderAlbums + _albumArray envelope unwrap), Local pseudo-source (sync albums query, db:album.id play; localAlbums resolves IDENTITY FIRST — localArtistsByMbid/localArtistIdsByMbid read the library's own Contributor.musicbrainz_id tag, ALL matching contributors, before the name ladder; an explicit artist_id still outranks both UNLESS it performs on no album and the page builder opts in via `Browse::_idFallback` — then tag, then name, name never on a shared-name page); localTracks (the track-link pool: Various Artists compilation tracks ONLY, performance roles checked on the per-role ids from `tags:S` because `titles` ignores role_id, same empty-id fallback gated on owning no album), matcher (fleet-synced), matchesFor/peekPool+peekMatches/claimedLocalIds, LL favurl handshake; global artist search (searchArtists parallel per-service artist-type legs + Local CLI leg, cb(\%bySvc, \%failed) — the 2nd arg names services that ERRORED/TIMED OUT, since a failure settles as an empty list and callers must not persist an incomplete set; mergeArtistHits pure norm-keyed dedupe/rank + relevance gate vs the typed query, rows carry the service's own artist photo); artistImage/_svcArtistImage/isPlaceholderImage (live per-service artist photo via each plugin's OWN url builder, priority order; an exact-name photo ends the walk, a token-subset photo is only a fallback when NO service knows the exact name, and an exact entity without a photo vetoes it; Deezer placeholders in both forms, md5('') and the empty `/images/artist//` hash; 30d cache); serviceStatus takes an OPTIONAL pre-built adapters list (omitted = probe); randomAlbumCovers (app-root banner, sort:random — measured ~20ms/2900 albums, cheap)
 ├── Settings.pm     # Web settings: source priorities (detection), view options (type checkboxes->CSV), release page, integration
+├── DB.pm           # the plugin's OWN SQLite store, <cachedir>/discography.db (takes over the file LMS kept for the old cache namespace; migration 1 drops LMS's `cache` table). store(CACHE_VERSION) answers get/set/remove like Slim::Utils::Cache, so no call site changed. Tables: kv (every cache family; emptied when CACHE_VERSION changes, as the LMS namespace was), mbid (artist name -> artist mbid `dsc:mbid:`, owned release -> release group `dsc:rel2rg:`; NOT emptied by a build), artist (one row per artist mbid: canonical name `dsc:mbname:` + aliases `dsc:alias:`, each with its own key version, time and expiry — LBF's shape; NOT emptied by a build), meta (cache_version); all routed by key prefix. expires_at is an absolute epoch computed in Perl, 0 = never. Expired rows swept at open AND every 6h on a timer (PFR's kvSweep lesson); rows of an old key version in the kept tables retired at open (keepCurrent, fed by API's own key builders). Degrade-never-die. Suite: tools/t_db.pl
 ├── install.xml     # <extension> + <optionsURL>; version lives here; repo.xml (repo root) points at the dev zip
 ├── strings.txt     # PLUGIN_DISCOGRAPHY_* UI strings
 └── HTML/EN/plugins/Discography/
@@ -1111,7 +1141,11 @@ are sha1-pinned inside the script with a reason, and FAIL the check if they chan
 conscious re-pin (`--print-hashes` prints current hashes). After aligning: bump every touched
 repo's plugin version AND its match/decision cache versions (LBF: `lbf:stream` + `lbf:track` +
 `lbf:pl:resolved` — ALL layers; PFR: `pfr:stream`; DSC: `dsc:cand` only if the cached candidate
-shape changed — matching runs live there; LL: none — matching is live), rebuild zips + repo.xml
+shape changed — matching runs live there — AND `API::MBID_CACHE_V` whenever `_norm` or the artist-name
+resolver changes, because resolved artist ids are kept across builds in `DB.pm`'s mbid table (Simon,
+2026-09-25: "a resolve fix needs a cache bump", as in the other plugins) — and likewise the key version of
+any other kept family whose PARSING changes (`_mbNameKey` `dsc:mbname:1`, `_aliasKey` `dsc:alias:2`,
+`_rel2rgKey` `dsc:rel2rg:v1`); old-version rows are then retired at startup; LL: none — matching is live), rebuild zips + repo.xml
 sha. Never leave a matcher fix in one repo "to port later" — that is exactly how the 2026-07
 drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
@@ -1127,7 +1161,77 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
-### 0.56.0 (2026-09-25) — search is MUSICBRAINZ-FIRST — code + suites done, NOT BUILT, not installed
+### 0.56.0 (2026-09-25) — the cache moves to Discography's own SQLite store — BUILT, not installed
+- Zip sha1 `fa642d44728562c31610a94caf294cf2d419f23e`; CACHE_VERSION 0.56.0 (empties `kv`; the mbid and artist tables are kept);
+  repo.xml bumped with it. The number was first written for the MusicBrainz-first search work, which was never
+  built and is in `git stash` (its entry below is relabelled).
+- **Simon: "we need to convert to sql the same as the others"**, reusing the name `discography.db`, "check all
+  tables are copied over and we need a new one for storing mbids". The fleet decision this follows is LBF
+  `docs/caching-rework.md` §2.1 ("Everything moves out of Slim::Utils::Cache into a plugin-owned SQLite database,
+  as PFR did"); PFR, LBF, Listen to Later and Listening History already had a `DB.pm`, Discography had none.
+- **The file name.** `discography.db` WAS the LMS cache file for the `discography` namespace (LMS 9.1
+  `DbCache::_get_dbfile`: `<cachedir>/<namespace>.db`). Nothing in it is kept. The switch is complete in this one
+  change — no module calls `Slim::Utils::Cache` any more — because LMS's cache code `unlink`s the whole file when it
+  cannot open it, so the two must never share it. Migration 1 drops LMS's `cache` table and `expiry` index. (On
+  Windows LMS hashed namespaces over 8 characters, so the old cache file there had another name.)
+- **All 22 cache families mapped, none dropped.** kv: `mbsearchok`, `mbmirror`, `rgcount`, `empty`, `acand`, `rg`,
+  `collabs`, `bands`, `collabcand`, `rgo`, `urls`, `cand`, `svcartimg`, `bio`, `rev`, `artimg`, `similar`,
+  `asearch`. **mbid table (new):** `dsc:mbid:` (artist name -> artist mbid, kind `artist`) and `dsc:rel2rg:` (owned
+  release -> release group, kind `release`). **artist table (new, LBF's shape):** one row per artist mbid holding
+  MusicBrainz's canonical name (`dsc:mbname:`) and aliases (`dsc:alias:`), each with its own key version, time and
+  expiry, so one answer never re-ages the other and a bumped key version is not served. All routed by key prefix
+  inside `DB.pm`; same values ('' = confirmed miss), same lifetimes (30d found / 1h miss; 14d releases; 30d
+  name/aliases).
+- **Behaviour kept:** every key, value and lifetime as before; `kv` is emptied when CACHE_VERSION changes (the old
+  namespace wipe, so every build still clears caches). **One change:** the mbid and artist tables are NOT emptied
+  by a build. A resolve fix therefore needs `API::MBID_CACHE_V` bumped, as a resolve fix needs a cache bump in the
+  other plugins (recorded in the fleet sync rule below); Refresh / `clearcache` still remove the rows.
+- **MISSED IN MY FIRST CUT, caught before any build:** the canonical name and aliases were left in `kv`. A name
+  lookup writes the id AND the canonical name, and a cache HIT on the id (`_artistMbidByName`) returns without
+  writing the name again. So with the id kept and the name wiped, the first page after every build searched the
+  services without MusicBrainz's name — British Sea Power without Qobuz, the 0.45.0 case — until the band lookup
+  refilled it (`%mbNameMem` does not help: an install restarts LMS). Both now live beside the id.
+- **Key identity** matches what LMS's cache gave (it MD5'd the key, which downgrades Latin-1 characters to bytes):
+  `_key` downgrades, and encodes only what is wider. Values are Storable-frozen, so a wide-character value no
+  longer dies (the 0.51.2 encode/decode at the call sites is kept and still round-trips).
+- **Suites:** every suite stubs `Plugins::Discography::DB::store` beside its old `Slim::Utils::Cache::new` stub
+  (44 stubs, one mechanical line each, count checked) and marks `DB.pm` loaded, so no suite opens a real file. All
+  46 give the same counts as before the change. **New `tools/t_db.pl` (92)** runs the REAL `DB.pm` on a temp
+  cachedir: takes over an LMS-format file, all 22 families round-trip in the right table, a 90-day lifetime is kept,
+  expiry + sweep, version wipe (kv emptied, mbid kept, first version wins), key identity incl. Кино, degrade on an
+  unopenable path, and the real API writing and clearing its mbid key. **Mutation-tested six ways, all red:** no
+  mbid routing (11), wipe clears mbid (1), no wipe (1), raw lifetime (1), LMS table kept (1), key encoded instead of
+  downgraded (1 — caught only after fixing a vacuous fixture: `"\x{e9}"` alone is not a character string); then three more for the artist table: name+aliases left in kv (9), key version not checked (2), sweep clears the whole row (1).
+  `tools/syntax_check.sh` compiles `DB.pm` too; clean.
+- **Code review of the conversion (2026-09-25), three regressions, all fixed before the build:**
+  1. **Refresh / `clearcache` no longer re-pulled everything.** `clearArtistCache` never cleared MusicBrainz's name
+     (`dsc:mbname`), aliases (`dsc:alias`) or the owned releases' groups (`dsc:rel2rg`); each build used to, and
+     now those are kept. It now clears all three: name + aliases by mbid (plus the in-process `%mbNameMem` memo,
+     which would otherwise keep answering, and `%nameRefetched`, which would block the refetch this run), and the
+     release map for the albums the page owns — asked of `localAlbums` with the page's `artist_id` / name / mbid,
+     which the Refresh row and the CLI now pass (`artist_id` added to both).
+  2. **Expired rows were collected only at LMS start.** PFR's `kvSweep` note: a sweep on open fires once per
+     server start, and the rows needing collection are the ones nothing reads again, so the table grows with
+     uptime (hidden on Simon's rig by the daily backup restart). The LMS cache this replaced purged on its own
+     cycle. `DB.pm` now sweeps every `SWEEP_INTERVAL` (6h) on a `Slim::Utils::Timers` timer, re-armed each tick.
+  3. **Rows from an old key version were left until they expired.** `DB->keepCurrent` takes the CURRENT prefix of
+     each kept family, which API.pm reads from its own key builders (`_mbidKey('')` = `dsc:mbid:2:` …), and
+     `_retire` deletes older-version rows at open (PFR `_retireOldStreamKeys` / LBF `retirePrefixes`). Guarded by
+     `->can` at the call because the suites load API against a stubbed store.
+  - Also from the review, not code: the fleet sync rule now names the other kept families' key versions.
+  - Left as found, stated: a corrupt `discography.db` leaves the store unavailable until the file is deleted
+    (LMS's cache used to delete and rebuild it; PFR and LBF behave like this); on Windows the old hashed cache file
+    stays in the cache folder unused; a name "not found" answer now survives a build for up to 1 hour.
+  - `t_db.pl` 92 -> 108 (§8 timer sweep, §9 retire, §10 retire driven by the real API's key builders, §11 Refresh
+    through the real API incl. the memo). Nine mutants of the three fixes, all red — two only after fixing my own
+    tests: the fired timer callback was left in the list (so "one timer armed" held without a re-arm), and a
+    missing timer crashed the suite instead of reporting.
+- **LIVE CHECK after install:** log line `dsc: store emptied for version <v>` at the first page; `sqlite3
+  <cachedir>/discography.db '.tables'` shows `kv mbid meta` and no `cache`; an artist page fills `mbid` (`SELECT
+  kind, lookup, mbid FROM mbid`); Refresh on that artist removes its row; a second build keeps the `mbid` rows and
+  empties `kv`.
+
+### (never built — reverted 2026-09-25, kept in `git stash`) — search is MUSICBRAINZ-FIRST. Written as "0.56.0"; that number went to the SQLite-store build above
 - **SUPERSEDED BEFORE BUILD — DO NOT BUILD THIS AS IS (2026-09-25).** Simon: search and the artist-link path must
   share ONE resolver, not a second lookup. Measuring the design against all 1,117 library album artists on the
   mirror then found a regression in it: ordering name-or-alias matches by MusicBrainz SCORE puts nicknames and

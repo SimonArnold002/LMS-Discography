@@ -22,18 +22,17 @@ use strict;
 
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
-use Slim::Utils::Cache;
 use Slim::Utils::PluginManager;
 use Slim::Utils::Timers;
 use Slim::Control::Request;
 
 my $log   = Slim::Utils::Log->logger('plugin.discography');
 my $prefs = preferences('plugin.discography');
-# Dedicated, version-scoped cache namespace -- see the note in API.pm.
+# The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
-use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.55.1';
-my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
+use Plugins::Discography::DB;
+use constant CACHE_VERSION => '0.56.0';
+my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
 

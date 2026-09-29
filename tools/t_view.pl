@@ -30,6 +30,7 @@ BEGIN {
     *{'Slim::Utils::Log::logger'}        = sub { bless {}, 'T::Null' };
     *{'Slim::Utils::Prefs::preferences'} = sub { bless {}, 'T::Prefs' };
     *{'Slim::Utils::Cache::new'}         = sub { bless {}, 'T::Cache' };
+    *{'Plugins::Discography::DB::store'} = sub { bless {}, 'T::Cache' }; $INC{'Plugins/Discography/DB.pm'} = 1;
     *{'Slim::Utils::Strings::cstring'}   = sub {
         my $t = $_[1];
         return 'Showing %s (tap for %s)' if $t eq 'PLUGIN_DISCOGRAPHY_SHOWING';

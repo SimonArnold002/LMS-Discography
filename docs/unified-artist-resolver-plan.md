@@ -1,5 +1,8 @@
 # One artist resolver — plan (rewritten 2026-09-25)
 
+> **2026-09-25: the working plan is now `docs/community-api-and-resolver-plan.md`.** This file is kept for its design detail and measurements.
+
+
 Status: PLAN, no code changed. The previous version (four evidence tiers, streaming-evidence ranking, renaming the page after it opened) went
 beyond the brief and is withdrawn; a copy is in the session scratchpad only.
 

@@ -42,6 +42,7 @@ BEGIN {
     no strict 'refs';
     *{'Slim::Utils::Log::logger'}          = sub { bless {}, 'T::Null' };
     *{'Slim::Utils::Cache::new'}           = sub { bless {}, 'T::Null' };
+    *{'Plugins::Discography::DB::store'} = sub { bless {}, 'T::Null' }; $INC{'Plugins/Discography/DB.pm'} = 1;
     *{'Slim::Utils::Prefs::preferences'}   = sub { bless {}, 'T::Prefs' };
     *{'Plugins::Discography::Plugin::dbg'} = sub { };
     *{'Slim::Utils::Strings::cstring'} = sub { $_[1] };
@@ -374,6 +375,7 @@ our @SET;
 {
     no strict 'refs'; no warnings 'redefine';
     *{'Slim::Utils::Cache::new'} = sub { bless {}, 'T::RecCache' };
+    *{'Plugins::Discography::DB::store'} = sub { bless {}, 'T::RecCache' }; $INC{'Plugins/Discography/DB.pm'} = 1;
     delete $INC{'Plugins/Discography/Sources.pm'};
     local $SIG{__WARN__} = sub {};
     require Plugins::Discography::Sources;

@@ -43,6 +43,7 @@ BEGIN {
     # A real (in-memory) cache, so the fetch sites' key and stored shape can be
     # asserted. DbCache stores OCTETS; _cacheSetText encodes before set.
     *{'Slim::Utils::Cache::new'}         = sub { bless {}, 'T::Cache' };
+    *{'Plugins::Discography::DB::store'} = sub { bless {}, 'T::Cache' }; $INC{'Plugins/Discography/DB.pm'} = 1;
     # MAI's NOT_FOUND string, English, as MAI's strings.txt carries it and as the
     # live server returned it (2026-09-24). $main::NO_MAI_STRINGS simulates MAI's
     # strings being absent.

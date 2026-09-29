@@ -38,6 +38,7 @@ BEGIN {
     *{'Slim::Utils::Log::logger'}          = sub { bless {}, 'T::Null' };
     *{'Slim::Utils::Prefs::preferences'}   = sub { bless {}, 'T::Null' };
     *{'Slim::Utils::Cache::new'}           = sub { bless {}, 'T::Null' };
+    *{'Plugins::Discography::DB::store'} = sub { bless {}, 'T::Null' }; $INC{'Plugins/Discography/DB.pm'} = 1;
     *{'Plugins::Discography::Plugin::dbg'} = sub { };
     push @{'Slim::Utils::Log::ISA'},   'Exporter';
     push @{'Slim::Utils::Prefs::ISA'}, 'Exporter';

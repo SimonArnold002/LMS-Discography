@@ -17,7 +17,6 @@ use strict;
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use Slim::Utils::Strings qw(cstring);
-use Slim::Utils::Cache;
 use Slim::Utils::PluginManager;
 use Slim::Utils::Timers;
 use Slim::Networking::SimpleAsyncHTTP;
@@ -31,11 +30,11 @@ use Plugins::Discography::Sources;
 
 my $log   = Slim::Utils::Log->logger('plugin.discography');
 my $prefs = preferences('plugin.discography');
-# Dedicated, version-scoped cache namespace -- see the note in API.pm.
+# The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
-use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.55.1';
-my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
+use Plugins::Discography::DB;
+use constant CACHE_VERSION => '0.56.0';
+my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
 use constant REVIEW_EMPTY_TTL =>  1 * 86400;
@@ -3106,16 +3105,19 @@ sub _refreshItem {
         nextWindow  => 'refresh',
         id          => 'act:refresh',
         itemActions => _listItemActions($opts, 'act:refresh'),
-        passthrough => [{ mbid => $mbid, artist => $opts->{artist} }],
+        passthrough => [{ mbid => $mbid, artist => $opts->{artist},
+                          artist_id => $opts->{artist_id} }],
         url         => sub {
             my ($c, $cb, $a, $pass) = @_;
             # Full "re-check MusicBrainz": drop EVERY cached layer for this
             # artist — resolution (mbid + '' miss sentinel), release groups,
-            # bootleg map, band members, bio, and streaming candidates — so the
+            # bootleg map, band members, bio, MusicBrainz's name and aliases,
+            # the owned releases' groups, and streaming candidates — so the
             # re-entry re-pulls the lot. (A person view re-resolves by name; a
             # band view keeps its stashed mbid, so it re-pulls by mbid.)
             Plugins::Discography::API->clearArtistCache(
-                name => $pass->{artist}, mbid => $pass->{mbid});
+                name => $pass->{artist}, mbid => $pass->{mbid},
+                artist_id => $pass->{artist_id});
             Plugins::Discography::Sources->clearCandidates($pass->{artist}, $pass->{mbid})
                 if defined $pass->{artist} && length $pass->{artist};
             $cb->({ items => [] });

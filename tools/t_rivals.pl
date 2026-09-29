@@ -49,6 +49,7 @@ BEGIN {
     no strict 'refs';
     *{'Slim::Utils::Log::logger'}          = sub { bless {}, 'T::Null' };
     *{'Slim::Utils::Cache::new'}           = sub { bless {}, 'T::Null' };
+    *{'Plugins::Discography::DB::store'} = sub { bless {}, 'T::Null' }; $INC{'Plugins/Discography/DB.pm'} = 1;
     *{'Slim::Utils::Prefs::preferences'}   = sub { bless {}, 'T::Prefs' };
     *{'Slim::Utils::Strings::cstring'}     = sub { $_[1] };
     *{'Slim::Utils::Strings::string'}      = sub { $_[0] };

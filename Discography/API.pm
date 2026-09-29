@@ -19,7 +19,6 @@ use warnings;
 use Slim::Networking::SimpleAsyncHTTP;
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
-use Slim::Utils::Cache;
 use Slim::Utils::PluginManager;
 use Slim::Utils::Timers;
 # LMS timers fire against a HI-RES clock (`_makeTimer` does
@@ -38,12 +37,13 @@ use Plugins::Discography::Sources;
 my $log   = logger('plugin.discography');
 my $prefs = preferences('plugin.discography');
 # ---------------------------------------------------------------------------
-# DEDICATED CACHE NAMESPACE, VERSIONED BY THE PLUGIN VERSION.
-#
-# Slim::Utils::Cache->new($namespace, $version) CLEARS the whole namespace when
-# the version string changes (verified in LMS 9.1 source: "empty existing cache
-# if version number is different"). So bumping the plugin version now wipes
-# every dsc: cache automatically.
+# THE STORE: Discography's own SQLite file (DB.pm), not Slim::Utils::Cache.
+# It answers get / set / remove exactly as the cache did, so no call site
+# changed. Its `kv` table is EMPTIED WHENEVER CACHE_VERSION CHANGES, which is
+# what Slim::Utils::Cache->new($namespace, $version) did before (LMS 9.1: "empty
+# existing cache if version number is different"), so bumping the plugin version
+# still wipes every dsc: cache. The artist-mbid and release-group families live
+# in its `mbid` table instead, which a build does not empty (see DB.pm).
 #
 # WHY (Simon, 2026-07-22: "on all new builds whilst still in dev we clear the
 # cache as its caught us out too many times now"): a correct fix repeatedly
@@ -53,12 +53,19 @@ my $prefs = preferences('plugin.discography');
 # could not fire for any artist visited before the upgrade.
 #
 # CACHE_VERSION MUST BE IDENTICAL IN API.pm, Sources.pm AND Browse.pm -- the
-# first module to construct the namespace wins (Cache::new returns the existing
-# instance for a namespace and ignores later args). tools/syntax_check.sh
-# asserts all three agree and match install.xml.
-use constant CACHE_NS      => 'discography';
-use constant CACHE_VERSION => '0.55.1';
-my $cache = Slim::Utils::Cache->new(CACHE_NS, CACHE_VERSION);
+# first module to call DB->store() sets it and later calls are ignored.
+# tools/syntax_check.sh asserts all three agree and match install.xml.
+use Plugins::Discography::DB;
+use constant CACHE_VERSION => '0.56.0';
+my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
+# The families DB.pm keeps across builds, by their CURRENT key prefix, so rows
+# written under an older key version are retired at open. Taken from the key
+# builders themselves: bumping a version there is all it takes. (`can`: the
+# suites load this module against a stubbed store with no DB.pm behind it; in
+# LMS DB.pm ships in the same zip, so the call always runs.)
+Plugins::Discography::DB->keepCurrent(
+    _mbidKey(''), _rel2rgKey(''), _mbNameKey(''), _aliasKey(''))
+    if Plugins::Discography::DB->can('keepCurrent');
 
 # MB's canonical artist name, remembered in-process as well as cached — the
 # cached copy was measured MISSING while the alias list written by the same
@@ -2279,7 +2286,34 @@ sub clearArtistCache {
         # again", and a stale "nothing here" would keep the artist's search row
         # hidden however many times the user asked.
         $cache->remove(_emptyKey($mbid));    push @cleared, 'empty';
+        # MusicBrainz's name and aliases for this artist. The store keeps them
+        # across builds (DB.pm's artist table), so a build no longer re-pulls
+        # them and Refresh must — an alias edited in MusicBrainz is exactly what
+        # "look again" is for. The in-process memo and the once-per-run recovery
+        # bound go too, or the memo would keep answering with the old name and
+        # warmArtistAliases would refuse to fetch it again this run.
+        $cache->remove(_mbNameKey($mbid));
+        $cache->remove(_aliasKey($mbid));
+        delete $mbNameMem{$mbid};
+        delete $nameRefetched{$mbid};
+        push @cleared, 'name', 'aliases';
     }
+
+    # Owned release -> release group, for the albums this artist's page shows.
+    # Kept across builds too (DB.pm's mbid table), and keyed by RELEASE, so the
+    # artist's own keys do not reach it: ask the library which albums it owns
+    # (the same lookup the page makes, artist_id then tag then name) and clear
+    # each one's entry.
+    my $owned = eval {
+        Plugins::Discography::Sources->localAlbums($a{artist_id}, $name, $mbid)
+    } || [];
+    my $nrel = 0;
+    for my $al (@$owned) {
+        next unless $al->{_mbid};
+        $cache->remove(_rel2rgKey($al->{_mbid}));
+        $nrel++;
+    }
+    push @cleared, "releases($nrel)" if $nrel;
     _dbg("clearArtistCache name='" . ($name // '') . "' mbid='" . ($mbid // '')
         . "' -> " . (join(',', @cleared) || 'nothing'));
     # The RESOLVED mbid is returned in list context, because the caller cannot
