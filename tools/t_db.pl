@@ -416,7 +416,7 @@ my %FAMILY = (
     {
         no warnings 'redefine'; no strict 'refs';
         *{'Plugins::Discography::Sources::localAlbums'} = sub {
-            @localArgs = @_[1 .. 3];
+            @localArgs = @_[1 .. 4];
             return [ { _mbid => 'rel-mine' } ];
         };
         *{'Plugins::Discography::API::from_json'} = sub { $JSON };
@@ -438,10 +438,35 @@ my %FAMILY = (
        "11: ...and leaves another artist's release alone");
     ok(($localArgs[0] // '') eq '7' && ($localArgs[1] // '') eq 'Some Artist' && ($localArgs[2] // '') eq 'm-r',
        '11: the owned albums are asked for with artist_id, name and mbid (as the page asks)');
+    # The page passes its id fallback (Browse::_idFallback); without it an id that
+    # performs on no album (The B-52's composer credit) found nothing to clear.
+    ok(ref $localArgs[3] eq 'HASH' && ($localArgs[3]{fallback} // '') eq 'name',
+       "11: ... with the id fallback in 'name' mode (a superset of the page's albums)");
 
     $JSON = { name => 'New Name', aliases => [] };
     $API->warmArtistAliases('m-r', sub {});
     ok(($API->peekArtistName('m-r') // '') eq 'New Name', '11: the next lookup re-pulls the new name');
+}
+
+# 11b. An artist_id that performs on NO album (The B-52's composer credit): the
+#      page finds its albums only through the id fallback, so Refresh must too,
+#      or those albums' groups outlive every Refresh (a stale `reid:` answer
+#      then stays for REL2RG_TTL). The stub answers as localAlbums does for such
+#      an id: nothing, unless a fallback is asked for.
+{
+    fresh();
+    my $API = 'Plugins::Discography::API';
+    {
+        no warnings 'redefine'; no strict 'refs';
+        *{'Plugins::Discography::Sources::localAlbums'} = sub {
+            my $opt = $_[4] || {};
+            return $opt->{fallback} ? [ { _mbid => 'rel-fb' } ] : [];
+        };
+    }
+    Plugins::Discography::DB::set(Plugins::Discography::API::_rel2rgKey('rel-fb'), 'rg-old', 3600);
+    $API->clearArtistCache(name => "The B-52's", mbid => 'm-52', artist_id => 137553);
+    ok(!defined Plugins::Discography::DB::get(Plugins::Discography::API::_rel2rgKey('rel-fb')),
+       '11b: Refresh on a composer-only id clears the groups of the albums its page shows');
 }
 
 package T::Resp; sub content { '{}' } sub error { '' }

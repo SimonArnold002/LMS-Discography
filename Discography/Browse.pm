@@ -1438,8 +1438,8 @@ sub _discographyView {
                     my $startBootleg = sub {
                         my ($await) = @_;
                         # LAST in the chain, and deliberately so: vetting the
-                        # collaboration links costs up to 2 spaced MB requests
-                        # per candidate, which ahead of the bootleg pass would
+                        # collaboration links costs one spaced MB request per
+                        # candidate (up to 8), which ahead of the bootleg pass would
                         # blow the `official_wait` deadline on a public-API
                         # install and render the page with bootlegs unfiltered.
                         # The section is cache-only at render time anyway, so it

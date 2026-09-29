@@ -310,6 +310,21 @@ ok(scalar(!grep { length($_) > 3200 } @URLS), '9: ... every URL well under what 
 ok(scalar(!grep { ($CACHE{ key($_) } // '') ne "rg-$_" } @MANY), '9: all 120 cached');
 ok($cbs == 1, '9: ... calling back exactly once');
 
+# 9b. A LAST BATCH OF ONE is a lookup, not a search (51 = 50 + 1): a search for
+#     one id costs the same request as its lookup, and a second one on a miss.
+reset_all();
+my @FIFTY1 = @MANY[0 .. 50];
+%KNOWN = map { $_ => "rg-$_" } @FIFTY1;
+$cbs = 0;
+$API->warmLocalReleases([ @FIFTY1 ], sub { $cbs++ });
+@sizes = map { scalar(() = decode_q($_) =~ /reid:/g) } grep { m{/release\?query=} } @URLS;
+ok((join ',', @sizes) eq '50', '9b: 51 releases -> ONE search of 50, no search of one');
+ok(scalar(@{ $lookups->() }) == 1 && $lookups->()->[0] eq $FIFTY1[50],
+   '9b: ... and the 51st is looked up directly');
+ok(scalar(@URLS) == 2, '9b: ... two requests in all');
+ok(scalar(!grep { ($CACHE{ key($_) } // '') ne "rg-$_" } @FIFTY1) && $cbs == 1,
+   '9b: all 51 cached, calling back exactly once');
+
 # ---------------------------------------------------------------------------
 # 10. Cached and in-flight ids are never asked for twice.
 # ---------------------------------------------------------------------------

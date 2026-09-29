@@ -75,6 +75,10 @@ my $broken;    # latched once the file cannot be opened: complain once, degrade
 my $version;   # CACHE_VERSION, from the first store() call
 
 my @ARTIST_COLS = qw(name aliases);   # the answers an `artist` row holds (see _artistRoute)
+# A row holding NONE of them is an orphan and is deleted. Built from the list,
+# so a column added later (with its schema rung, %ARTIST_FAMILY and
+# _artistRoute) cannot leave its rows to be collected as orphans.
+my $ARTIST_ORPHAN = join ' AND ', map { "$_ IS NULL" } @ARTIST_COLS;
 my %ARTIST_FAMILY = ('dsc:mbname:' => 'name', 'dsc:alias:' => 'aliases');
 
 # family ('dsc:mbid:') => [ current version, current prefix ('dsc:mbid:2:') ]
@@ -177,7 +181,7 @@ sub _retire {
                          undef, length($fam), $fam, length($p), $p);
         }
     }
-    $h->do('DELETE FROM artist WHERE name IS NULL AND aliases IS NULL');
+    $h->do("DELETE FROM artist WHERE $ARTIST_ORPHAN");
     $log->info("dsc: store retired $n answer(s) from an old key version") if $n > 0;
     return;
 }
@@ -245,7 +249,7 @@ sub _sweep {
         $h->do("UPDATE artist SET $c = NULL, ${c}_v = '', ${c}_exp = 0
                 WHERE ${c}_exp > 0 AND ${c}_exp < ?", undef, $now);
     }
-    $h->do('DELETE FROM artist WHERE name IS NULL AND aliases IS NULL');
+    $h->do("DELETE FROM artist WHERE $ARTIST_ORPHAN");
     return;
 }
 
@@ -372,7 +376,7 @@ sub remove {
         if (my ($col, undef, $mbid) = _artistRoute($k)) {
             $h->do("UPDATE artist SET $col = NULL, ${col}_v = '', ${col}_exp = 0
                     WHERE mbid = ?", undef, $mbid);
-            $h->do('DELETE FROM artist WHERE mbid = ? AND name IS NULL AND aliases IS NULL',
+            $h->do("DELETE FROM artist WHERE mbid = ? AND $ARTIST_ORPHAN",
                    undef, $mbid);
         }
         $h->do('DELETE FROM kv WHERE k = ?', undef, $k);

@@ -1947,8 +1947,9 @@ sub getArtistCandidates {
     # public API.
     #
     # It QUEUES rather than answering empty, unlike the house in-flight pattern
-    # (warmOfficial / warmBandMembers, which hand a late caller nothing because
-    # their result is optional). Here the result DECIDES something: an empty
+    # (warmOfficial, which hands a late caller nothing because its result is
+    # optional; warmBandMembers queued too from stage 1, through _readArtist's
+    # %artistReadWaiting). Here the result DECIDES something: an empty
     # list tells `sharesNameWithProminentAsync` there is no same-name act, which
     # is precisely the 0.44.5 leak — the prominent act's biography rendered
     # under a secondary act's name.
@@ -2277,10 +2278,16 @@ sub clearArtistCache {
     # Owned release -> release group, for the albums this artist's page shows.
     # Kept across builds too (DB.pm's mbid table), and keyed by RELEASE, so the
     # artist's own keys do not reach it: ask the library which albums it owns
-    # (the same lookup the page makes, artist_id then tag then name) and clear
-    # each one's entry.
+    # (the lookup the page makes, artist_id then tag then name) and clear each
+    # one's entry. The page passes its id fallback (Browse::_idFallback), so an
+    # artist_id that performs on no album (The B-52's composer credit) still
+    # finds the albums it warmed; without it Refresh cleared none of them.
+    # Refresh and clearcache do not know the page's shared_name, so 'name' is
+    # passed always: it finds a SUPERSET of the 'mbid' mode's albums, and
+    # clearing one entry too many costs only a lookup on the next visit.
     my $owned = eval {
-        Plugins::Discography::Sources->localAlbums($a{artist_id}, $name, $mbid)
+        Plugins::Discography::Sources->localAlbums($a{artist_id}, $name, $mbid,
+                                                    { fallback => 'name' })
     } || [];
     my $nrel = 0;
     for my $al (@$owned) {
@@ -2420,8 +2427,8 @@ my %rel2rgInFlight;
 # unchanged, and gets exactly the verdict it got before (a 404 caches ''). A
 # failed or unreadable search sends its whole batch the same way. So the worst
 # case costs what it did before plus one request, and the answers are the ones
-# the lookup gives. A single uncached id skips the search: its lookup is already
-# one request.
+# the lookup gives. A batch of one uncached id skips the search (a lone id, or
+# the last of 51): its lookup is already one request.
 use constant REL_BATCH_MAX => 50;
 
 # Resolve the uncached release MBIDs: in batches by search where there are two
@@ -2444,8 +2451,10 @@ sub warmLocalReleases {
 
     my @single;       # what the search did not settle -> one lookup each
     my @batches;
-    if (@todo > 1) { push @batches, [ splice(@todo, 0, REL_BATCH_MAX) ] while @todo }
-    else           { @single = @todo }
+    push @batches, [ splice(@todo, 0, REL_BATCH_MAX) ] while @todo;
+    # A batch of ONE is a lookup, not a search: a lone id, and equally the last
+    # of 51 or 101. Only the last batch can be that short.
+    push @single, @{ pop @batches } if @{ $batches[-1] } == 1;
 
     # Self-passing closures, not captured lexicals (the 0.30.1 leak fix): these
     # run on every page open that has unresolved release mbids.

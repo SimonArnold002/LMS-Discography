@@ -123,6 +123,7 @@ because line numbers rot on the next edit.
 | Stage 1's six behaviour changes (empty verdict under an alias name, band lookup waiting, nothing cached on an unreadable read, no `rgcount` from the vetting, `reid:` index lag, an unindexed mirror's extra request) — all kept | A2 | `STAGE 1 CHANGED SIX BEHAVIOURS ON PURPOSE` |
 | The combined `artist:"X" OR alias:"X"` name query (analysis §A7 #4) — HELD for the resolver: it makes HAIM open Haïm | A2 | `A7 #4 IS HELD FOR THE RESOLVER` |
 | MB's artist lookup listing only first-credited groups; omitting an empty `release-groups`; a combined `inc=` returning less; a 50-id `reid:` search being too long | A3 | `MEASURED FOR STAGE 1` |
+| A non-UUID album id tag spoiling a `reid:` batch | A3 | `LMS VALIDATES MB ID TAGS AT SCAN` |
 
 **Two standing rules that kill most repeat findings:**
 
@@ -517,6 +518,7 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 | MB leaves out the `release-groups` key for an artist with none, so a missing list means "no releases" | **WRONG** — MEASURED FOR STAGE 1 (public API, 2026-09-29) | The Shostakovich Trio (6fe7c51d, no groups) answers `"release-groups": []`. So `_vetCollabs` treats a MISSING list as an unreadable reply (not vetted, nothing cached), never as "none". Pinned in `t_collab.pl` §7 (`%NOLIST`). |
 | `artist/<id>?inc=aliases+artist-rels` returns less, or differently shaped, data than the two separate requests | **WRONG** — MEASURED FOR STAGE 1 (public API, 2026-09-29) | Radiohead: `inc=aliases` 1,647 B, `inc=artist-rels` 18,982 B, combined 19,956 B, with the same aliases and relations; Brian Eno's match too. The captured combined replies are `t_artistread.pl`'s fixtures. |
 | A 50-id `release?query=reid:A OR reid:B …` search is too long a URL for MusicBrainz, or drops releases | **WRONG** — MEASURED FOR STAGE 1 (public API AND mirror, 2026-09-29) | 50 ids: a 3,002-character URL, HTTP 200, 59,429 B, 0.3 s, 50 of 50 resolved, `release-group` on every hit. The search's `limit` defaults to 25, which is why `warmLocalReleases` sends `limit=<n>`; `t_rel2rg.pl`'s fake MB honours that default, so a missing `limit` goes red. |
+| A library album's `MUSICBRAINZ_ALBUMID` can hold a non-UUID (Lucene syntax, a space, two ids), so one bad tag spoils a whole `reid:` batch in `warmLocalReleases` | **WRONG — LMS VALIDATES MB ID TAGS AT SCAN** (LMS 9.0 source, read 2026-09-29; review of stage 1) | `Slim::Formats::sanitizeTagValues` (Formats.pm, Bug 14587) checks every `MUSICBRAINZ_*_ID` value against the UUID pattern and DELETES the whole tag if any value fails; a valid one is lowercased into an array, and `Slim::Schema::_createOrUpdateAlbum` stores its FIRST element in `albums.musicbrainz_id`. So no file tag can reach the batch with a non-UUID, and no guard was added. Re-raise only with a named album whose stored id is not a UUID (an online-library import that skips the sanitiser would be the only writer, and none sets this tag). |
 
 ### B. KNOWN-OPEN AND ACCEPTED — do not re-report as new
 
@@ -1247,6 +1249,41 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   §1 assertions were the list-context `=~` trap (now wrapped in `scalar()`).
 - **Review (inline, 2026-09-29): six behaviour changes, all KEPT by Simon.** A2 `STAGE 1 CHANGED SIX
   BEHAVIOURS ON PURPOSE`.
+- **Review (/code-review of `4a6feb1`+`c662b20`, 2026-09-29): 7 findings; 4 FIXED, 1 DISPROVED, 1 moved to
+  stage 3, 1 open.** COMMITTED on `dev` with this entry, unpushed, not built.
+  1. **Refresh missed a composer-only id's albums** (`clearArtistCache`). It asked `localAlbums` without the
+     page's id fallback, so a page whose artist_id performs on no album (The B-52's) found its albums, and
+     Refresh cleared none of their `dsc:rel2rg` entries, which 0.56.0 keeps across builds. That left behaviour
+     #5's stale `reid:` group with no cure but the 14-day TTL. It now passes `{ fallback => 'name' }` always:
+     Refresh/clearcache do not know `shared_name`, and 'name' finds a SUPERSET of the 'mbid' mode's albums.
+     `t_db.pl` 11 + 11b.
+  2. **A last batch of one still paid a search** (`warmLocalReleases`): 51 ids went as 50 + a 1-id search,
+     2 requests on a miss. Any batch of one now goes to the lookup. `t_rel2rg.pl` 9b.
+  3. **Two comments stale since stage 1**: the candidates queue said `warmBandMembers` hands a late caller
+     nothing (it waits in `%artistReadWaiting`); `_startBootleg` said vetting costs 2 requests per candidate
+     (it is 1, up to 8).
+  4. **DB.pm's orphan-row DELETE named `name`/`aliases` by hand** in three places; it is now built from
+     `@ARTIST_COLS` (`$ARTIST_ORPHAN`), so a third column cannot leave its rows collected as orphans.
+  5. **DISPROVED — a non-UUID album id tag spoiling a `reid:` batch.** A3 `LMS VALIDATES MB ID TAGS AT SCAN`.
+  6. **MOVED TO STAGE 3 — the search-row fold now reads `inc=aliases+artist-rels` per same-name hit** (about
+     20 KB instead of 1.6 KB for Radiohead; the same request count). Not live today: `filterRowsWithContent`
+     returns on the public API (§B gate #1). Recorded in `docs/mb-efficiency-and-community-api-analysis.md`
+     §F step 3, to be decided when that gate comes out.
+  7. OPEN — DB.pm `get()` falls through from the mbid table to kv for a value no writer stores there (a
+     reference under an mbid key); one indexed SQLite read per cold miss. Recommended KEEP as a guard; not yet
+     decided.
+  Tests: 47 suites, 1,449 assertions, 0 failures (was 1,443); both fixes' new assertions go red with the fix
+  reverted. `syntax_check.sh` clean (it is a zsh script: `bash` fails at line 18, not the code).
+- **LEFT after this round (2026-09-29):**
+  1. **Build + the three LIVE CHECKS below**, on the public API. Nothing of stage 1 or 0.56.0 has run on the rig
+     (0.56.0 was built, never installed). Add to them: Refresh on The B-52's composer-credit entry logs
+     `releases(N)` with N > 0.
+  2. **Finding 7 undecided**: DB.pm `get()`'s mbid-to-kv fall-through (recommended KEEP).
+  3. **§A7 #4 HELD** for the resolver's Part C (A2 `A7 #4 IS HELD FOR THE RESOLVER`).
+  4. **Stage 2** (the release-group search route, §A1–A5) not started. Decide there whether `warmLocalReleases`
+     stays on the render path: the search fills `r` for the artist's whole catalogue, so the per-album lookup
+     is then needed only above 500 groups and for albums credited to another artist.
+  5. **Stage 3** (un-gate §B) carries the fold's larger artist read (finding 6); **stage 4** the Community API.
 - **LIVE CHECK after the next build (on the public API):**
   1. a cold ambiguous artist logs ONE `artist/<id>?inc=aliases+artist-rels` request, and both its `aliases <id>: …`
      and `band-members: <id> -> …` lines come from that read;

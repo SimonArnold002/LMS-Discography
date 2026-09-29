@@ -7,7 +7,10 @@
 > **Status 2026-09-29 — stage 1 (§F) is in the code, not built.** §A7 #1–#3 are implemented and committed on
 > `dev`: aliases and band members from one `artist/<id>?inc=aliases+artist-rels` read, owned albums in
 > `reid:` batches of 50, and one `inc=artist-rels+release-groups` lookup per collaboration candidate
-> (`CLAUDE.md` dev log, "MusicBrainz efficiency stage 1"; 47 suites, 1,443 assertions, 0 failures).
+> (`CLAUDE.md` dev log, "MusicBrainz efficiency stage 1"). Its code review (2026-09-29) fixed four
+> findings: Refresh now clears a composer-only id's owned releases, a last batch of one id is a lookup not a
+> search, two stale comments, and DB.pm's orphan cleanup follows its column list; 47 suites, 1,449 assertions,
+> 0 failures. Stage 1 is still unbuilt and has no live check yet.
 > **§A7 #4 is HELD for the resolver work** (Part C of `docs/community-api-and-resolver-plan.md`): the combined
 > query changes which artist a name resolves to. Measured: HAIM would open Haïm (§A7). Stages 2–4 not started.
 
@@ -443,13 +446,23 @@ Each stage: suites green before and after, then a live check **on the public API
 1. **The four cheap ones (A7).** No design change, no new route: fold aliases into the band-member
    call, batch the owned-release lookups, fold the collaboration vetting, combine the name and
    alias query. Saves ~10 requests on a typical cold page and needs no new caching.
-   **Status 2026-09-29: the first three are in the code (committed on `dev`, not built). Combining the
-   name and alias query is HELD for the resolver's Part C (§A7).**
+   **Status 2026-09-29: the first three are in the code and reviewed (committed on `dev`, not built, no
+   live check yet). Combining the name and alias query is HELD for the resolver's Part C (§A7).**
 2. **The search route (A1–A5).** New `getReleaseList` that runs the search and fills the spine,
    `o`, `r` and `t` from one place, with the >500 fallback to today's browses, and the
    `inc=aliases` browse demoted to the background. This is the one that turns 40 requests into 6.
+   **Open question (from the stage-1 review):** the search fills `r` for the whole catalogue, so
+   `warmLocalReleases` is then needed only above 500 groups and for owned albums credited to another
+   artist. Decide whether it stays on the render path or runs only for what `r` does not answer.
 3. **Un-gate the five divergences (B).** Only once 1 and 2 have made the work affordable. #1 and
    #3–#5 must move together, or the row path poisons the shared name cache.
+   **Carried in from the stage-1 review (2026-09-29):** once gate #1 is gone, the search-row fold's
+   `warmArtistAliases` call runs on the public API, one per same-name MusicBrainz hit, and the search list
+   waits for all of them. Since stage 1 that call is `_readArtist`'s `inc=aliases+artist-rels` read,
+   about 20 KB instead of 1.6 KB for Radiohead. The number of requests is unchanged, and requests are
+   what MusicBrainz limits, so this costs bytes and latency only; the bands it caches pay back on a later
+   page visit. Decide here: accept it, or read the fold's aliases from the Community API's
+   `/aliases?mbid=` (stage 4, §C3).
 4. **Add the community API alongside (C).** One request helper, mbid echo check, merged with the
    search result. It is additive: if it is down, everything still works.
 
