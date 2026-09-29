@@ -120,6 +120,9 @@ because line numbers rot on the next edit.
 | A cache-served Spotty page clearing `hasError429` | A3 | `cleared only by a REAL network response` |
 | Search results built from the services first, MusicBrainz only as a same-name section | A2 | `THE SEARCH LIST IS MUSICBRAINZ-FIRST` |
 | Anything that works only on a mirror, or skips work on the public API ("throttle-gated") — a DEFECT, not policy | top | `THE PUBLIC API IS WHAT WE WORK TO` |
+| Stage 1's six behaviour changes (empty verdict under an alias name, band lookup waiting, nothing cached on an unreadable read, no `rgcount` from the vetting, `reid:` index lag, an unindexed mirror's extra request) — all kept | A2 | `STAGE 1 CHANGED SIX BEHAVIOURS ON PURPOSE` |
+| The combined `artist:"X" OR alias:"X"` name query (analysis §A7 #4) — HELD for the resolver: it makes HAIM open Haïm | A2 | `A7 #4 IS HELD FOR THE RESOLVER` |
+| MB's artist lookup listing only first-credited groups; omitting an empty `release-groups`; a combined `inc=` returning less; a 50-id `reid:` search being too long | A3 | `MEASURED FOR STAGE 1` |
 
 **Two standing rules that kill most repeat findings:**
 
@@ -441,6 +444,47 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   (it dropped a lone artist: Hawkwind). `getArtistCandidates` (name field only) is deliberately unchanged:
   the bio's shared-name guard reads it, and an alias match is not "shares this name"; the plan's ranked list
   reads it as its name tier. Pinned in `tools/t_mbcands.pl` and `tools/t_mbfirst.pl`.
+- **STAGE 1 CHANGED SIX BEHAVIOURS ON PURPOSE** (`API::_readArtist`, `%artistReadWaiting`, `warmArtistAliases`,
+  `warmBandMembers`, `warmLocalReleases`, `_vetCollabs`, `Browse::_browsedAsSelf`; inline review 2026-09-29,
+  Simon kept all six). Re-raise one only with a case its reason does not cover.
+  1. **The empty-artist verdict can now be recorded for a page opened under one of the artist's OTHER MB
+     names.** `_browsedAsSelf` always accepted MB's aliases, but they were fetched only for an ambiguous name;
+     the band read now brings them on every page. The test was written to accept them (a rename, British Sea
+     Power -> Sea Power, "still qualifies"), and such a page also asks the services under MB's main name before
+     it can come up empty. The verdict needs "No releases found" on an artist MB lists, which the code allows
+     only with `hide_unmatched` on or when every group is bootleg-only (Browse `_buildList`'s `$visible`); it
+     hides a search row only where `filterRowsWithContent` runs (a mirror: it returns early on the public API,
+     gate #1 of the analysis's §B, until stage 3); it clears on any render with content, on Refresh, or after
+     7 days.
+  2. **The band lookup waits for an artist read already in flight** instead of returning at once, so the second
+     of two simultaneous cold visits gets "Also a member of" on its first page. The page's `official_wait`
+     deadline still caps the wait.
+  3. **An unreadable reply caches nothing.** 0.56.0's alias fetch cached `[]` for 30 days on a 200 it could not
+     parse, which disabled the alias retry for a month, the thing its own error branch was written to avoid.
+     A failed or unreadable read is now simply asked again on the next visit.
+  4. **The vetting neither writes nor reads `dsc:rgcount`.** A later search row for that same collaboration pays
+     the one count request it used to find cached, and a stale count of 0 can no longer drop a collaboration:
+     the lookup's own release-group list decides.
+  5. **A `reid:` search can return a release's OLD group** when MB has just moved it and the search index has not
+     caught up; that answer is cached for `REL2RG_TTL` (14d). Accepted: the per-id lookup reads the database,
+     the search reads the index, and Refresh (`clearArtistCache` removes every owned release's entry) or the
+     TTL clears it.
+  6. **A mirror with an unbuilt search index costs one extra request per batch**: the search gives 0 hits, so
+     every id falls back to the per-id lookup, with the same answers.
+- **A7 #4 IS HELD FOR THE RESOLVER** (`API::_artistMbidByName`; the combined `artist:"X" OR alias:"X"` query of
+  `docs/mb-efficiency-and-community-api-analysis.md` §A7 #4; DEFERRED 2026-09-29, Simon agreed). Folding the
+  name-field and alias-field passes into one query saves 1–2 requests, but only for a name the name field
+  cannot answer (Hall And Oates, "janes addiction"), and a resolved name is cached for 30 days. **It also
+  changes answers: the combined query re-scores the hits, and the pick rule reads their order.** Measured on
+  the public API 2026-09-29, the mirror identical: `artist:"HAIM"` -> HAIM (US pop-rock trio) 100, Haim Saban
+  89; `artist:"HAIM" OR alias:"HAIM"` -> Haim Saban 100, Haïm (Raï pop act) 93, Este Haim 87, Danielle Haim 84,
+  HAIM 84. The exact-name preference takes the first name-equal hit scoring >= 90, so HAIM would open Haïm's
+  page, cached for 30 days in the `dsc:mbid` store that the page and the search filter share. The resolver
+  plan keeps `_artistMbidByName` exactly as today for this reason (`docs/unified-artist-resolver-plan.md` §2.2:
+  "Nothing else changes the name-search answer"), and its one new rule was measured at 0 changes across the
+  1,117 library artists; building #4 first would move that baseline. It is now an item of Part C of
+  `docs/community-api-and-resolver-plan.md`, to be measured there against the same 1,117 artists. Do not
+  build it as a stand-alone efficiency change.
 
 ### A3. DISPROVEN — a review WILL re-derive these from the code; each was measured
 
@@ -469,6 +513,10 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 | Moving the collaboration vetting off the render path (0.51.15) costs a visit on a cold artist | **PARTLY RIGHT — and my 2026-09-19 "WRONG" verdict was itself wrong** | Re-measured 2026-09-20 on 0.51.16 after a CACHE_VERSION bump, which is the ONLY truly cold state: Brian Eno's Collaborations section is **absent on the first entry and present on the second** (same two links). The 2026-09-19 measurement used `["discography","clearcache","mbid:..."]`, and **clearing by mbid and clearing by name touch DISJOINT key sets** — by mbid it reports `rg,official,bands,collabs,rgcount,empty`, by name `mbid,bio,candnames,candidates`. So the name->mbid resolution, the bio and the streaming candidates stayed warm, the serial chain was short enough to finish before the render, and the section made the first entry. **`clearcache` is not cold.** To test a cold artist, bump CACHE_VERSION or clear by BOTH name and mbid. |
 | Putting `extid` on our rows (0.54.3) changes what Material stores as a favourite | **WRONG** (read in `lms-material` b8f144b57, review 2026-09-24) | Material's only other `extid` reader, in `utils-deferred.js`, builds a favourite URL from it ONLY for an item whose id starts with `album_id:` (its library album rows). Discography's badged rows carry ids `v:`, `str:`, `lib:` or none, so they never reach that path; the badge is `getEmblem`, which reads the text before the first `:` and nothing else. |
 | The Qobuz badge off-centre on strip tiles (Simon 2026-09-24, "the Q is offset") means Discography sends a different icon or transparency | **WRONG** (read in `lms-material` b8f144b57) | The badge is Material's own `getEmblem("qobuz:...")`, the same key PFR and LL send. The fault is Material CSS: a `header-strip` tile is a `grid-scroll` row in LIST mode, so the circle takes the grid size (icon+8px, 2px padding) while the img takes `.lms-list .emblem img` (icon size), leaving a 4px gap right and bottom. Fixed on the Material `plugin-tile-strips` branch (`.grid-scroll .emblem img` joins the grid img rule in style.css). Nothing to change in Discography. Material 6.4.10.8 with the fix INSTALLED + VERIFIED LIVE (Simon 2026-09-24). |
+| MusicBrainz's artist lookup with `inc=release-groups` lists only the groups the artist is credited FIRST on (as the hosted `/discography` does), so `_vetCollabs`' "has any releases" test misses a second-credited act | **WRONG for the MB lookup** — MEASURED FOR STAGE 1 (public API, 2026-09-29) | Sonic Boom (c69cce02): the `release-group?artist=` browse gives 29 groups, 18 of them second-credited; `artist/<id>?inc=release-groups` lists 25 (its cap), 15 of them second-credited. Credited-first-only is the HOSTED API's rule (`docs/hosted-lms-community-api.md`, Willie Nelson), not MusicBrainz's. |
+| MB leaves out the `release-groups` key for an artist with none, so a missing list means "no releases" | **WRONG** — MEASURED FOR STAGE 1 (public API, 2026-09-29) | The Shostakovich Trio (6fe7c51d, no groups) answers `"release-groups": []`. So `_vetCollabs` treats a MISSING list as an unreadable reply (not vetted, nothing cached), never as "none". Pinned in `t_collab.pl` §7 (`%NOLIST`). |
+| `artist/<id>?inc=aliases+artist-rels` returns less, or differently shaped, data than the two separate requests | **WRONG** — MEASURED FOR STAGE 1 (public API, 2026-09-29) | Radiohead: `inc=aliases` 1,647 B, `inc=artist-rels` 18,982 B, combined 19,956 B, with the same aliases and relations; Brian Eno's match too. The captured combined replies are `t_artistread.pl`'s fixtures. |
+| A 50-id `release?query=reid:A OR reid:B …` search is too long a URL for MusicBrainz, or drops releases | **WRONG** — MEASURED FOR STAGE 1 (public API AND mirror, 2026-09-29) | 50 ids: a 3,002-character URL, HTTP 200, 59,429 B, 0.3 s, 50 of 50 resolved, `release-group` on every hit. The search's `limit` defaults to 25, which is why `warmLocalReleases` sends `limit=<n>`; `t_rel2rg.pl`'s fake MB honours that default, so a missing `limit` goes red. |
 
 ### B. KNOWN-OPEN AND ACCEPTED — do not re-report as new
 
@@ -537,7 +585,7 @@ curl -s http://plex:9000/jsonrpc.js -d '{"id":1,"method":"slim.request","params"
 Discography/
 ├── Plugin.pm       # OPMLBased entry point (tag 'discography', is_app); prefs; canonical `dbg` (API/Browse/Sources delegate); Material custom action REGISTERED once (`_registerMaterialActions`) + old actions.json entry stripped at startup (`_clearMaterialActions`); Settings under WEBUI; registers the `imageproxy/dsc/artist/<name>` artwork handler
 ├── Browse.pm       # topLevel ($VAR guard, %lastCtx stash+expand flags+page counts+visibility snapshot); app-root view (_rootView: _coverCollageRow responsive random-album-cover banner, About prose, search section, "Works best with" as ONE strip of plugin tiles (badge + name + tick/cross, role as tooltip) w/ badgeSrc imageproxy normaliser); global artist search (_searchRow type=search item in the app root ONLY; the artist page's Options carries _searchButtonRow `act:search`, which opens _rootView; go action overridden w/ search:__TAGGEDINPUT__ fixedParams -> topLevel search-param dispatch GATED on item_id being absent, so a positional walk still reaches the row's own coderef; _artistSearchView w/ 10-min merged cache, only written when every source settled OK; the list is SERVICE-first (streaming + library rows, then the MusicBrainz same-name section; the MusicBrainz-first redo is not in the code, see `THE SEARCH LIST IS MUSICBRAINZ-FIRST`), _searchResultRow name-drills, _mbCandidateRow mbid-drills); grouped list (bio header, Options/type/library-extras sections, Albums / Singles view toggle _viewToggleItem `act:view:<to>` (Singles view = EPs + Singles, a true tab; per-player ctx `view`), sort+Refresh, release sections as tile strips on a strip-capable Material (`header-strip`, `_useStrips`/`_stripsOn`, layout_albums/layout_singles), service badge via row `extid` (`_extid`), _pageSection 30-at-a-time Show more/less, "Also a member of" band links + "Similar artists" name-drill links w/ artist-photo thumbnails, both second-load, similar deduped against bands by _dropBandDupes — Material keys app rows by TITLE, so a repeated name loses a row); artist artwork resolver (artistImageProxy handler for `imageproxy/dsc/artist/<name>`: MAI local files -> MAI online picture w/ Deezer placeholder HEAD probe -> live service photo -> person icon, verdict cached 30d); release detail (review w/ inline expand, version rows w/ Show-other-versions toggle, MB links); _proseRow avatar-column indent; bio/review prose ported from LBF (_cleanBio HTML->structure, _bioParagraphs heading/bullet/paragraph parser, _proseBlock one styled row per block, _proseSection shared collapse/expand shape, _cleanProse the one fetch-side entry point)
-├── API.pm          # Async MusicBrainz (base = mb_base_url pref, mirror-aware _mbBase/_mbGap): artist MBID (library tag first, MB search score>=90), paginated release-group browse, url-rels links; filterRowsWithContent (dead-end/empty-verdict row filter + alias fold, then the 0.51.3 tag attach: a kept row with no artist_id is claimed by its resolved mbid — AFTER the fold, so survivor choice is unchanged; among several tagged contributors the one OWNING the most albums wins, and an id another kept row already carries is never handed to a second row); peekOfficial/warmOfficial/clearOfficial + _isOfficial (bootleg filter: artist-wide status pass -> {rg=>official?} + {release=>rg} maps, fail-open); peekLocalReleaseMap/warmLocalReleases (targeted release->rg for library albums); peekBands/warmBandMembers (member-of-band); CAA image URLs; caching
+├── API.pm          # Async MusicBrainz (base = mb_base_url pref, mirror-aware _mbBase/_mbGap): artist MBID (library tag first, MB search score>=90), paginated release-group browse, url-rels links; filterRowsWithContent (dead-end/empty-verdict row filter + alias fold, then the 0.51.3 tag attach: a kept row with no artist_id is claimed by its resolved mbid — AFTER the fold, so survivor choice is unchanged; among several tagged contributors the one OWNING the most albums wins, and an id another kept row already carries is never handed to a second row); peekOfficial/warmOfficial/clearOfficial + _isOfficial (bootleg filter: artist-wide status pass -> {rg=>official?} + {release=>rg} maps, fail-open); peekLocalReleaseMap/warmLocalReleases (targeted release->rg for library albums: one `reid:` OR-search per 50 ids, `REL_BATCH_MAX`, then the per-id lookup for whatever it leaves out); _readArtist (ONE `artist/<id>?inc=aliases+artist-rels` read behind warmArtistAliases AND warmBandMembers, fills aliases, MB name, bands and collaboration candidates; a caller arriving mid-flight waits on it); peekBands/warmBandMembers (member-of-band); _vetCollabs (one `inc=artist-rels+release-groups` lookup per candidate: size test + has-releases in one reply); CAA image URLs; caching
 ├── Sources.pm      # Source engine: Q/T/D adapters (artist-FIRST candidate fetch, per-adapter query_enc, shared _renderAlbums + _albumArray envelope unwrap), Local pseudo-source (sync albums query, db:album.id play; localAlbums resolves IDENTITY FIRST — localArtistsByMbid/localArtistIdsByMbid read the library's own Contributor.musicbrainz_id tag, ALL matching contributors, before the name ladder; an explicit artist_id still outranks both UNLESS it performs on no album and the page builder opts in via `Browse::_idFallback` — then tag, then name, name never on a shared-name page); localTracks (the track-link pool: Various Artists compilation tracks ONLY, performance roles checked on the per-role ids from `tags:S` because `titles` ignores role_id, same empty-id fallback gated on owning no album), matcher (fleet-synced), matchesFor/peekPool+peekMatches/claimedLocalIds, LL favurl handshake; global artist search (searchArtists parallel per-service artist-type legs + Local CLI leg, cb(\%bySvc, \%failed) — the 2nd arg names services that ERRORED/TIMED OUT, since a failure settles as an empty list and callers must not persist an incomplete set; mergeArtistHits pure norm-keyed dedupe/rank + relevance gate vs the typed query, rows carry the service's own artist photo); artistImage/_svcArtistImage/isPlaceholderImage (live per-service artist photo via each plugin's OWN url builder, priority order; an exact-name photo ends the walk, a token-subset photo is only a fallback when NO service knows the exact name, and an exact entity without a photo vetoes it; Deezer placeholders in both forms, md5('') and the empty `/images/artist//` hash; 30d cache); serviceStatus takes an OPTIONAL pre-built adapters list (omitted = probe); randomAlbumCovers (app-root banner, sort:random — measured ~20ms/2900 albums, cheap)
 ├── Settings.pm     # Web settings: source priorities (detection), view options (type checkboxes->CSV), release page, integration
 ├── DB.pm           # the plugin's OWN SQLite store, <cachedir>/discography.db (takes over the file LMS kept for the old cache namespace; migration 1 drops LMS's `cache` table). store(CACHE_VERSION) answers get/set/remove like Slim::Utils::Cache, so no call site changed. Tables: kv (every cache family; emptied when CACHE_VERSION changes, as the LMS namespace was), mbid (artist name -> artist mbid `dsc:mbid:`, owned release -> release group `dsc:rel2rg:`; NOT emptied by a build), artist (one row per artist mbid: canonical name `dsc:mbname:` + aliases `dsc:alias:`, each with its own key version, time and expiry — LBF's shape; NOT emptied by a build), meta (cache_version); all routed by key prefix. expires_at is an absolute epoch computed in Perl, 0 = never. Expired rows swept at open AND every 6h on a timer (PFR's kvSweep lesson); rows of an old key version in the kept tables retired at open (keepCurrent, fed by API's own key builders). Degrade-never-die. Suite: tools/t_db.pl
@@ -1161,7 +1209,52 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
-### 0.56.0 (2026-09-25) — the cache moves to Discography's own SQLite store — BUILT, not installed
+### (unbuilt, 2026-09-29) — MusicBrainz efficiency stage 1: three requests folded into ones already made; the fourth HELD for the resolver — COMMITTED on dev, NOT built
+- **Source:** `docs/mb-efficiency-and-community-api-analysis.md` §A7 and §F stage 1 (Simon: *"lets make a start
+  on this refactor"*). Items 1–3 built, item 4 held (below). No version bump: code only, not built. Only `API.pm`
+  changed; Browse and Sources are untouched. 0.56.0 itself was committed first, as its own commit (`4a6feb1`).
+- **1. Aliases and band members from ONE request** (`API::_readArtist`). `artist/<id>?inc=aliases+artist-rels`
+  replaces `?inc=aliases` (warmArtistAliases) and `?inc=artist-rels` (warmBandMembers): the one read fills the
+  aliases (30d), MB's name, the bands and the collaboration candidates. Measured on the public API 2026-09-29:
+  Radiohead `inc=aliases` 1,647 B + `inc=artist-rels` 18,982 B, combined 19,956 B, with the same aliases and
+  relations (A3). A caller that arrives while the read is in flight WAITS for it (`%artistReadWaiting`, the
+  0.47.4 `getArtistCandidates` pattern: the marker is deleted before the callbacks run, and every waiter is
+  settled on a failure too); `%bandsInFlight` is gone. warmArtistAliases' early return for a cached list with
+  no name (`%nameRefetched`) is unchanged. Saves 1 request per cold page whose name is ambiguous, the only case
+  in which the page fetched aliases.
+- **2. Owned albums in batches** (`warmLocalReleases`, `REL_BATCH_MAX` 50). Two or more uncached ids go as
+  `release?query=reid:A OR reid:B …&limit=<n>`; a single id keeps the per-id lookup. A hit is cached only for
+  an id we asked about, and only with its group id. Every id the search leaves out, and every id of a batch
+  whose search failed or came back unreadable, gets the per-id lookup as before (so a 404 still caches `''`).
+  Measured on the public API AND the mirror: 50 ids in one 3,002-character URL, 59,429 B, 0.3 s, 50 of 50
+  resolved; 12 ids gave 10 hits, the two absent being a release-group id and a never-issued id. 20 owned
+  albums: 20 requests -> 1.
+- **3. One request per collaboration candidate** (`_vetCollabs`). `artist/<id>?inc=artist-rels+release-groups`
+  carries the relations AND the release groups, so the `release-group?artist=<id>&limit=1` count per candidate
+  is gone, and so is the vetting's `dsc:rgcount` write. A reply without the `release-groups` list means "not
+  vetted", and nothing is cached (MB always sends the list, `[]` for none: A3). Measured on Brian Eno's three
+  candidates, same survivors: Fripp & Eno (2 collaborators, 11 groups) and Harmonia 76 (2, 2) kept, N.M.L. NO
+  MORE LANDMINE (22, 1) dropped by size. Each candidate that passes the size test: 2 requests -> 1.
+- **4. HELD — the combined `artist:"X" OR alias:"X"` query in `_artistMbidByName`** (Simon agreed,
+  2026-09-29). It changes WHICH artist a name resolves to, not just the request count. See A2 `A7 #4 IS HELD
+  FOR THE RESOLVER` for the measurement (HAIM would open Haïm) and where it went.
+- **Tests.** New `tools/t_artistread.pl` (40) and `tools/t_rel2rg.pl` (40), built on MB replies captured from the
+  public API into `tools/fixtures/` (the Eno and Radiohead artist reads; a Radiohead release browse, `reid:`
+  search and lookup). `tools/t_collab.pl` 32 -> 39: its §7 checks five candidates -> five combined requests
+  and no count URL, and that a stale count of 0 no longer decides. Full run: 47 suites, 1,443 assertions,
+  0 failures (0.56.0: 45 suites, 1,356). 23 mutants, all caught. Two gaps in the old fixture, found on the way:
+  t_collab's stub ignored `inc=`, so a mutant sending the old URL was caught only by the URL assertion, and two
+  §1 assertions were the list-context `=~` trap (now wrapped in `scalar()`).
+- **Review (inline, 2026-09-29): six behaviour changes, all KEPT by Simon.** A2 `STAGE 1 CHANGED SIX
+  BEHAVIOURS ON PURPOSE`.
+- **LIVE CHECK after the next build (on the public API):**
+  1. a cold ambiguous artist logs ONE `artist/<id>?inc=aliases+artist-rels` request, and both its `aliases <id>: …`
+     and `band-members: <id> -> …` lines come from that read;
+  2. an artist with several owned, tagged albums logs `local-release search: N of N resolved in one request`;
+  3. Brian Eno's Collaborations still shows Fripp & Eno and Harmonia 76, not N.M.L., from three
+     `inc=artist-rels+release-groups` requests and no `release-group?artist=…&limit=1`.
+
+### 0.56.0 (2026-09-25) — the cache moves to Discography's own SQLite store — BUILT + committed (`4a6feb1`, 2026-09-29), not installed
 - Zip sha1 `fa642d44728562c31610a94caf294cf2d419f23e`; CACHE_VERSION 0.56.0 (empties `kv`; the mbid and artist tables are kept);
   repo.xml bumped with it. The number was first written for the MusicBrainz-first search work, which was never
   built and is in `git stash` (its entry below is relabelled).

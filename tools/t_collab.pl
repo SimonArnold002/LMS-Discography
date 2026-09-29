@@ -128,26 +128,42 @@ my %NAME = (headcoatees => 'Thee Headcoatees', map { $_ => $T{$_}[0] } keys %T);
 
 sub response_for {
     my ($url) = @_;
-    if ($url =~ m{/artist/([^?]+)\?inc=artist-rels}) {
+    # The band lookup reads the artist WITH its aliases since stage 1
+    # (`?inc=aliases+artist-rels`, shared with warmArtistAliases — see
+    # t_artistread.pl); the vetting reads each target's relations.
+    if ($url =~ m{/artist/([^?]+)\?inc=(?:aliases\+)?artist-rels}) {
         my $id = $1;
         if (my $rels = $ARTIST{$id}) {
             return { name => 'X', relations => [ map {
                 { type => $_->[0], direction => 'forward',
                   artist => { id => $_->[1], name => $NAME{ $_->[1] } } } } @$rels ] };
         }
-        my $t = $T{$id} or return { relations => [] };
+        my $t = $T{$id} or return { relations => [], 'release-groups' => [] };
         return { name => $t->[0], relations => [
             (map { { type => 'collaboration', direction => 'backward',
                      artist => { id => "p$_", name => "P$_" } } } 1 .. $t->[1]),
             { type => 'collaboration', direction => 'forward',       # ignored
-              artist => { id => 'x', name => 'x' } } ] };
+              artist => { id => 'x', name => 'x' } } ],
+            # The vetting lookup (`?inc=artist-rels+release-groups`, stage 1)
+            # carries the target's release groups in the SAME reply, in MB's
+            # shape (captured from the public API 2026-09-29: Fripp & Eno 11,
+            # Harmonia 76 2, N.M.L. 1, the Shostakovich Trio `[]`): a list, empty
+            # for an act with none, stopping at 25. $NOLIST drops it, as a
+            # malformed reply would.
+            # Like MB, only when `inc=` asks for them.
+            (($main::NOLIST{$id} || $url !~ /[?&]inc=[^&]*release-groups/) ? () : ('release-groups' => [
+                map { { id => "rg-$id-$_", title => "$t->[0] $_", 'primary-type' => 'Album' } }
+                1 .. ($t->[2] > 25 ? 25 : $t->[2]) ])) };
     }
     if ($url =~ m{release-group\?artist=([^&]+)}) {
-        my $t = $T{$1};
-        return { 'release-group-count' => $t ? $t->[2] : 0 };
+        # The vetting no longer asks for a count (stage 1). Answered 0 for
+        # every target ON PURPOSE: any code still reading it would drop the
+        # Brokeoffs, and section 1 would go red.
+        return { 'release-group-count' => 0 };
     }
     return {};
 }
+our %NOLIST;
 
 # The MB chain: the band lookup (which gates the first render) and then, at the
 # END of the chain, the collaboration vetting.
@@ -168,11 +184,14 @@ ok($cbs == 1, 'the warm calls back exactly once');
 ok($names->($API->peekBands($HOLLY)) eq 'Avenue A,Thee Headcoatees',
    'bands are unchanged: member-of-band links only');
 my $c = $API->can('peekCollabs') ? $API->peekCollabs($HOLLY) : undef;
-ok($c && $names->($c) =~ /^Holly Golightly and The Brokeoffs(,|$)/,
+# scalar(): a bare `=~` in ok()'s arguments returns its CAPTURES in list
+# context, so this used to pass only when a comma followed the name (found by a
+# mutant of the size cut-off, 2026-09-29).
+ok(scalar($c && $names->($c) =~ /^Holly Golightly and The Brokeoffs(,|$)/),
    'the Brokeoffs are listed as a collaboration');
 ok($c && $names->($c) !~ /Band Aid/, 'a charity supergroup (21 collaborators) is dropped');
 ok($c && $names->($c) !~ /Amnesty/,  'a collaboration with no release groups is dropped');
-ok($c && $names->($c) =~ /The Quintet/, 'exactly 5 collaborators is kept (the cut-off)');
+ok(scalar($c && $names->($c) =~ /The Quintet/), 'exactly 5 collaborators is kept (the cut-off)');
 ok($c && $names->($c) !~ /Six Of Us/,   '6 collaborators is dropped');
 ok($c && $names->($c) !~ /Avenue A/,    'a target already listed as a band is not repeated');
 ok($c && scalar(grep { $_->{name} =~ /Brokeoffs/ } @$c) == 1, 'a duplicate relation is listed once');
@@ -249,9 +268,13 @@ ok(!defined $API->peekCollabs($HOLLY), 'clearArtistCache removes the collaborati
        '... and it builds no transport of its own');
     ok(scalar($vet && $vet =~ /_netGet\(/),
        '... every request goes through the queue');
+    # The band lookup's request is _readArtist's since stage 1 (shared with
+    # the alias lookup), so that is where the door has to be.
     my ($warm) = $src =~ /^(sub warmBandMembers \{.*?^\})/ms;
-    ok(scalar($warm && $warm !~ /SimpleAsyncHTTP/ && $warm =~ /_netGet\(/),
-       'the band lookup goes through it too');
+    my ($read) = $src =~ /^(sub _readArtist \{.*?^\})/ms;
+    ok(scalar($warm && $warm =~ /_readArtist\(/ && $warm !~ /SimpleAsyncHTTP/
+              && $read && $read !~ /SimpleAsyncHTTP/ && $read =~ /_netGet\(/),
+       'the band lookup goes through it too (via _readArtist)');
 }
 {
     # And the chain really does run end to end through the seam.
@@ -307,6 +330,50 @@ ok(!defined $API->peekCollabs($HOLLY), 'clearArtistCache removes the collaborati
     @URLS = ();
     $API->warmCollaborations($HOLLY);
     ok(!@URLS, 'a vetted artist costs nothing on the next render');
+}
+
+# ---------------------------------------------------------------------------
+# 7. ONE REQUEST PER CANDIDATE (stage 1, 2026-09-29). The size test and the
+#    "has any release group?" test are answered by ONE lookup,
+#    `?inc=artist-rels+release-groups`; a candidate that passed the size test
+#    used to pay a second request for a release-group count.
+# ---------------------------------------------------------------------------
+{
+    %CACHE = (); @URLS = ();
+    $API->warmBandMembers($HOLLY, sub {});
+    my $afterBands = scalar @URLS;
+    $API->warmCollaborations($HOLLY);
+    my @vet = @URLS[$afterBands .. $#URLS];
+    # Holly's five candidates: the Brokeoffs, Band Aid, Amnesty, the Quintet,
+    # Six Of Us (Avenue A is a band, so never a candidate).
+    ok(scalar(@vet) == 5, '7: five candidates, five requests (one each)');
+    ok(scalar(!grep { !m{/artist/[^?]+\?inc=artist-rels\+release-groups&fmt=json$} } @vet),
+       '7: ... every one the combined lookup');
+    ok(scalar(!grep { m{release-group\?artist=} } @URLS),
+       '7: ... and no release-group count is ever asked for');
+    ok(scalar($names->($API->peekCollabs($HOLLY)) eq 'Holly Golightly and The Brokeoffs,The Quintet'),
+       '7: ... with the same survivors as before');
+
+    # A reply WITHOUT the list is malformed, so it is a failed lookup: nothing
+    # cached, retried next visit. Read as "no release groups" it would drop a
+    # real collaboration for 14 days.
+    %CACHE = (); @URLS = ();
+    local %NOLIST = (brokeoffs => 1);
+    warm($HOLLY);
+    ok(!defined $API->peekCollabs($HOLLY), '7: a reply with no release-group list caches nothing');
+}
+{
+    # The count cache is no longer consulted: the lookup answers. A count of 0
+    # cached earlier (by a search, say) does not drop a target whose lookup
+    # lists release groups — the newer answer wins.
+    %CACHE = (); @URLS = ();
+    $API->warmBandMembers($HOLLY, sub {});
+    $CACHE{'dsc:rgcount:1:brokeoffs'} = 0;
+    $API->warmCollaborations($HOLLY);
+    ok(scalar($names->($API->peekCollabs($HOLLY)) =~ /^Holly Golightly and The Brokeoffs/),
+       '7: a stale cached count of 0 no longer decides; the lookup does');
+    ok(($CACHE{'dsc:rgcount:1:brokeoffs'} // 'gone') eq '0' && !defined $CACHE{'dsc:rgcount:1:five'},
+       '7: ... and the vetting writes no release-group count of its own');
 }
 
 print "\n$pass passed, $fail failed\n";

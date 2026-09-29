@@ -199,6 +199,16 @@ Code from the 0.57.0 stash (`git stash list`: "0.56.0/0.57.0 working tree") may 
 `t_mbcands`, `t_mbfirst`, `t_canonfirst`), each re-read against this plan before it goes in. Nothing is taken
 unread.
 
+**Also decided here (added 2026-09-29): the combined name query, §A7 #4 of
+`docs/mb-efficiency-and-community-api-analysis.md`.** Replacing `_artistMbidByName`'s `artist:` then `alias:`
+passes with one `artist:"X" OR alias:"X"` query would save 1–2 requests for a name the name field cannot
+answer, but it re-scores the hits. Measured on the public API 2026-09-29: HAIM (the US trio) drops from 100
+to 84, below the ≥ 90 gate, and Haïm (a Raï pop act, 93) becomes the first name-equal hit, so HAIM would
+resolve to Haïm. It was held out of the efficiency work (stage 1, which built §A7 #1–#3) for that reason.
+Decide it here, where the ranked list already runs the combined query for its alias tier
+(`docs/unified-artist-resolver-plan.md` §1), and measure any use of it in `_artistMbidByName` against the
+1,117 library artists before it changes an answer.
+
 ## 6. Part D — the search list, MusicBrainz first (redo)
 
 The ledger decision `THE SEARCH LIST IS MUSICBRAINZ-FIRST` stands (Simon: "searching MB first to get the

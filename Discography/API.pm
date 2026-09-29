@@ -1775,7 +1775,8 @@ sub _aliasKey { 'dsc:alias:2:' . lc($_[0] // '') }
 # MusicBrainz's CANONICAL name for the artist. The alias fetch has always had
 # it (it uses `$d->{name}` to keep the canonical spelling out of the alias
 # list) and threw it away; the fold needs it to label a merged row. Written by
-# warmArtistAliases, so it costs no extra request.
+# _readArtist (the one artist read behind both warmArtistAliases and
+# warmBandMembers) and by the name resolver, so it costs no extra request.
 sub _mbNameKey { 'dsc:mbname:1:' . lc($_[0] // '') }
 
 # THE CAUSE OF THE MISSING NAME, FOUND 2026-07-31 (see peekArtistName below,
@@ -1916,36 +1917,10 @@ sub warmArtistAliases {
         _dbg("aliases $mbid: cached, but no canonical name - refetching for it");
     }
 
-    _netGet(_mbBase() . "artist/$mbid?inc=aliases&fmt=json",
-        sub {
-            my $d = eval { from_json(shift->content) };
-            my @names;
-            if (!$@ && ref $d eq 'HASH' && ref $d->{aliases} eq 'ARRAY') {
-                my %seen;
-                for my $a (@{ $d->{aliases} }) {
-                    next unless ref $a eq 'HASH';
-                    my $n = $a->{name};
-                    next unless defined $n && length $n;
-                    next if lc $n eq lc($d->{name} // '');   # the name itself
-                    push @names, $n unless $seen{ lc $n }++;
-                }
-            }
-            _dbg("aliases $mbid: " . (@names ? join(', ', @names) : 'none'));
-            eval { $cache->set(_aliasKey($mbid), \@names, ALIAS_TTL); 1 };
-            # Same response, no extra request — see peekArtistName. Kept in
-            # memory TOO: this is the value that was measured missing from the
-            # cache while the alias list beside it survived, and every caller
-            # treats its absence as "no canonical name exists".
-            if (ref $d eq 'HASH' && defined $d->{name} && length $d->{name}) {
-                $mbNameMem{ lc $mbid } = $d->{name};
-                _setMbName($mbid, $d->{name});
-            }
-            $cb->(\@names);
-        },
-        # Errors are NOT cached - an alias list is an enabler, and pinning an
-        # empty one for a month would silently disable the retry.
-        sub { $cb->([]) },
-        timeout => 12);
+    # ONE request for the aliases AND the band members (stage 1, 2026-09-29):
+    # _readArtist fetches the artist resource once and fills both caches, so
+    # the band lookup later in the MB chain finds its answer already there.
+    _readArtist($mbid, sub { $cb->($_[0] ? $_[0]{aliases} : []) });
     return;
 }
 
@@ -2405,9 +2380,11 @@ sub peekEditions {
 # deadline, so on a big artist a library album's exact-MBID match wasn't ready
 # and it fell into "Also in your library" until a re-entry (Simon's Esher Demos,
 # 2026-07-10). The user owns only a handful of albums, so resolve THOSE release
-# MBIDs directly instead: one `release/<mbid>?inc=release-groups` each, a few
-# requests, done well inside the deadline. Cached per release (14d), so a
-# revisit — or the full browse landing later — costs nothing.
+# MBIDs directly instead: one search for up to 50 of them at a time, and a
+# `release/<mbid>?inc=release-groups` lookup for any the search does not
+# return (see warmLocalReleases), done well inside the deadline. Cached per
+# release (14d), so a revisit — or the full browse landing later — costs
+# nothing.
 # ---------------------------------------------------------------------------
 
 use constant REL2RG_TTL => 14 * 86400;
@@ -2429,11 +2406,31 @@ sub peekLocalReleaseMap {
 
 my %rel2rgInFlight;
 
-# Resolve the uncached release MBIDs serially (1.1s gap), caching each release's
-# group. $cb fires once when all are done (or immediately if none need doing).
-# '' is cached for a release with no group / a 404 (e.g. the tag was actually a
-# GROUP mbid — _mbidMatch handles that case directly, so no retry is wanted).
-# HTTP failures cache nothing and are retried on a later visit.
+# BATCHED FIRST (stage 1, 2026-09-29; docs/mb-efficiency-and-community-api-
+# analysis.md A7 #2). One search, `release?query=reid:A OR reid:B OR ...`,
+# answers up to REL_BATCH_MAX releases at once. MEASURED on the public API: 50
+# real release ids in one request, all 50 resolved to the right group (59 KB,
+# 0.3s, a 3,002-character URL); 10 of 10 on the mirror. A library holding 20
+# tagged albums by one artist now costs 1 request instead of 20.
+#
+# The search only ever SAVES requests; it never decides a verdict alone. An id it
+# does not return — a GROUP id tagged as an album (no release has that id; the
+# measured case), a release newer than the search index, every id on a mirror
+# whose search index was never built — goes to the one-by-one lookup below,
+# unchanged, and gets exactly the verdict it got before (a 404 caches ''). A
+# failed or unreadable search sends its whole batch the same way. So the worst
+# case costs what it did before plus one request, and the answers are the ones
+# the lookup gives. A single uncached id skips the search: its lookup is already
+# one request.
+use constant REL_BATCH_MAX => 50;
+
+# Resolve the uncached release MBIDs: in batches by search where there are two
+# or more, then one by one for whatever the search left (1.1s apart on the
+# public API — the queue's gap). $cb fires once when all are done (or
+# immediately if none need doing). '' is cached for a release with no group / a
+# 404 (e.g. the tag was actually a GROUP mbid — _mbidMatch handles that case
+# directly, so no retry is wanted). HTTP failures cache nothing and are retried
+# on a later visit.
 sub warmLocalReleases {
     my ($class, $mbids, $cb) = @_;
     $cb ||= sub {};
@@ -2445,11 +2442,67 @@ sub warmLocalReleases {
     $rel2rgInFlight{$_} = 1 for @todo;
     _dbg('local-release warm: ' . scalar(@todo) . ' release(s) to resolve directly');
 
-    # Self-passing closure, not a captured lexical (the 0.30.1 leak fix): this
-    # runs on every page open that has unresolved release mbids.
-    my $next = sub {
+    my @single;       # what the search did not settle -> one lookup each
+    my @batches;
+    if (@todo > 1) { push @batches, [ splice(@todo, 0, REL_BATCH_MAX) ] while @todo }
+    else           { @single = @todo }
+
+    # Self-passing closures, not captured lexicals (the 0.30.1 leak fix): these
+    # run on every page open that has unresolved release mbids.
+    my $next;   # the one-by-one leg, defined below; $search hands over to it
+    my $search = sub {
         my ($self) = @_;
-        my $m = shift @todo;
+        my $batch = shift @batches;
+        return $next->($next) unless $batch;
+
+        # Ids arrive lowercased (Sources::localAlbums), as MB returns them;
+        # %orig still maps back to the id as given, which is what the cache
+        # key and the in-flight marker were built from.
+        my %orig = map { lc($_) => $_ } @$batch;
+        my $q = join ' OR ', map { 'reid:' . lc $_ } @$batch;
+        (my $safe = $q) =~ s/([^A-Za-z0-9])/sprintf("%%%02X",ord($1))/ge;
+        my $url = _mbBase() . 'release?query=' . $safe
+                . '&limit=' . scalar(@$batch) . '&fmt=json';
+
+        my $fallBack = sub {
+            my ($why) = @_;
+            push @single, @$batch;
+            _dbg("local-release search: $why - " . scalar(@$batch)
+                 . ' release(s) to look up one by one');
+            $self->($self);
+        };
+        _netGet($url,
+            sub {
+                my $data = eval { from_json(shift->content) };
+                return $fallBack->('unreadable reply')
+                    unless !$@ && ref $data eq 'HASH' && ref $data->{releases} eq 'ARRAY';
+                my %got;
+                for my $r (@{ $data->{releases} }) {
+                    next unless ref $r eq 'HASH';
+                    my $m = $orig{ lc($r->{id} // '') } or next;   # only ids we asked for
+                    next if exists $got{$m};
+                    my $rg = ref $r->{'release-group'} eq 'HASH'
+                           ? lc($r->{'release-group'}{id} // '') : '';
+                    next unless $rg;     # a hit without its group: the lookup decides
+                    eval { $cache->set(_rel2rgKey($m), $rg, REL2RG_TTL); 1 }
+                        or $log->warn("local-release cache set failed: $@");
+                    $got{$m} = $rg;
+                    delete $rel2rgInFlight{$m};
+                }
+                my @miss = grep { !exists $got{$_} } @$batch;
+                push @single, @miss;
+                _dbg('local-release search: ' . scalar(keys %got) . ' of '
+                     . scalar(@$batch) . ' resolved in one request'
+                     . (@miss ? '; ' . scalar(@miss) . ' to look up one by one' : ''));
+                $self->($self);
+            },
+            sub { $fallBack->('request failed (' . (shift->error // 'HTTP error') . ')') },
+            timeout => 15);
+    };
+
+    $next = sub {
+        my ($self) = @_;
+        my $m = shift @single;
         unless ($m) { $cb->(); return; }
 
         my $done = sub { delete $rel2rgInFlight{$m}; $self->($self); };
@@ -2486,7 +2539,7 @@ sub warmLocalReleases {
             timeout => 15);
     };
 
-    $next->($next);
+    $search->($search);   # the batches first; it hands over to $next when done
 }
 
 # ---------------------------------------------------------------------------
@@ -2524,7 +2577,7 @@ sub peekBands {
 # collaborator count separates them cleanly: real duos and side projects have
 # 1-5, charity ensembles start at 10. So a link is kept when its target has
 # 1..COLLAB_MAX_MEMBERS collaborators and at least one release group. Each
-# candidate costs one artist-rels lookup plus a (cached) release-group count.
+# candidate costs ONE artist lookup, which carries both (stage 1; _vetCollabs).
 use constant COLLAB_MAX_MEMBERS => 5;
 use constant COLLAB_CHECK_MAX   => 8;    # candidates vetted per artist, at most
 
@@ -2564,14 +2617,33 @@ sub _vetCollabs {
             sub { $onData->(undef) },
             timeout => 12);
     };
+    # ONE REQUEST PER CANDIDATE (stage 1, 2026-09-29; docs/mb-efficiency-and-
+    # community-api-analysis.md A7 #3). The target's relations AND its release
+    # groups come from one lookup, `?inc=artist-rels+release-groups`, where a
+    # candidate that passed the size test used to pay a second request,
+    # `release-group?artist=<id>&limit=1`, for the count. MEASURED on the public
+    # API against those two calls: Fripp & Eno (2 collaborators, 11 groups),
+    # Harmonia 76 (2, 2), N.M.L. NO MORE LANDMINE (22, 1) and the Shostakovich
+    # Trio (0, 0) — identical relations, and the listed groups equal the count.
+    # The list stops at 25 (Sonic Boom: 25 of 29) and includes groups where the
+    # act is only the SECOND credit (15 of Sonic Boom's 18), as the count does,
+    # so "has at least one release group" reads the same.
+    #
+    # MB always sends the list, empty for an act with none (the Trio: `[]`), so a
+    # reply WITHOUT it is malformed and counts as a failed lookup — never as
+    # "no release groups", which would drop a real collaboration for 14 days.
+    #
+    # The release-group COUNT cache (dsc:rgcount) is no longer written here: a
+    # list that stops at 25 is not a count, and that key keeps its exact meaning
+    # for every reader. Nor is it read here any more: the one lookup answers.
     my $next = sub {
         my ($self) = @_;
         my $c = $cands->[$i++];
         return $done->(\@kept, $ok) unless $c && $ok;
         my $step = sub { $self->($self) };
-        $get->(_mbBase() . 'artist/' . $c->{mbid} . '?inc=artist-rels&fmt=json', sub {
+        $get->(_mbBase() . 'artist/' . $c->{mbid} . '?inc=artist-rels+release-groups&fmt=json', sub {
             my $d = shift;
-            unless ($d) { $ok = 0; return $step->() }
+            unless ($d && ref $d->{'release-groups'} eq 'ARRAY') { $ok = 0; return $step->() }
             my %who;
             for my $rel (@{ ref $d->{relations} eq 'ARRAY' ? $d->{relations} : [] }) {
                 next unless ($rel->{type} // '') eq 'collaboration'
@@ -2580,20 +2652,9 @@ sub _vetCollabs {
                 $who{$id} = 1;
             }
             my $n = scalar keys %who;
-            return $step->() unless $n >= 1 && $n <= COLLAB_MAX_MEMBERS;
-            my $rgc = $class->peekReleaseGroupCount($c->{mbid});
-            if (defined $rgc) {
-                push @kept, $c if $rgc > 0;
-                return $step->();
-            }
-            $get->(_mbBase() . 'release-group?artist=' . $c->{mbid} . '&fmt=json&limit=1', sub {
-                my $r = shift;
-                my $cnt = $r ? ($r->{'release-group-count'} // 0) : undef;
-                unless (defined $cnt) { $ok = 0; return $step->() }
-                eval { $cache->set(_rgCountKey($c->{mbid}), $cnt + 0, RGCOUNT_TTL); 1 };
-                push @kept, $c if $cnt > 0;
-                $step->();
-            });
+            push @kept, $c if $n >= 1 && $n <= COLLAB_MAX_MEMBERS
+                           && @{ $d->{'release-groups'} };
+            $step->();
         });
     };
     $next->($next);
@@ -2640,11 +2701,148 @@ sub warmCollaborations {
     return;
 }
 
-my %bandsInFlight;
+# ---------------------------------------------------------------------------
+# ONE READ OF THE ARTIST RESOURCE (stage 1 of the MusicBrainz efficiency plan,
+# docs/mb-efficiency-and-community-api-analysis.md A7 #1; 2026-09-29).
+#
+# warmArtistAliases asked for `artist/<mbid>?inc=aliases` and warmBandMembers
+# for `artist/<mbid>?inc=artist-rels` — the same resource, twice. MEASURED on
+# the public API (Radiohead): `?inc=aliases+artist-rels` returns exactly the
+# alias list of the first and exactly the relations of the second, for 974
+# bytes more than the relations call alone (19,956 B vs 18,982 B). So both now
+# read it through this sub, which fills every cache the response can: the alias
+# list, MB's canonical name, the band list and the collaboration candidates.
+# Whichever caller comes first pays the one request; the other finds its cache
+# warm, or joins the request in flight.
+#
+# The saving on the artist page: an AMBIGUOUS name fetched its aliases for the
+# streaming warm AND its band members for "Also a member of" — two requests,
+# now one. Every other artist pays the one request it always paid, and gets its
+# aliases with it.
+#
+# A CALLER THAT ARRIVES MID-FLIGHT WAITS (getArtistCandidates' pattern, 0.47.4).
+# The old warmBandMembers answered it at once with nothing cached, which was
+# harmless while the band lookup was its own only caller. Now the streaming
+# warm's alias fetch can be the request in flight when the serial MB chain
+# reaches the band lookup, and answering early would push the bands off the
+# first render. The wait is one request, bounded by its timeout and the queue's
+# watchdog.
+#
+# $cb->($r): $r = { aliases, bands, cands } (arrayrefs, each cached as it
+# always was) when a readable response arrived; undef otherwise, and then
+# NOTHING is cached, so the next visit asks again. (The alias fetch used to
+# cache an EMPTY list for ALIAS_TTL on an unreadable reply, while the band
+# lookup cached nothing. One request gets one rule, and it is the one that
+# cannot pin a blip for a month.)
+#
+# The in-flight key is the mbid exactly as passed, because the band keys are
+# built from it as passed (every caller hands over a lowercased id).
+# ---------------------------------------------------------------------------
+my %artistReadWaiting;
+
+sub _readArtist {
+    my ($mbid, $cb) = @_;
+    if ($artistReadWaiting{$mbid}) {
+        push @{ $artistReadWaiting{$mbid} }, $cb;
+        return;
+    }
+    $artistReadWaiting{$mbid} = [ $cb ];
+    my $settle = sub {
+        my ($r) = @_;
+        # Released BEFORE the callbacks run (getArtistCandidates' reason): one
+        # may ask again at once, and a marker still held would wedge the artist
+        # with no request in flight to release it.
+        my $queued = delete $artistReadWaiting{$mbid};
+        $_->($r) for @{ $queued || [] };
+    };
+
+    _netGet(_mbBase() . "artist/$mbid?inc=aliases+artist-rels&fmt=json",
+        sub {
+            my $d = eval { from_json(shift->content) };
+            if ($@ || ref $d ne 'HASH') {
+                _dbg("artist read: unparseable for $mbid (nothing cached - retry next visit)");
+                return $settle->(undef);
+            }
+
+            # ALIASES: every spelling but the name itself, each once.
+            my (@names, %seenA);
+            for my $al (@{ ref $d->{aliases} eq 'ARRAY' ? $d->{aliases} : [] }) {
+                next unless ref $al eq 'HASH';
+                my $n = $al->{name};
+                next unless defined $n && length $n;
+                next if lc $n eq lc($d->{name} // '');   # the name itself
+                push @names, $n unless $seenA{ lc $n }++;
+            }
+            _dbg("aliases $mbid: " . (@names ? join(', ', @names) : 'none'));
+            eval { $cache->set(_aliasKey($mbid), \@names, ALIAS_TTL); 1 };
+
+            # MB'S CANONICAL NAME — see peekArtistName. Kept in memory TOO: this
+            # is the value that was measured missing from the cache while the
+            # alias list beside it survived, and every caller treats its absence
+            # as "no canonical name exists". It is also the only free source of
+            # the name for an artist resolved from the LIBRARY TAG, which never
+            # runs an MB search.
+            if (defined $d->{name} && length $d->{name}) {
+                $mbNameMem{ lc $mbid } = $d->{name};
+                _setMbName($mbid, $d->{name});
+            }
+
+            # BANDS: "member of band", forward = this artist is a member of the
+            # target group (backward would be the group listing its members).
+            my $rels = ref $d->{relations} eq 'ARRAY' ? $d->{relations} : [];
+            my (%seenB, @bands);
+            for my $rel (@$rels) {
+                next unless ($rel->{type} // '') eq 'member of band';
+                next unless ($rel->{direction} // '') eq 'forward';
+                my $band = $rel->{artist} or next;
+                my $id = lc($band->{id} // '') or next;
+                next if $seenB{$id}++;
+                push @bands, { mbid => $id, name => $band->{name} };
+            }
+            eval { $cache->set(_bandsKey($mbid), \@bands, BANDS_TTL); 1 }
+                or $log->warn("band-members cache set failed: $@");
+            _dbg("band-members: $mbid -> " . scalar(@bands) . ' band(s): '
+                 . join(', ', map { $_->{name} } @bands));
+
+            # COLLABORATIONS: forward links, never a target already listed as a
+            # band, each once. STORED, NOT VETTED HERE: the band lookup sits in
+            # the serial MB chain AHEAD of the bootleg pass, and the first render
+            # waits on that pass under `official_wait` (15s), so vetting here
+            # would push the page past its deadline with bootlegs unfiltered
+            # (review 2026-09-19). warmCollaborations reads these back at the END
+            # of the chain.
+            my %isBand = map { $_->{mbid} => 1 } @bands;
+            my (%seenC, @cands);
+            for my $rel (@$rels) {
+                next unless ($rel->{type} // '') eq 'collaboration'
+                         && ($rel->{direction} // '') eq 'forward';
+                my $t  = $rel->{artist} or next;
+                my $id = lc($t->{id} // '') or next;
+                next if $isBand{$id} || $seenC{$id}++;
+                push @cands, { mbid => $id, name => $t->{name} };
+            }
+            splice(@cands, COLLAB_CHECK_MAX) if @cands > COLLAB_CHECK_MAX;
+            eval { $cache->set(_collabCandKey($mbid), \@cands, BANDS_TTL); 1 }
+                or $log->warn("collaboration candidates cache set failed: $@");
+            _dbg("collaborations: $mbid -> " . scalar(@cands)
+                 . ' candidate(s) to vet'
+                 . (@cands ? ': ' . join(', ', map { $_->{name} } @cands) : ''));
+
+            $settle->({ aliases => \@names, bands => \@bands, cands => \@cands });
+        },
+        sub {
+            _dbg("artist read: lookup failed for $mbid (aliases + band members): "
+                 . (shift->error // 'HTTP error') . ' - not cached, retry next visit');
+            $settle->(undef);
+        },
+        timeout => 15);
+    return;
+}
 
 # Resolve the artist's "member of band" relationships once and cache them, and
 # (same response) note its collaboration candidates for warmCollaborations.
-# $cb fires exactly once (cache hit / done / failure / already in flight).
+# $cb fires exactly once (cache hit / done / failure). The request itself is
+# _readArtist's, shared with warmArtistAliases.
 sub warmBandMembers {
     my ($class, $artistMbid, $cb) = @_;
     $cb ||= sub {};
@@ -2655,80 +2853,8 @@ sub warmBandMembers {
     return $cb->() if defined $cache->get(_bandsKey($artistMbid))
                    && (defined $cache->get(_collabsKey($artistMbid))
                        || defined $cache->get(_collabCandKey($artistMbid)));
-    return $cb->() if $bandsInFlight{$artistMbid};
-    $bandsInFlight{$artistMbid} = 1;
-
-    my $url = _mbBase() . 'artist/' . $artistMbid . '?inc=artist-rels&fmt=json';
-
-    _netGet($url,
-        sub {
-            my $data = eval { from_json(shift->content) };
-            if ($@ || ref $data ne 'HASH') {
-                _dbg("band-members: unparseable for $artistMbid (retry next visit)");
-                delete $bandsInFlight{$artistMbid};
-                return $cb->();          # nothing cached -> retried later
-            }
-            my %seen;
-            my @bands;
-            for my $rel (@{ ref $data->{relations} eq 'ARRAY' ? $data->{relations} : [] }) {
-                next unless ($rel->{type} // '') eq 'member of band';
-                # 'forward' = this artist is a member of the target group. (The
-                # backward direction would be the group listing its members.)
-                next unless ($rel->{direction} // '') eq 'forward';
-                my $b = $rel->{artist} or next;
-                my $id = lc($b->{id} // '') or next;
-                next if $seen{$id}++;
-                push @bands, { mbid => $id, name => $b->{name} };
-            }
-            eval { $cache->set(_bandsKey($artistMbid), \@bands, BANDS_TTL); 1 }
-                or $log->warn("band-members cache set failed: $@");
-            # This is the ARTIST resource, so it carries MB's canonical name --
-            # free, on a request we already make for every artist. It is the
-            # only free source for an artist resolved from the LIBRARY TAG,
-            # which never runs an MB search. Landing here means it arrives on
-            # the second load (this warm sits in the MB chain, after the
-            # candidate warm) -- the same contract bands and emblems already
-            # have. A name-resolved artist gets it immediately from the
-            # resolver instead.
-            _setMbName($artistMbid, $data->{name});
-            _dbg("band-members: $artistMbid -> " . scalar(@bands) . ' band(s): '
-                 . join(', ', map { $_->{name} } @bands));
-
-            # Collaborations: forward links, never a target already listed as
-            # a band, each once, then vetted (see COLLAB_MAX_MEMBERS).
-            my %isBand = map { $_->{mbid} => 1 } @bands;
-            my (%seenC, @cands);
-            for my $rel (@{ ref $data->{relations} eq 'ARRAY' ? $data->{relations} : [] }) {
-                next unless ($rel->{type} // '') eq 'collaboration'
-                         && ($rel->{direction} // '') eq 'forward';
-                my $t  = $rel->{artist} or next;
-                my $id = lc($t->{id} // '') or next;
-                next if $isBand{$id} || $seenC{$id}++;
-                push @cands, { mbid => $id, name => $t->{name} };
-            }
-            splice(@cands, COLLAB_CHECK_MAX) if @cands > COLLAB_CHECK_MAX;
-            # STORED, NOT VETTED HERE. This sub sits in the serial MB chain
-            # AHEAD of the bootleg pass, and the first render waits on that pass
-            # under `official_wait` (15s): vetting 8 candidates is up to 17.6s
-            # against the public API, so the deadline would fire and the page
-            # would render with no official map — bootlegs unfiltered, for a
-            # section that is second-load anyway (review 2026-09-19). The
-            # vetting runs at the END of the chain instead; see
-            # warmCollaborations, which reads these candidates back.
-            eval { $cache->set(_collabCandKey($artistMbid), \@cands, BANDS_TTL); 1 }
-                or $log->warn("collaboration candidates cache set failed: $@");
-            _dbg("collaborations: $artistMbid -> " . scalar(@cands)
-                 . ' candidate(s) to vet'
-                 . (@cands ? ': ' . join(', ', map { $_->{name} } @cands) : ''));
-            delete $bandsInFlight{$artistMbid};
-            $cb->();
-        },
-        sub {
-            _dbg("band-members: lookup failed for $artistMbid: " . (shift->error // 'HTTP error'));
-            delete $bandsInFlight{$artistMbid};
-            $cb->();                     # not cached -> retried later
-        },
-        timeout => 15);
+    _readArtist($artistMbid, sub { $cb->() });
+    return;
 }
 
 my %officialInFlight;

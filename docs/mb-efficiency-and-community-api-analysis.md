@@ -4,6 +4,13 @@
 **Everything below was measured live today** against `https://musicbrainz.org/ws/2/` and
 `https://api.lms-community.org`. No number here is an estimate unless it says so.
 
+> **Status 2026-09-29 — stage 1 (§F) is in the code, not built.** §A7 #1–#3 are implemented and committed on
+> `dev`: aliases and band members from one `artist/<id>?inc=aliases+artist-rels` read, owned albums in
+> `reid:` batches of 50, and one `inc=artist-rels+release-groups` lookup per collaboration candidate
+> (`CLAUDE.md` dev log, "MusicBrainz efficiency stage 1"; 47 suites, 1,443 assertions, 0 failures).
+> **§A7 #4 is HELD for the resolver work** (Part C of `docs/community-api-and-resolver-plan.md`): the combined
+> query changes which artist a name resolves to. Measured: HAIM would open Haïm (§A7). Stages 2–4 not started.
+
 ---
 
 ## 0. Summary in ten lines
@@ -17,7 +24,8 @@
 4. It also removes a spine page cap for free (a known limit, not a defect): today the spine
    stops at 600 groups, so 450 of the Beatles' groups are never fetched.
 5. Four smaller savings on top: one artist call instead of two, one batched lookup instead of N,
-   one collaboration call instead of two, one name query instead of up to three.
+   one collaboration call instead of two, one name query instead of up to three. *(2026-09-29: the
+   first three are built; the fourth is held for the resolver, §A7.)*
 6. The search route has **one hard limit**: MusicBrainz refuses search results past 500. Above
    that (Elvis, Miles Davis, Bach) we keep today's browse. Rare.
 7. **Five places still behave differently on the public API than on a mirror.** All five *skip*
@@ -205,6 +213,22 @@ Evidence for #4, measured today:
 
 This one changes scoring, so it needs the exact-name preference and the ≥90 gate re-pinned in
 `t_thelas` / `t_fuzzy` before it goes in.
+
+**Status 2026-09-29.** #1–#3 are implemented (committed on `dev`, not built). **#4 is HELD for the resolver
+work**, because re-scoring changes the ANSWER, not only the scores. Measured on the public API, the mirror
+identical:
+
+| query | top hits |
+|---|---|
+| `artist:"HAIM"` (today) | **HAIM** (US pop-rock trio) 100, Haim Saban 89, Emmanuelle Haïm 83, Haïm 78 |
+| `artist:"HAIM" OR alias:"HAIM"` (#4) | Haim Saban 100, **Haïm** (Raï pop act) 93, Este Haim 87, Danielle Haim 84, HAIM 84 |
+
+The exact-name preference takes the first name-equal hit scoring ≥ 90, so with #4 "HAIM" opens Haïm's page,
+and the answer is cached for 30 days. The resolver plan keeps `_artistMbidByName` exactly as today
+(`docs/unified-artist-resolver-plan.md` §2.2), and its one new rule was measured at 0 changes over the
+1,117 library artists. #4 therefore moves into its Part C (`docs/community-api-and-resolver-plan.md`), to be
+measured there against the same artists. Its saving is small either way: 1–2 requests, only for a name the
+name field cannot answer, once per 30 days.
 
 ### A8. What cannot be batched — measured, do not re-derive
 
@@ -419,6 +443,8 @@ Each stage: suites green before and after, then a live check **on the public API
 1. **The four cheap ones (A7).** No design change, no new route: fold aliases into the band-member
    call, batch the owned-release lookups, fold the collaboration vetting, combine the name and
    alias query. Saves ~10 requests on a typical cold page and needs no new caching.
+   **Status 2026-09-29: the first three are in the code (committed on `dev`, not built). Combining the
+   name and alias query is HELD for the resolver's Part C (§A7).**
 2. **The search route (A1–A5).** New `getReleaseList` that runs the search and fills the spine,
    `o`, `r` and `t` from one place, with the >500 fallback to today's browses, and the
    `inc=aliases` browse demoted to the background. This is the one that turns 40 requests into 6.
