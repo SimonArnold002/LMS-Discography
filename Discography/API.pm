@@ -2065,8 +2065,9 @@ sub mbGap { _mbGap($_[1] // 1.1) }
 # getReleaseGroups(mbid => $m, force => 0|1, read => 0|1,
 #                  onDone => sub(\@rgs), onError => sub($msg))
 # Each entry: { mbid, title, date ('YYYY[-MM[-DD]]' or ''), type (primary,
-# may be ''), secondary => [..] }. Cached whole; force bypasses the read (the
-# write still happens, so Refresh renews the entry).
+# may be ''), secondary => [..] }. Cached whole; force bypasses the cache read
+# (the write still happens, so Refresh renews the entry). It does not skip the
+# artist read that read => 1 asks for.
 #
 # read => 1 is the ARTIST PAGE's way in (stage 2, 2026-09-29): read the artist
 # first (_readArtist), because the page makes that request anyway for its band
@@ -2949,9 +2950,11 @@ my %officialInFlight;
 # renders. The release-group search is asked for them BY ID, RGID_BATCH_MAX to a
 # request, and each hit lists the group's releases with their status and title.
 # Builds the whole map, then caches it. Nothing is cached until every request
-# has answered: a release-group is a bootleg only when NONE of its releases is
-# official, so a partial map cannot prove bootleg-ness and must never be used
-# to hide anything.
+# has answered. Each group's verdict is whole in its own hit, so a part-built
+# map would be right for the groups it holds; it is still never cached, because
+# a cached map counts as done for OFFICIAL_TTL: the groups of the request that
+# failed would go unchecked, and shown unfiltered, for 14 days. A failure caches
+# nothing, so the next visit asks for every group again.
 #
 # Only the groups asked for are read from a reply. A group listed with no
 # releases, or not returned at all (newer than the search index), stays out of

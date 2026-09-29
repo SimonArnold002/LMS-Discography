@@ -122,7 +122,7 @@ because line numbers rot on the next edit.
 | Anything that works only on a mirror, or skips work on the public API ("throttle-gated") — a DEFECT, not policy | top | `THE PUBLIC API IS WHAT WE WORK TO` |
 | Stage 1's six behaviour changes (empty verdict under an alias name, band lookup waiting, nothing cached on an unreadable read, no `rgcount` from the vetting, `reid:` index lag, an unindexed mirror's extra request) — all kept | A2 | `STAGE 1 CHANGED SIX BEHAVIOURS ON PURPOSE` |
 | The combined `artist:"X" OR alias:"X"` name query (analysis §A7 #4) — HELD for the resolver: it makes HAIM open Haïm | A2 | `A7 #4 IS HELD FOR THE RESOLVER` |
-| Stage 2's five behaviour changes (a promo-only group hidden, the release map's index lag, a group with no releases listed shown, owned-album lookups after the render, a small artist's spine refreshed by the read) — all deliberate | A2 | `STAGE 2 CHANGED FIVE BEHAVIOURS ON PURPOSE` |
+| Stage 2's five behaviour changes (a promo-only group hidden, the release map's index lag, a group with no releases listed shown, owned-album lookups after the render, so a render without the map (check failed or past the deadline) places them by title — the Esher Demos wait a visit, a small artist's spine refreshed by the read) — all deliberate | A2 | `STAGE 2 CHANGED FIVE BEHAVIOURS ON PURPOSE` |
 | MB's artist lookup listing only first-credited groups; omitting an empty `release-groups`; a combined `inc=` returning less; a 50-id `reid:` search being too long | A3 | `MEASURED FOR STAGE 1` |
 | A non-UUID album id tag spoiling a `reid:` batch | A3 | `LMS VALIDATES MB ID TAGS AT SCAN` |
 | Paging the `arid:` search as a complete list; the search carrying group aliases; the artist read's group list as incomplete under 25; the by-id search's URL or release lists being cut short | A3 | `MEASURED FOR STAGE 2` |
@@ -512,7 +512,12 @@ always with its reason, and those stay suppressed. The code a fix added is new a
      index (first visit by title, as the Esher Demos were before 2026-07-10; the next visit by id), an album off
      the page (no tile to place it on either way), or every owned album when the check failed. Simon,
      2026-09-29: *"if we need next visit to get what we need lets look to use it but implement as efficiently as
-     possible"*.
+     possible"*. **A first render WITHOUT the release map places owned albums by title only**: when the check
+     fails or misses the `official_wait` deadline, an album only its id can place (the Esher Demos, the
+     2026-07-10 field case the old lookups-first order fixed) sits in "Also in your library" for that visit, and
+     the next visit places it. Against 0.56.1 that is a regression in that case only. ACCEPTED by Simon (review
+     of `e814a07`, 2026-09-30): live, the slowest check (The Beatles, 6 requests) took 7.9 s of the 15 s, and
+     putting the lookups first again costs a request on every first visit to an artist with tagged owned albums.
   5. **A small artist's spine is refreshed whenever the artist is read** (its band list or aliases expiring), as
      the read already refreshes those. The data is the browse's, and navigation is param-addressed since 0.35.0,
      so a spine refreshed between two renders of a visit cannot send a tap to the wrong row.
@@ -1245,7 +1250,7 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
-### 0.56.2 (2026-09-29) — MusicBrainz efficiency stage 2: the bootleg check asks by id; a small artist's spine comes from the artist read — BUILT, INSTALLED, VERIFIED LIVE, COMMITTED on dev (unpushed)
+### 0.56.2 (2026-09-29) — MusicBrainz efficiency stage 2: the bootleg check asks by id; a small artist's spine comes from the artist read — BUILT, INSTALLED, VERIFIED LIVE, REVIEWED, COMMITTED on dev (unpushed)
 - **Source:** `docs/mb-efficiency-and-community-api-analysis.md` §A11 and §F.2, re-designed today after the planned
   route (the search PAGED by artist, the alias browse demoted) was measured to lose groups (A3 `MEASURED FOR STAGE
   2`). Simon: *"yes correct and update docs then look to build. Whilst building be aware of all callers and
@@ -1335,6 +1340,24 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   4. Kraftwerk: read + 2 browse pages (`167 of 167`) + 2 by-id (`167 of 167 classified, 105 bootleg-only, 550
      releases mapped`): `match 'Radio‐Aktivität' [Kraftwerk]: Local=1, Qobuz=1` on the first visit. 6 requests
      before the render, as §A11 says. Click -> render 6.0 s (0.56.1: 12.4 s).
+- **Review (inline, 2026-09-30, of `c662b20..e814a07`: the stage-1 fix commit `3c907f8` and this entry's
+  `e814a07`): no code defect; 2 findings, 1 ACCEPTED, 1 FIXED.** Committed on `dev` (unpushed); comments and docs
+  only, so the zip is not rebuilt.
+  1. **ACCEPTED — a first render without the release map places owned albums by title only.** When the check
+     fails or misses the `official_wait` deadline, an album only its id can place (the Esher Demos) sits in "Also
+     in your library" for that visit; the next visit places it. A regression against 0.56.1 in that case only.
+     Kept on Simon's yes, and written into A2 `STAGE 2 CHANGED FIVE` #4, its index row, and the comment beside
+     the deadline in `_discographyView`.
+  2. **FIXED — three comments gave the old design's reasons.** `warmOfficial`'s header and the page chain's
+     AWAITED note said a partial map "cannot prove bootleg-ness"; by id each group's verdict is whole in its own
+     hit, and nothing is cached after a failure because a cached map counts as done for 14 days, which would
+     leave the failed request's groups unchecked. `getReleaseGroups`' "force bypasses the read" meant the cache
+     read, and now says so beside `read => 1`.
+  Checked and cleared: `3c907f8`'s four fixes; every caller of the changed subs, and the tools (none parses the
+  changed log lines or calls the old `warmOfficial` signature; `t_perf.pl`'s timings and `t_db.pl`'s `rgo:v4`
+  key are history and a sample); the by-id rules and limits (A3 `MEASURED FOR STAGE 2`); the new suites (no
+  list-context traps; captured fixtures); the shed seen live (the queue's retry, 0.51.18); the Live single on
+  Kraftwerk's Albums view ("Live etc. stay on Albums", 2026-09-24).
 
 ### (unbuilt, 2026-09-29) — MusicBrainz efficiency stage 1: three requests folded into ones already made; the fourth HELD for the resolver — COMMITTED on dev, NOT built
 - **Source:** `docs/mb-efficiency-and-community-api-analysis.md` §A7 and §F stage 1 (Simon: *"lets make a start

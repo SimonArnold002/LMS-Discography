@@ -1432,12 +1432,15 @@ sub _discographyView {
                                  $opts->{artist_id}, $opts->{artist}, $mbid,
                                  { fallback => _idFallback($opts) });
 
-                    # AWAITED, bounded. The bootleg map (a group is a bootleg only
-                    # if NONE of its releases is official) can't be used partial,
-                    # so the first render either waits for it or shows bootlegs —
-                    # we wait. One MB request per 100 groups on the page, at most
-                    # 6 (stage 2); the deadline still caps it, and a check that
-                    # misses it finishes in the background for the next entry.
+                    # AWAITED, bounded. The bootleg map is cached only whole
+                    # (API::warmOfficial says why), so the first render either
+                    # waits for it or shows bootlegs — we wait. One MB request per
+                    # 100 groups on the page, at most 6 (stage 2); the deadline
+                    # still caps it, and a check that misses it finishes in the
+                    # background for the next entry. A render the deadline
+                    # forces has no release map either, so an owned album only
+                    # its id can place (the Esher Demos) waits for the next
+                    # visit too (A2 `STAGE 2 CHANGED FIVE`, #4).
                     #
                     # ONE serial MB chain (never parallel — 2 chains break MB's
                     # 1 req/s etiquette): the band lookup, then the bootleg
