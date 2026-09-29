@@ -4,7 +4,10 @@
 **Status: PLAN. No code written.** Built from the code at the last dev push (`ba95148`, the 0.55.x tree) and
 from measurements taken on 2026-09-25. It supersedes the "what the code does today" parts of
 `docs/unified-artist-resolver-plan.md` (written against the 0.56.0 tree, since reverted) and the migration
-sections of `docs/hosted-lms-community-api.md`. Line numbers below are for `ba95148`.
+sections of `docs/hosted-lms-community-api.md`. Line numbers below are for `ba95148`, and so are the timings
+and request counts it calls "today" (The Beatles 23 s, ~43 requests); 0.56.2's live figures are in
+`docs/mb-efficiency-and-community-api-analysis.md` §F.2 (The Beatles: 14 requests, bootlegs hidden on the first
+visit).
 
 > **Corrected 2026-09-29** (`docs/mb-efficiency-and-community-api-analysis.md` §A11). The MusicBrainz half of
 > §2's merge, a paged `arid:<id> AND status:official` search, LOSES groups: The Beatles' 330 came back as 257

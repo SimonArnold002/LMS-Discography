@@ -1331,12 +1331,16 @@ sub warmCandidateCounts {
 #     Piano Project", both of which have real pages. Filtering on it would hide
 #     two genuine artists to remove four dead ends.
 #
-# THROTTLE-GATED, deliberately. One resolve + one count per row, cached
-# (dsc:mbid, dsc:rgcount) and serialised at MB's 1 req/s etiquette, is
-# milliseconds against a mirror but 15-30s for a first search of a new name on
-# the public API. So the filter runs only where MB is un-throttled; elsewhere
-# every row is kept, exactly as before. Deterministic per install — a given
-# user always sees the same list, so nothing ever shows then disappears.
+# THROTTLE-GATED — an OPEN VIOLATION, not a decision: CLAUDE.md's top rule
+# ("Known violations, OPEN") makes a gate that skips work on the public API a
+# defect, and stage 3 removes it (docs/mb-efficiency-and-community-api-
+# analysis.md §F step 3). How it works meanwhile: one resolve + one count per
+# row, cached (dsc:mbid, dsc:rgcount) and serialised at MB's 1 req/s
+# etiquette, is milliseconds against a mirror but 15-30s for a first search of
+# a new name on the public API. So the filter runs only where MB is
+# un-throttled; elsewhere every row is kept, exactly as before. Deterministic
+# per install — a given user always sees the same list, so nothing ever shows
+# then disappears.
 sub filterRowsWithContent {
     my ($class, $rows, $cb) = @_;
     $cb ||= sub {};

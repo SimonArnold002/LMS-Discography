@@ -128,9 +128,10 @@ my %NAME = (headcoatees => 'Thee Headcoatees', map { $_ => $T{$_}[0] } keys %T);
 
 sub response_for {
     my ($url) = @_;
-    # The band lookup reads the artist WITH its aliases since stage 1
-    # (`?inc=aliases+artist-rels`, shared with warmArtistAliases — see
-    # t_artistread.pl); the vetting reads each target's relations.
+    # The band lookup reads the artist WITH its aliases since stage 1, and its
+    # release groups since stage 2 (`?inc=aliases+artist-rels+release-groups`,
+    # shared with warmArtistAliases — see t_artistread.pl); the vetting reads
+    # each target's relations.
     if ($url =~ m{/artist/([^?]+)\?inc=(?:aliases\+)?artist-rels}) {
         my $id = $1;
         if (my $rels = $ARTIST{$id}) {

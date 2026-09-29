@@ -433,7 +433,7 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   working tree that built it was reverted on Simon's instruction (kept in `git stash`, "0.56.0/0.57.0 working tree").
   Today's code is still service-first. To be REDONE, to the public-API rule at the top of this file. (`Browse::_mbFirstRows`, `API::searchArtistCandidates`,
   `_withMbCandidates`; Simon, 2026-09-25: *"It should be searching MB first to get the discography then
-  streaming to make matches."*). The rows are the MusicBrainz artists whose NAME or ALIAS equals the query
+  streaming to make matches."*). IN THE STASHED BUILD, the rows are the MusicBrainz artists whose NAME or ALIAS equals the query
   (after `_nameKey`), in MB score order; the service/library rows attach to them by the mbid the row filter
   resolved (`_mbid`) or the library tag (`_ident_mbid`), and only rows MB does not return stay as rows of their
   own. **ORDER CORRECTED by measurement (PLANNED, not built — `docs/unified-artist-resolver-plan.md` §3):
@@ -441,12 +441,12 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   artists in name-field order (`getArtistCandidates`), then alias-only matches, with one measured exception — an
   alias act whose initials spell the query lifts above the name tier (ELO, PIL, NIN) — never MB score across both.** Owned rows still rank first (0.48.4). 0.37.0 had built the list from the services' artist searches
   with no recorded reason, and the likely ones no longer hold (the mirror's search index was unbuilt until
-  2026-07-12; name search is fuzzy, which the exact name-or-alias gate answers). The 0.43.0 "Other artists
-  with this name" section is GONE as a section: those artists are the list, a repeated name carries its MB
+  2026-07-12; name search is fuzzy, which the exact name-or-alias gate answers). In that build the 0.43.0 "Other artists
+  with this name" section was GONE as a section (today's code still has it): those artists are the list, a repeated name carries its MB
   description on line2. Do not propose going back to service-first rows, and do not re-add the 2+ rule
   (it dropped a lone artist: Hawkwind). `getArtistCandidates` (name field only) is deliberately unchanged:
   the bio's shared-name guard reads it, and an alias match is not "shares this name"; the plan's ranked list
-  reads it as its name tier. Pinned in `tools/t_mbcands.pl` and `tools/t_mbfirst.pl`.
+  reads it as its name tier. Pinned in the stash's `tools/t_mbcands.pl` and `tools/t_mbfirst.pl` (not in the tree).
 - **STAGE 1 CHANGED SIX BEHAVIOURS ON PURPOSE** (`API::_readArtist`, `%artistReadWaiting`, `warmArtistAliases`,
   `warmBandMembers`, `warmLocalReleases`, `_vetCollabs`, `Browse::_browsedAsSelf`; inline review 2026-09-29,
   Simon kept all six). Re-raise one only with a case its reason does not cover.
@@ -586,10 +586,10 @@ transcript will be rediscovered as a finding within days.
 - **Services: Qobuz / Tidal / Deezer, and Spotify via Spotty since 0.55.0.** No Bandcamp (cookie-dependent search + event-loop-blocking parsing in its plugin — excluded on purpose). Spotify was deferred, then BUILT in 0.55.0 from `docs/spotify-adapter-plan.md`. The old reason given here, "Spotty has no `getAPIHandler`", was WRONG: it has one (a CLASS method that needs a client). The real cost is that Discography is artist-first, so it needs Spotty's artist search + artist-albums calls, which no sibling uses.
 - **Spine = MusicBrainz release-groups** browsed by artist MBID (`release-group?artist=<mbid>&limit=100&offset=N`, serial pagination at MB's 1 req/s). `first-release-date` drives the date sort; primary type (Album/EP/Single/Compilation) + secondary types (Live/Remix — excluded by default) drive filtering. Art: CAA release-group front.
 - **Artist MBID**: prefer the library's `contributor.musicbrainz_id`; fall back to MB name search (port of LBF `getArtistMbidByName`).
-- **Resolver = trimmed port** of the LBF `_findPlayable` engine (the same port Pitchfork Reviews proved) — NOT a runtime dependency on LBF. New layer on top: `_resolveArtistBatch` — one artist-only search per service, matched against ALL release groups in a single pass (≈1 API call per service per artist, not per album). Known limit: service search caps ~50 albums; the v1.1 fix is the services' artist-discography endpoints.
+- **Resolver = trimmed port** of the LBF `_findPlayable` engine (the same port Pitchfork Reviews proved) — NOT a runtime dependency on LBF. New layer on top, built as `Sources::getCandidates` (designed as `_resolveArtistBatch`; `_resolveArtist` finds the service's artist): one artist-only search per service, matched against ALL release groups in a single pass (≈1 API call per service per artist, not per album). Known limit: service search caps ~50 albums; the v1.1 fix is the services' artist-discography endpoints.
 - **Tiles**: render instantly from MB data; playable via **resolve-on-play**; Material **emblems** appear opportunistically from cache (`extid` prefixed `qobuz:`/`tidal:`/`deezer:`). Drill-in shows every version: Local (real `album_id`) + per-service matches + "View on MusicBrainz" weblink.
 - **Settings live in the plugin** (not Material settings): default sort (newest/oldest), service priority (`svc_priority_*`, 0 = never, LBF convention), release types shown, hide-unmatched.
-- **Cache keys** (stored in the plugin's own `DB.pm`, not Slim::Utils::Cache, since the SQLite conversion; the key names are unchanged): `dsc:mbid:<norm-artist>` 30d · `dsc:rg:<mbid>:vN` 14d · `dsc:cand:vN:<svc>:<norm-artist>` 3d found / 1d empty / 1h error · `dsc:urls:` · `dsc:bio:` · `dsc:rev:` · `dsc:mbmirror:v1` 1d (auto-detected same-host MB mirror base; URL=found, `''`=probed-none) · `dsc:asearch:2:<lc query>` 10min (merged artist-search results — written ONLY when every source settled OK, so a service timeout can't pin a degraded list; see 0.42.2). There is **no match-result cache** — candidates are cached RAW and matching runs live per render, so a matcher change takes effect immediately and only needs `dsc:cand` bumped when the cached candidate SHAPE changes. No background warming while a library scan runs.
+- **Cache keys** (stored in the plugin's own `DB.pm`, not Slim::Utils::Cache, since the SQLite conversion; the key names are unchanged). **The full, current list is the key subs: `grep -n 'sub _\w*Key' Discography/*.pm`** (the bootleg map `dsc:rgo:v5:`, owned releases `dsc:rel2rg:v1:`, bands, aliases and the rest). The ones this line was written about: `dsc:mbid:2:<lc artist>` 30d found / 1h empty · `dsc:rg:v2:<mbid>` 14d · `dsc:cand:5:<plugin version>:<svc>:<norm-artist>` (or `…:<svc>:mb:<mbid>`) 3d found / 1d empty / 1h error · `dsc:urls:` · `dsc:bio:` · `dsc:rev:` · `dsc:mbmirror:v1` 1d (auto-detected same-host MB mirror base; URL=found, `''`=probed-none) · `dsc:asearch:11:<lc query>` 10min (merged artist-search results — written ONLY when every source settled OK, so a service timeout can't pin a degraded list; see 0.42.2). There is **no match-result cache** — candidates are cached RAW and matching runs live per render, so a matcher change takes effect immediately and only needs `dsc:cand` bumped when the cached candidate SHAPE changes. No background warming while a library scan runs.
 
 ## Build Order / Status
 1. ✅ **Skeleton + entry point** (v0.1.1, 2026-07-09) — plugin registers, custom action written, placeholder feed proves the `artist_id` handoff end-to-end. **VERIFIED on the server**: artist context menu → skeleton view with DB-resolved artist name ("13th Floor Elevators").
@@ -763,7 +763,7 @@ explicitly rejected, and it would put records the artist made under another name
 **CORRECTION #2, after Simon challenged the Kraftwerk row (2026-07-22).** Simon: *"The Kraftwerk
 issue needs looking at more as it resolves cleanly in MB using english as do all their titles."*
 **He was right and my verdict was wrong.** MusicBrainz DOES carry the English titles — as release-
-group **ALIASES**, which `getReleaseGroups` (`API.pm:1543`) has never asked for:
+group **ALIASES**, which `getReleaseGroups` had never asked for (it has since 0.48.0, `&inc=aliases`):
 
 ```
 Radio‐Aktivität     alias -> Radio-Activity          Computerwelt   alias -> Computer World
@@ -1073,7 +1073,15 @@ Some real artists aren't in MB at all; today they dead-end at "Couldn't identify
   and no bands section (MB-keyed); MAI bio + similar artists can stay (name-keyed).
 - Estimate: multi-day. Search (0.37.0) was ~a day; this is distinctly bigger.
 
-## PLANNED — MusicBrainz access performance (MEASURED 2026-07-21, NOT built)
+## PLANNED — MusicBrainz access performance (MEASURED 2026-07-21; findings #1–#5 since BUILT, #6–#7 open)
+
+> **STATUS 2026-09-30.** #1 FIXED in 0.47.3 (the probe MBID). #2 and #4 BUILT in 0.47.4 (the extras leg runs in
+> parallel under `$extDone`; `getArtistCandidates` dedupes in flight). #3 SUPERSEDED: 0.51.17's one outbound
+> queue spaces every MusicBrainz request, stage 1 batches the owned releases into `reid:` searches, and stage 2
+> runs them after the render. #5 SOLVED by stage 2 (0.56.2): the bootleg check asks the page's groups by id, at
+> most 6 requests (The Beatles' check 7.9 s live, inside the deadline), so neither lever under #5 is needed.
+> #6 (version-scoped pool keys) and #7 (debug strings built with the pref off) are still OPEN. The budget at the
+> end is July's; today's is `docs/mb-efficiency-and-community-api-analysis.md` §A11.
 
 Simon: *"it's feeling sluggish."* Measured before proposing anything, live against the box
 (LMS `plex:9000`, mirror `plex:5000`) with `debug_log` on. **Priority order agreed: public API
@@ -1163,9 +1171,13 @@ streaming resolution.
   are requested"* (mirror AND public). The spine cannot carry officialness.
 - `release-group?artist=X&inc=releases[&status=official]` → *"releases is not a valid inc
   parameter for the release-group resource"*. So the separate release browse is the only route.
+  **WRONG since stage 2 (2026-09-29):** the release-group SEARCH lists every release of each group with its
+  status, and asked by id (`rgid:A OR …`) it replaced the release browse (A3 `MEASURED FOR STAGE 2`).
 - MB's page limit is 100; there is no way to slim a ws/2 payload, so pages are the only lever.
 
 ### Public-API request budget per COLD artist (the number to optimise)
+*July's, before 0.47.4 and stages 1–2. Today's cold page (analysis §A11): under 25 groups 3 requests, Jamie
+Cullum 4, Kraftwerk 6, Radiohead 14, The Beatles 14.*
 RG spine (1–6) + artist candidates (**2 today**, 1 after fix #4) + aliases (1 if ambiguous) +
 local releases (1 per owned album) + band members (1) + officialness (2–33). Jamie Cullum ≈ 9
 requests ≈ 10s; Radiohead ≈ 21 ≈ 23s. Fixes #2/#4/#5 take Radiohead to roughly 13 requests with
@@ -1293,7 +1305,7 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
     `dsc:rg:v2:<mbid>` for an artist under 25 groups, is read by `getReleaseGroups`, `peekReleaseGroups` (the
     release page's spine) and removed by `clearArtistCache`: the data equals the browse's, down to the order
     (`t_artistread.pl` §9, Ladyhawke captured both ways). The search-row fold's `warmArtistAliases` (a mirror
-    only today, §B gate #1) now caches each small candidate's spine too: the same data, 2–10 KB more per read.
+    only today, analysis §B gate #1) now caches each small candidate's spine too: the same data, 2–10 KB more per read.
     `_vetCollabs` sends its own request and is untouched.
   - `warmOfficial`, one caller (`$startBootleg`, 2 calls). Its map's readers: `peekOfficial` (`_buildList`;
     `_releaseDetail` via `_rivalsByTitle`), `peekReleaseMap` (`_buildList`, `_releaseDetail`, the residue),
@@ -1358,6 +1370,17 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   key are history and a sample); the by-id rules and limits (A3 `MEASURED FOR STAGE 2`); the new suites (no
   list-context traps; captured fixtures); the shed seen live (the queue's retry, 0.51.18); the Live single on
   Kraftwerk's Albums view ("Live etc. stay on Albums", 2026-09-24).
+- **Stale / dangling-reference pass (2026-09-30, Simon: "do a pass for any stale or dangling refs"): 12 fixed,
+  comments and docs only, committed on `dev` (unpushed).** Checked mechanically (every sub, constant, file, fixture, ledger phrase
+  and § reference in the code comments, tools, `docs/` and CLAUDE.md above the dev log), then each hit read.
+  Stale: the July "MusicBrainz access performance" plan (status line; its dead end "the release browse is the
+  only route" marked WRONG since stage 2; its budget marked July's); Phase 1's cache keys (four formats wrong,
+  now pointing at the `_*Key` subs) and resolver name; the MB-first search entry (the stashed build, and its two
+  suites in the stash); the 2026-07-22 triage (aliases since 0.48.0); `_warmArtistExtras`' comment (parallel
+  since 0.47.4); both throttle-gate comments (an OPEN violation, not policy); `t_collab.pl` (the stage-2 URL);
+  the working plan's "today" figures (`ba95148`'s). Dangling: the index phrase `is still deliberately left
+  alone` (split over two lines), "§B gate #1" (the analysis doc's §B), and `tools/matcher_sync_check.py` (LBF's).
+  Left alone: cross-repo names (all exist where stated), labelled line numbers, dated history.
 
 ### (unbuilt, 2026-09-29) — MusicBrainz efficiency stage 1: three requests folded into ones already made; the fourth HELD for the resolver — COMMITTED on dev, NOT built
 - **Source:** `docs/mb-efficiency-and-community-api-analysis.md` §A7 and §F stage 1 (Simon: *"lets make a start
@@ -1415,7 +1438,7 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   5. **DISPROVED — a non-UUID album id tag spoiling a `reid:` batch.** A3 `LMS VALIDATES MB ID TAGS AT SCAN`.
   6. **MOVED TO STAGE 3 — the search-row fold now reads `inc=aliases+artist-rels` per same-name hit** (about
      20 KB instead of 1.6 KB for Radiohead; the same request count). Not live today: `filterRowsWithContent`
-     returns on the public API (§B gate #1). Recorded in `docs/mb-efficiency-and-community-api-analysis.md`
+     returns on the public API (analysis §B gate #1). Recorded in `docs/mb-efficiency-and-community-api-analysis.md`
      §F step 3, to be decided when that gate comes out.
   7. OPEN — DB.pm `get()` falls through from the mbid table to kv for a value no writer stores there (a
      reference under an mbid key); one indexed SQLite read per cold miss. Recommended KEEP as a guard; not yet
@@ -2135,8 +2158,9 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   every use: `Sources::artistImage`'s adapter walk (every cold artist thumbnail), `API::getReleaseGroups`'
   and `API::_warmOfficial`'s pagers (every artist page with a cold cache), `API::warmLocalReleases`
   (every page open with unresolved release mbids), and `Browse::_disambiguateByLibrary`'s candidate
-  walk. All rewritten to pass the sub to itself. **`autodetectMirror`'s `$try` is still deliberately
-  left alone** (0.30.1's reasoning: once per startup, not per request).
+  walk. All rewritten to pass the sub to itself.
+  **`autodetectMirror`'s `$try` is still deliberately left alone** (0.30.1's reasoning: once per startup, not
+  per request).
 - **The pagers' recursive branch had NO coverage** — `t_alias.pl`'s fixture returned every result in
   one response, so `$offset + PAGE_SIZE < $total` was never true and neither pager's self-call was
   ever driven. That is the exact line the closure rewrite changed the shape of. The fixture now

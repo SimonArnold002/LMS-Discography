@@ -3339,7 +3339,7 @@ sub _idGroup {
 #
 # The artist gate is unchanged: shape is decided here, identity by _albumMatches.
 # DSC-ONLY call-site logic — aliases are not part of the shared matcher, so this
-# does NOT trip tools/matcher_sync_check.py.
+# does NOT trip LBF's tools/matcher_sync_check.py.
 sub _aliasMatches {
     my ($artistNorm, $aliasNorm, $aliasRaw, $candArtist, $candTitle) = @_;
     return 0 unless defined $candTitle && length $candTitle;

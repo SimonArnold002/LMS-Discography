@@ -2094,8 +2094,9 @@ sub _warmSimilarArtists {
     }
 }
 
-# Warm the "Similar artists" name list (awaited — cached before the bootleg
-# leg sets $offDone, so the section is normally part of the FIRST render).
+# Warm the "Similar artists" name list (awaited under its own $extDone flag, in
+# parallel with the MusicBrainz chain since 0.47.4, so the section is normally
+# part of the FIRST render).
 # Thumbnails need no warming — the rows point at MAI's image proxy and load
 # in-view (see _artistImg).
 sub _warmArtistExtras {
@@ -3480,12 +3481,14 @@ sub _artistSearchView {
     Plugins::Discography::Sources->searchArtists($client, $q, sub {
         my ($bySvc, $failed) = @_;
 
-        # THROTTLE-GATED, matching filterRowsWithContent's mbGap gate. This
-        # costs one MB lookup per NEW search term -- milliseconds against a
-        # mirror, but 1.1s of etiquette delay on the public API, on every
-        # search a user types. The plugin's established policy is that extra
-        # MB work runs only where MB is un-throttled, and a rename is exactly
-        # the case a mirror user hits most.
+        # THROTTLE-GATED, matching filterRowsWithContent's mbGap gate — an
+        # OPEN VIOLATION, not policy: CLAUDE.md's top rule ("Known
+        # violations, OPEN") makes a gate that skips work on the public API a
+        # defect, and stage 3 removes it (analysis §F step 3). This costs one
+        # MB lookup per NEW search term -- milliseconds against a mirror, but
+        # 1.1s of etiquette delay on the public API, on every search a user
+        # types; it was written on the belief that extra MB work runs only
+        # where MB is un-throttled.
         if (Plugins::Discography::API->mbGap(1.1)) {
             return $runMerge->($bySvc, $failed);
         }
