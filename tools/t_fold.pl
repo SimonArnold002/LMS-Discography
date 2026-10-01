@@ -26,11 +26,13 @@
 #
 use strict;
 use warnings;
+our ($MBID_FOR_ROWS, $CM_NONE, %CM_NAME_AS);
 use FindBin;
 
 my %CACHE;
 my $DATA;
 my @URLS;
+our $MB_BASE = 'http://mirror:5000/ws/2/';
 our %TAGGED;   # library contributors keyed by the MusicBrainz artist tag
 our %ALBUMS;   # owned-album count per library artist_id (the survivor choice)
 
@@ -99,9 +101,10 @@ sub get { return $CACHE{ $_[1] } }
 sub set { $CACHE{ $_[1] } = $_[2]; return 1 }
 sub remove { delete $CACHE{ $_[1] }; return 1 }
 package T::Prefs;
-# A MIRROR base, which is what makes this reachable at all: the whole filter
-# is skipped when MusicBrainz is throttled (API.pm's mbGap gate).
-sub get { return $_[1] eq 'mb_base_url' ? 'http://mirror:5000/ws/2/' : undef }
+# A MIRROR base for the sections below, as it has always been; section 0 flips
+# it to the PUBLIC API, where the filter used to return early (the mbGap gate
+# stage 3 removed, 2026-09-30).
+sub get { return $_[1] eq 'mb_base_url' ? $main::MB_BASE : undef }
 sub set { return 1 } sub init { return 1 } sub setChange { return 1 }
 package T::Resp;
 sub new { bless {}, shift } sub content { '{}' } sub error { 'stub error' }
@@ -123,6 +126,23 @@ unshift @INC, "$tmp";
 require Plugins::Discography::API;
 my $API = 'Plugins::Discography::API';
 
+# STAGE 3b (2026-09-30): a row no shared search answers asks the COMMUNITY API
+# by name, not the MusicBrainz resolver. This suite pins the FOLD, and its world
+# has every row resolve to one artist, so the community API answers each row
+# with that artist under the row's own name (a trusted answer, as the resolver
+# answered before). What the community API's other answers do is t_rowbatch §6.
+{
+    no strict 'refs'; no warnings 'redefine';
+    *{'Plugins::Discography::API::_hostedByName'} = sub {
+        my ($class, $name, $cb) = @_;
+        # $CM_NONE: the world where nothing resolves (§4), for the community
+        # API as for MusicBrainz.
+        # %CM_NAME_AS: a row the community API answers under ANOTHER name.
+        $cb->($CM_NONE ? { mbid => '', name => '', n => 0 }
+                       : { mbid => $MBID_FOR_ROWS, name => ($CM_NAME_AS{$name} // $name), n => 80 });
+    };
+}
+
 my ($pass, $fail) = (0, 0);
 sub ok {
     my ($c, $n) = @_;
@@ -139,6 +159,7 @@ sub ok {
 
 # THE REAL RECORD from the mirror (canonical name carries U+2010 HYPHEN).
 my $MBID  = '127f591a-7e27-4435-92db-0780f219f3a1';
+$MBID_FOR_ROWS = $MBID;
 my $CANON = "The B\x{2010}52s";
 my @ALIAS = ('B-52s', "B52's", "The B-52's", 'The B52s');
 
@@ -171,6 +192,30 @@ sub foldAs {
     my ($canon, $aliases, @rows) = @_;
     local $FIX = { canon => $canon, aliases => $aliases };
     return fold(@rows);
+}
+
+# ---------------------------------------------------------------------------
+# 0. THE PUBLIC API (stage 3, 2026-09-30). The filter returned early there from
+#    0.44.7 (the mbGap gate), so a public user got none of what the sections
+#    below pin: no dead-end hiding, no alias fold, no library attach. It runs on
+#    every setup now. The queue is bypassed as in t_perf (t_netqueue.pl owns it).
+# ---------------------------------------------------------------------------
+{
+    no warnings 'redefine'; no strict 'refs';
+    local $MB_BASE = 'https://musicbrainz.org/ws/2/';
+    local *{'Plugins::Discography::API::_netGet'} = sub {
+        my ($url, $ok, $err, %opt) = @_;
+        return Slim::Networking::SimpleAsyncHTTP->new($ok, $err, \%opt)->get($url);
+    };
+    my $pub = fold(
+        { name => "B52's",     sources => ['Qobuz'] },
+        { name => 'The B-52s', sources => ['Local'], artist_id => 62125 },
+    );
+    ok(ref $pub eq 'ARRAY' && scalar(@$pub) == 1
+       && ($pub->[0]{name} // '') eq 'The B-52s' && scalar(@{ $pub->[0]{sources} }) == 2,
+       '0: on the PUBLIC API the rows fold into the library row (the filter used to skip it)');
+    ok(scalar(grep { m{^https://musicbrainz\.org/} } @URLS),
+       '0: ... asking MusicBrainz for it');
 }
 
 # ---------------------------------------------------------------------------
@@ -222,6 +267,7 @@ ok(scalar(@$out) == 1 && ($out->[0]{name} // '') eq "B52's",
         return { 'release-group-count' => 0 } if $url =~ /release-group\?artist=/;
         return {};
     };
+    local $CM_NONE = 1;
     $out = fold({ name => 'Nobody At All', sources => ['Tidal'] });
     ok(ref $out eq 'ARRAY' && !@$out, 'an unresolvable row is still dropped');
 }
@@ -434,6 +480,16 @@ ok(($out->[0]{sources}[0] // '') eq 'Local', '... and leads with Local');
 ok(scalar(@{ $out->[0]{sources} }) == 3, '... keeping every streaming source it had');
 ok(($out->[0]{name} // '') eq "B52's",
    '... while its NAME is left alone (the fold already decided that)');
+
+# STAGE 3b: a MERGE-ONLY row (the community API's pick under another name) that
+# does not merge is dropped, and never takes the library tag first: listed
+# ahead of the real row, it must not leave the real row without its Local.
+{
+    local %CM_NAME_AS = ('Stranger Name' => 'Somebody Else');
+    $out = fold({ name => 'Stranger Name', sources => ['Tidal'] }, { name => "B52's", sources => ['Qobuz'] });
+    ok(scalar(@$out) == 1 && ($out->[0]{name} // '') eq "B52's" && ($out->[0]{artist_id} // 0) == 88810,
+       'a merge-only row that does not merge goes, and the real row keeps the library tag');
+}
 
 # A row that already carries an artist_id is untouched — the Local leg or the
 # alias attach reached it first, including its chosen spelling.

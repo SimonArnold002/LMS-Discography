@@ -388,6 +388,12 @@ $API->getReleaseGroups(mbid => $LH, read => 1, onDone => sub { $again9 = shift }
 ok(scalar(@URLS) == 0 && $n9 == 2, '9: the band and alias lookups after it cost nothing');
 ok(ref $again9 eq 'ARRAY' && scalar(@$again9) == 24, '9: ... and the page asking again is a cache hit');
 
+# Since 0.56.7 an artist page whose read carries no whole list first asks
+# ListenBrainz and the community API for one (API::_fastSpine; t_fastpage.pl
+# owns that). Here both answer with nothing usable, so the MusicBrainz requests
+# are the subject: these sections count only those.
+sub mb_urls { grep { m{/ws/2/} } @URLS }
+
 # ---------------------------------------------------------------------------
 # 10. TWENTY-FIVE MAY BE MORE. Eno and Radiohead list 25, MB's cap for a lookup,
 #     with no count, so the list may be cut short: it is not the spine, and the
@@ -401,8 +407,12 @@ ok(!defined $CACHE{"dsc:rg:v2:$ENO"}, '10: ... and caches none');
 reset_all();
 my $rgs10;
 $API->getReleaseGroups(mbid => $RH, read => 1, onDone => sub { $rgs10 = shift });
-ok(scalar(@URLS) == 2 && $URLS[0] =~ m{/artist/\Q$RH\E\?} && $URLS[1] =~ m{/release-group\?artist=\Q$RH\E&},
+my @mb10 = mb_urls();
+ok(scalar(@mb10) == 2 && $mb10[0] =~ m{/artist/\Q$RH\E\?} && $mb10[1] =~ m{/release-group\?artist=\Q$RH\E&},
    '10: with read and 25 listed: the read, then the browse');
+ok(scalar(grep { m{api\.listenbrainz\.org/} } @URLS) == 1 && scalar(grep { m{api\.lms-community\.org/} } @URLS) == 1
+   && !defined $CACHE{"dsc:rgfast:1:$RH"},
+   '10: ... after the first list was asked for and gave none (nothing of it cached)');
 ok(ref $rgs10 eq 'ARRAY' && scalar(@$rgs10) == 3 && ($rgs10->[0]{title} // '') eq 'Browsed 1',
    "10: ... and the spine is the browse's");
 ok(ref $API->peekBands($RH) eq 'ARRAY' && ref $API->peekArtistAliases($RH) eq 'ARRAY',
@@ -416,7 +426,7 @@ $READFAIL{$LH} = 1;
 my ($rgs11, $err11) = (undef, 0);
 $API->getReleaseGroups(mbid => $LH, read => 1,
     onDone => sub { $rgs11 = shift }, onError => sub { $err11++ });
-ok(scalar(@URLS) == 2 && $URLS[1] =~ m{/release-group\?artist=}, '11: a failed read falls back to the browse');
+ok(scalar(mb_urls()) == 2 && (mb_urls())[1] =~ m{/release-group\?artist=}, '11: a failed read falls back to the browse');
 ok(ref $rgs11 eq 'ARRAY' && scalar(@$rgs11) == 24 && !$err11, '11: ... and the page still gets its spine');
 ok(!defined $CACHE{"dsc:alias:2:$LH"} && !defined $CACHE{"dsc:bands:v2:$LH"},
    '11: ... while the failed read cached nothing');
@@ -424,7 +434,7 @@ reset_all();
 $BADJSON = 1;
 my $err11b = 0;
 $API->getReleaseGroups(mbid => $LH, read => 1, onDone => sub {}, onError => sub { $err11b++ });
-ok(scalar(@URLS) == 2 && $URLS[1] =~ m{/release-group\?artist=},
+ok(scalar(mb_urls()) == 2 && (mb_urls())[1] =~ m{/release-group\?artist=},
    '11: an unreadable read falls back to the browse too');
 ok($err11b == 1, "11: ... whose own unreadable reply is the error it always was");
 
@@ -436,7 +446,7 @@ reset_all();
 $NOLIST{$LH} = 1;
 my $rgs12;
 $API->getReleaseGroups(mbid => $LH, read => 1, onDone => sub { $rgs12 = shift });
-ok(scalar(@URLS) == 2 && $URLS[1] =~ m{/release-group\?artist=},
+ok(scalar(mb_urls()) == 2 && (mb_urls())[1] =~ m{/release-group\?artist=},
    '12: a read with no group list falls back to the browse');
 ok(ref $rgs12 eq 'ARRAY' && scalar(@$rgs12) == 24, "12: ... and the spine is the browse's");
 ok(ref $CACHE{"dsc:bands:v2:$LH"} eq 'ARRAY', '12: ... while the bands from the read are cached');

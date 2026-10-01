@@ -342,9 +342,13 @@ ok(scalar(@URLS) == 0 && $c7b == 1, '7: no artist: no request, one answer');
 {
     open my $fh, '<', "$FindBin::Bin/../Discography/API.pm" or die $!;
     my $src = do { local $/; <$fh> };
+    # Since 0.56.7 the by-id requests live in _officialById, which warmOfficial
+    # and the background completion share.
     my ($body) = $src =~ /^(sub warmOfficial \{.*?^\})/ms;
-    ok(scalar($body && $body =~ /_netGet\(/ && $body !~ /SimpleAsyncHTTP/),
-       '8: warmOfficial sends through the queue');
+    my ($byid) = $src =~ /^(sub _officialById \{.*?^\})/ms;
+    ok(scalar($body && $body =~ /_officialById\(/ && $body !~ /SimpleAsyncHTTP/
+              && $byid && $byid =~ /_netGet\(/ && $byid !~ /SimpleAsyncHTTP/),
+       '8: warmOfficial sends through the queue (its by-id requests in _officialById)');
     (my $code = $src) =~ s/^\s*#.*$//mg;     # the history in comments may name it
     ok(scalar($code !~ m{release\?artist=}), "8: no code in API.pm browses an artist's releases any more");
 }

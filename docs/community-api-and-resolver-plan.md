@@ -1,7 +1,17 @@
 
 # Community API + one artist resolver — plan (2026-09-25)
 
-**Status: PLAN. No code written.** Built from the code at the last dev push (`ba95148`, the 0.55.x tree) and
+**Status 2026-09-30 (night): Part B is BUILT, by another route; Part A only in part; Parts C and D not started.**
+- **Part B** (§4) came in as the efficiency plan's stage 3 (`docs/mb-efficiency-and-community-api-analysis.md`
+  §A12-§A14; 0.56.3-0.56.6, checked live, uncommitted). Every gate is gone. The row check is not §4's one batched
+  name search, which was measured unsound (analysis §E). It is the typed query's own reply, then one combined search
+  trusted only when complete, then the community API by name for the rest.
+- **Part A** (§3): the community API gives release counts and judges the search's leftover results. Its helper is
+  `_netGet`'s `hosted` bucket with `_hostedHeaders`, not a `_hostedGet`. The list (§3.2) and the caching (§3.5) are
+  not started.
+- **Parts C and D** are not started. Analysis §A7 #4 is held for Part C.
+
+*Was: PLAN. No code written.* Built from the code at the last dev push (`ba95148`, the 0.55.x tree) and
 from measurements taken on 2026-09-25. It supersedes the "what the code does today" parts of
 `docs/unified-artist-resolver-plan.md` (written against the 0.56.0 tree, since reverted) and the migration
 sections of `docs/hosted-lms-community-api.md`. Line numbers below are for `ba95148`, and so are the timings
@@ -72,7 +82,7 @@ possible"*; stage 2 uses it only for owned-album lookups the bootleg check canno
 
 After the move, a cold page's MusicBrainz requests on the render path are: the official search (1-4 pages), band
 members, and a name lookup when the artist has no MusicBrainz tag or was opened by name. The community API call
-runs alongside, un-throttled. The 40-page browse is gone. *(Corrected 2026-09-29: the paged search is out. After
+runs alongside, at its own rate (one request at a time, no fixed gap). The 40-page browse is gone. *(Corrected 2026-09-29: the paged search is out. After
 stage 2 the render path is: the name lookup, the artist read, the browse (none under 25 groups), and at most 6
 by-id requests. The 40-page browse is gone as of stage 2.)*
 
@@ -82,6 +92,11 @@ by-id requests. The 40-page browse is gone as of stage 2.)*
 - Every call sends `X-LMS-Plugin-ID` (guarded `apiHeaders`, `docs/hosted-lms-community-api.md` §0), has a slot
   for a future token pref + `Authorization` header, and treats 401/403 as "unavailable", never a hard fail.
 - One in flight, shared 429/503 backoff (the shape agreed in the ledger, `community API has NO hard limit`).
+  *Clarified 2026-09-30 (Simon):* "no hard limit" means none PUBLISHED; the fleet sets its own from how MAI uses
+  the service (one request at a time, a shared 429 deadline 5-30 s), and the backoff is needed: the service answers
+  429 even at that pace after a burst (ledger A3 `COMMUNITY API DOES REFUSE`). Discography's rule, including the
+  mandatory plugin-id header and a refused count falling to MusicBrainz: ledger A2 `THE COMMUNITY API IS ONE
+  REQUEST AT A TIME, MAI'S RATE`.
 - **Every reply is checked:** top-level `mbid` must equal the one sent, else it is a MISS.
 - A miss or an error falls back to today's MusicBrainz path for that artist (the existing code, unchanged), so a
   community API outage degrades to today's behaviour, never to an empty page.
@@ -179,7 +194,7 @@ revisit. I am thinking local albums should cache permanently and just look for u
     and track count). If the live `localAlbums` read shows a different fingerprint (retagged, re-ripped, edition
     swapped) or a new album, that album is re-matched on this visit and the store updated; a removed album drops
     out. A library artist whose MusicBrainz tag now differs from the stored mbid takes the tag.
-  - *Remote side, every visit, cheap:* the community API list is re-asked on every visit (un-throttled, one call,
+  - *Remote side, every visit, cheap:* the community API list is re-asked on every visit (one call, no fixed gap,
     usually a Cloudflare cache hit). If its set of release groups differs from the cached one, the MusicBrainz
     search is re-run too and the page renders the new list on THIS visit. Otherwise the cached MusicBrainz part is
     used until it expires, then refreshed in the background as above.
@@ -201,6 +216,9 @@ Five places skip work unless MB is a mirror. All five go; the work is made affor
 
 Mirror safety nets stay (a mirror that errors or has an unbuilt index falls back to public): they do not change
 public behaviour.
+
+*Built 2026-09-30 (stage 3, 0.56.3; checked live on 0.56.4), with the row check described in the status note at the
+top. A row lookup runs every pass a page lookup runs; `speculative` keeps only its mirror-retry role.*
 
 ## 5. Part C — one artist resolver
 
@@ -261,6 +279,8 @@ shown to Simon before the next stage starts.
 2. **Part B** (§4): row check everywhere, batched names, the three speculative gates, the canonical second pass.
    Live: Genesis (dead ends gone, Tommy Genesis merged), British Sea Power (Qobuz present), Hall and Oates and
    Shostakovich (search, then page: right act both times).
+   **BUILT as stage 3/3b (0.56.3-0.56.6).** The live checks are analysis §A12.9 and the dev log's 0.56.5 and 0.56.6
+   entries (Genesis, British Sea Power, Hall and Oates right).
 3. **Part C** (§5): resolver, owned-album check, English labels, canonical-first streaming, same-material diff.
    Live: the plan's list (ELO, PIL, NIN, OMD, KLF, Luna, James, Madness, Kenshi Yonezu, Кино, The Bees).
 4. **Part D** (§6): MusicBrainz-first search list. Live: Hawkwind, ELO, Madness, Beatles.
@@ -273,7 +293,7 @@ shown to Simon before the next stage starts.
 | cold page, big artist (The Beatles) | ~43 MB requests (1 name + 6 + 34 + members/collabs/owned), 23s to render, bootlegs unfiltered, can fail and repeat | 1 name + 4 search pages + band members (~6s), community API in parallel; complete, bootlegs filtered, first visit |
 | cold page, normal artist | 1 + list pages + release pages (Radiohead: 6 + 12) | 1 + 1-2 search pages (Radiohead: 2) + community API |
 | revisit after expiry | full cold cost again | renders from the expired copy at once, refreshes in the background |
-| search list, 15 rows | 1 MB request (row check skipped) | 1 batched MB name search + community API counts (un-throttled) + 1 canonical lookup per new term |
+| search list, 15 rows | 1 MB request (row check skipped) | 1 batched MB name search + community API counts (one at a time, no fixed gap) + 1 canonical lookup per new term |
 | background, until Herger's two additions ship | none | today's group browse (aliases) + release browse (edition titles), off the render path |
 
 *Corrected 2026-09-29 (analysis §A11):* the first two rows assumed the paged search. Measured for stage 2 (one

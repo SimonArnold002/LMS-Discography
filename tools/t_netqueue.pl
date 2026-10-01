@@ -79,7 +79,7 @@ package T::Null;  our $AUTOLOAD; sub AUTOLOAD { return } sub DESTROY { }
 # ->header: whether the async object proxies the response's headers on the
 # error path is undocumented and unverified, so nothing may depend on it.
 package T::HTTP;
-sub get { my ($s, $url) = @_; $s->{url} = $url; push @main::SENT, $s; return $s }
+sub get { my ($s, $url, @h) = @_; $s->{url} = $url; $s->{headers} = { @h }; push @main::SENT, $s; return $s }
 sub code    { return $_[0]{code}  // 0 }
 sub error   { return $_[0]{error} // '' }
 sub content { return $_[0]{body}  // '' }
@@ -116,12 +116,14 @@ my $B0  = $A->can('NET_BACKOFF_START')->();
 my $BMX = $A->can('NET_BACKOFF_MAX')->();
 my $get = $A->can('_netGet') or die "no _netGet\n";
 
+# Every bucket exactly as the module defines it, captured before any test runs,
+# so a bucket added to API.pm (the community API's, stage 3 step 2) is reset too
+# rather than autovivified half-formed by the first request that reaches it.
+my %NET0 = map { $_ => { %{ $Plugins::Discography::API::NET{$_} } } }
+           keys %Plugins::Discography::API::NET;
 sub reset_all {
     @TIMERS = (); @SENT = (); $now = 1_000_000.0;
-    %Plugins::Discography::API::NET = (
-        mb => { gap => $GAP, queue => [], inflight => 0, nextAt => 0,
-                timer => undef, busyUntil => 0, delay => 0, pumping => 0, repump => 0 },
-    );
+    %Plugins::Discography::API::NET = map { $_ => { %{ $NET0{$_} }, queue => [] } } keys %NET0;
 }
 sub bucket { return $Plugins::Discography::API::NET{mb} }
 # Fire every timer due at or before $to, advancing the clock as each fires.
@@ -438,6 +440,201 @@ ok(scalar(@SENT == 1 && $GAP < 2),
    'a Retry-After of 4s holds the retry past the ordinary gap');
 advance($now + 3);
 ok(scalar(@SENT == 2), '... and releases it once it has passed');
+
+# ---------------------------------------------------------------------------
+# 13. THE COMMUNITY API'S BUCKET (stage 3 step 2). Its rate is OUR OWN, set from
+#     how MAI uses the service (ledger A2 `THE COMMUNITY API IS ONE REQUEST AT A
+#     TIME, MAI'S RATE`): one request in flight, no fixed gap, a shared 429
+#     deadline 5 s doubling to 30. Every call carries the plugin id (the dev's
+#     registration). A failFast job never waits out the deadline, and a timeout
+#     backs the bucket off too.
+# ---------------------------------------------------------------------------
+{
+    my $HOSTED = 'https://api.lms-community.org/music/';
+    my $SLOW   = $A->can('NET_SLOW_BACKOFF')->();
+    my $hbucket = sub { $Plugins::Discography::API::NET{hosted} };
+    my $timeoutWith = sub {
+        my ($r) = @_;
+        return ok(0, 'expected a request to time out, but none was sent') unless ref $r;
+        $r->{error} = 'Timed out waiting for data';
+        $r->{err}->($r, 'Timed out waiting for data', T::RESP->new(code => 500, hdr => {}));
+    };
+
+    ok(scalar(($A->can('_netBucket')->($HOSTED . 'artist/x/discography') // '') eq 'hosted'),
+       '13: a community-API url has its own bucket');
+
+    reset_all();
+    $get->($HOSTED . 'a', sub {}, sub {});
+    $get->($PUBLIC . 'b', sub {}, sub {});
+    ok(scalar(@SENT == 2), '13: the community API and MusicBrainz are sent side by side');
+    ok(scalar(($SENT[0]{headers}{'X-LMS-Plugin-ID'} // '') eq 'Plugins::Discography::Plugin'),
+       "13: a community-API call carries the plugin id (the dev's registration)");
+    ok(scalar(!exists $SENT[1]{headers}{'X-LMS-Plugin-ID'}), '13: ... a MusicBrainz call does not');
+
+    # One in flight, no gap.
+    reset_all();
+    $get->($HOSTED . 'a', sub {}, sub {});
+    $get->($HOSTED . 'b', sub {}, sub {});
+    ok(scalar(@SENT == 1), '13: one community-API request in flight at a time');
+    finish($SENT[0]);
+    ok(scalar(@SENT == 2), '13: ... and the next is sent the moment it answers, no fixed gap');
+    # The only timer left is the in-flight request's watchdog; the bucket itself
+    # armed no pacing wait.
+    ok(scalar(!$hbucket->()->{timer} && $hbucket->()->{nextAt} <= $now),
+       '13: ... with no pacing timer armed');
+
+    # A 429: the shared deadline. Every failFast job fails at once, wherever it
+    # sits in the queue; a job without the flag keeps its place and waits.
+    reset_all();
+    my %got;
+    $get->($HOSTED . 'first', sub {}, sub {});
+    $get->($HOSTED . 'ff1',  sub { $got{ff1} = 'ok' },  sub { $got{ff1} = $_[1] }, failFast => 1);
+    $get->($HOSTED . 'wait', sub { $got{wait} = 'ok' }, sub { $got{wait} = $_[1] });
+    $get->($HOSTED . 'ff2',  sub { $got{ff2} = 'ok' },  sub { $got{ff2} = $_[1] }, failFast => 1);
+    failWith($SENT[0], 429);
+    ok(scalar(($got{ff1} // '') eq 'backing off' && ($got{ff2} // '') eq 'backing off'),
+       '13: after a 429 every failFast job fails at once, wherever it sat in the queue');
+    ok(scalar(@SENT == 1 && !defined $got{wait}), '13: ... and a job without the flag waits');
+    ok(scalar(abs($hbucket->()->{busyUntil} - ($now + $B0)) < 0.001),
+       "13: the 429 set the community API's own deadline, ${B0}s");
+    ok(scalar(bucket()->{busyUntil} == 0), "13: ... and MusicBrainz's is untouched");
+    my %late;
+    $get->($HOSTED . 'late', sub { $late{r} = 'ok' }, sub { $late{r} = $_[1] }, failFast => 1);
+    ok(scalar(($late{r} // '') eq 'backing off' && @SENT == 1),
+       '13: a failFast job arriving during the deadline is failed without being sent');
+    advance($now + $B0 + 0.01);
+    ok(scalar(@SENT == 2 && $SENT[1]{url} =~ /wait$/), '13: the waiting job goes once the deadline passes');
+
+    # A timeout backs the bucket off too; a MusicBrainz timeout does not.
+    reset_all();
+    my %t;
+    $get->($HOSTED . 'slow', sub {}, sub { $t{slow} = $_[1] }, failFast => 1);
+    $timeoutWith->($SENT[0]);
+    ok(scalar(abs($hbucket->()->{busyUntil} - ($now + $SLOW)) < 0.001),
+       "13: a community-API timeout backs the bucket off ${SLOW}s");
+    $get->($HOSTED . 'next', sub { $t{next} = 'ok' }, sub { $t{next} = $_[1] }, failFast => 1);
+    ok(scalar(($t{next} // '') eq 'backing off' && @SENT == 1),
+       '13: ... so the next count is not sent to it');
+    advance($now + $SLOW + 0.01);
+    $get->($HOSTED . 'after', sub {}, sub {}, failFast => 1);
+    ok(scalar(@SENT == 2 && $SENT[1]{url} =~ /after$/), '13: ... and is sent again once that has passed');
+
+    reset_all();
+    $get->($PUBLIC . 'mbslow', sub {}, sub {});
+    $timeoutWith->($SENT[0]);
+    ok(scalar(bucket()->{busyUntil} == 0), '13: a MusicBrainz timeout moves no deadline');
+
+    # The watchdog (no callback at all) counts as a timeout for the community API.
+    reset_all();
+    my $lost;
+    $get->($HOSTED . 'lost', sub {}, sub { $lost = $_[1] }, failFast => 1, timeout => 4);
+    advance($now + 4 + $PAD + 0.01);
+    ok(scalar(defined $lost && $hbucket->()->{busyUntil} > $now),
+       '13: a lost callback frees the slot and backs the community API off');
+
+    # The plugin id is sent whatever shape apiHeaders answers in (LMS 9.1: a list,
+    # or a HASHREF on its early-startup error path), and when it is absent.
+    my $hh = $A->can('_hostedHeaders');
+    {
+        no strict 'refs'; no warnings 'redefine';
+        local *{'Slim::Utils::Misc::apiHeaders'} = sub { ('X-LMS-ID' => 'srv', 'X-LMS-Plugin-ID' => $_[0]) };
+        my %h = $hh->();
+        ok(scalar(($h{'X-LMS-Plugin-ID'} // '') eq 'Plugins::Discography::Plugin' && ($h{'X-LMS-ID'} // '') eq 'srv'),
+           '13: apiHeaders as a list: the plugin id and the server id are both sent');
+        # A hashref carrying MORE than the plugin id: only reading the shape (not
+        # the plugin-id fallback) keeps the rest of it.
+        local *{'Slim::Utils::Misc::apiHeaders'} = sub { { 'X-LMS-Plugin-ID' => $_[0], 'X-LMS-ID' => 'srv' } };
+        %h = $hh->();
+        ok(scalar(($h{'X-LMS-Plugin-ID'} // '') eq 'Plugins::Discography::Plugin' && ($h{'X-LMS-ID'} // '') eq 'srv'),
+           '13: apiHeaders as a HASHREF: read as headers, the plugin id and the rest are sent');
+        local *{'Slim::Utils::Misc::apiHeaders'} = sub { { 'X-LMS-Plugin-ID' => $_[0] } };
+        %h = $hh->();
+        ok(scalar(($h{'X-LMS-Plugin-ID'} // '') eq 'Plugins::Discography::Plugin' && keys(%h) == 1),
+           "13: ... LMS 9.1's own error-path hashref: exactly the plugin id");
+    }
+    {
+        no strict 'refs';
+        my %h = defined &Slim::Utils::Misc::apiHeaders ? () : $hh->();
+        ok(scalar(!defined &Slim::Utils::Misc::apiHeaders
+                  && ($h{'X-LMS-Plugin-ID'} // '') eq 'Plugins::Discography::Plugin'),
+           '13: without apiHeaders (older LMS) the plugin id is sent directly');
+    }
+}
+
+# ---------------------------------------------------------------------------
+# 14. LISTENBRAINZ'S BUCKET AND BACKGROUND JOBS (0.56.7; analysis §A16).
+#     ListenBrainz is one request at a time with no fixed gap, backs off on a 429
+#     and a timeout, and carries no plugin id. A job sent as background work
+#     never goes ahead of a waiting foreground job; a foreground job arriving
+#     later still goes first, but a request already sent is not recalled.
+# ---------------------------------------------------------------------------
+{
+    my $LB = 'https://api.listenbrainz.org/1/';
+    my $SLOW = $A->can('NET_SLOW_BACKOFF')->();
+    my $lbucket = sub { $Plugins::Discography::API::NET{lb} };
+    ok(scalar(($A->can('_netBucket')->($LB . 'metadata/artist/?artist_mbids=x') // '') eq 'lb'),
+       '14: a ListenBrainz url has its own bucket');
+
+    reset_all();
+    $get->($LB . 'a', sub {}, sub {});
+    $get->($LB . 'b', sub {}, sub {});
+    $get->($PUBLIC . 'c', sub {}, sub {});
+    ok(scalar(@SENT == 2 && $SENT[0]{url} =~ /a$/ && $SENT[1]{url} =~ /c$/),
+       '14: one ListenBrainz request at a time, side by side with MusicBrainz');
+    ok(scalar(!exists $SENT[0]{headers}{'X-LMS-Plugin-ID'}), '14: ... with no community plugin id');
+    finish($SENT[0]);
+    ok(scalar(@SENT == 3 && $SENT[2]{url} =~ /b$/), '14: ... the next sent the moment it answers, no gap');
+
+    reset_all();
+    my %g;
+    $get->($LB . 'first', sub {}, sub {});
+    $get->($LB . 'ff', sub { $g{ff} = 'ok' }, sub { $g{ff} = $_[1] }, failFast => 1);
+    failWith($SENT[0], 429);
+    ok(scalar(($g{ff} // '') eq 'backing off' && abs($lbucket->()->{busyUntil} - ($now + $B0)) < 0.001
+              && bucket()->{busyUntil} == 0),
+       "14: a 429 backs ListenBrainz off ${B0}s, fails its failFast jobs at once, and leaves MusicBrainz alone");
+
+    reset_all();
+    $get->($LB . 'slow', sub {}, sub {}, failFast => 1);
+    $SENT[0]{error} = 'Timed out waiting for data';
+    $SENT[0]{err}->($SENT[0], 'Timed out waiting for data', T::RESP->new(code => 500, hdr => {}));
+    ok(scalar(abs($lbucket->()->{busyUntil} - ($now + $SLOW)) < 0.001),
+       "14: a ListenBrainz timeout backs it off ${SLOW}s");
+
+    # Background jobs yield. One MusicBrainz request is out; two background
+    # jobs wait; a foreground one arrives: it is next, and they keep their order.
+    reset_all();
+    $get->($PUBLIC . 'out', sub {}, sub {});
+    $get->($PUBLIC . 'bg1', sub {}, sub {}, background => 1);
+    $get->($PUBLIC . 'bg2', sub {}, sub {}, background => 1);
+    $get->($PUBLIC . 'tap', sub {}, sub {});
+    my @q = map { $_->{url} =~ m{/(\w+)$} } @{ bucket()->{queue} };
+    ok(scalar("@q" eq 'tap bg1 bg2'), '14: a foreground job goes ahead of the background jobs waiting');
+    ok(scalar(@SENT == 1 && $SENT[0]{url} =~ /out$/), '14: ... the request already out is not recalled');
+    finish($SENT[0]);
+    advance($now + $GAP + 0.01);
+    ok(scalar(@SENT == 2 && $SENT[1]{url} =~ /tap$/), '14: ... and it is the next one sent');
+    $get->($PUBLIC . 'tap2', sub {}, sub {});
+    $get->($PUBLIC . 'bg3', sub {}, sub {}, background => 1);
+    @q = map { $_->{url} =~ m{/(\w+)$} } @{ bucket()->{queue} };
+    ok(scalar("@q" eq 'tap2 bg1 bg2 bg3'), '14: foreground jobs keep their own order, background ones theirs');
+
+    # A shed background job goes back to the front of the BACKGROUND jobs, not
+    # ahead of a foreground one; a shed foreground job goes to the very front.
+    reset_all();
+    $get->($PUBLIC . 'bgshed', sub {}, sub {}, background => 1);
+    $get->($PUBLIC . 'fg', sub {}, sub {});
+    $get->($PUBLIC . 'bg2', sub {}, sub {}, background => 1);
+    shedWith($SENT[0]);
+    @q = map { $_->{url} =~ m{/(\w+)$} } @{ bucket()->{queue} };
+    ok(scalar("@q" eq 'fg bgshed bg2'), '14: a shed background job retries first of the background jobs, after the foreground');
+    reset_all();
+    $get->($PUBLIC . 'fgshed', sub {}, sub {});
+    $get->($PUBLIC . 'fg2', sub {}, sub {});
+    shedWith($SENT[0]);
+    @q = map { $_->{url} =~ m{/(\w+)$} } @{ bucket()->{queue} };
+    ok(scalar("@q" eq 'fgshed fg2'), '14: a shed foreground job still retries at the very front');
+}
 
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

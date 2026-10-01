@@ -141,6 +141,17 @@ sub response_for {
 # which queues another deferred call. Draining one snapshot leaves that retry
 # unfired and the caller unanswered — which looked exactly like the hung-render
 # bug being tested for, in the harness rather than the code.
+# COLD means every cache, including the name-search reply API keeps in memory
+# for NAME_MEMO_TTL (stage 3 step 1, API::_nameSearch). Emptying only %CACHE
+# left that reply answering the "refetch" below, so the suite measured the memo
+# instead of the in-flight marker it is about. The plugin's own Refresh clears
+# both (clearArtistCache -> _nameMemoForget).
+sub cold {
+    %CACHE = ();
+    %Plugins::Discography::API::NAME_MEMO = ();
+    %Plugins::Discography::API::NAME_WAIT = ();
+}
+
 sub flush {
     for (1 .. 10) {
         my @d = @main::DEFERRED;
@@ -153,7 +164,7 @@ sub flush {
 # ---------------------------------------------------------------------------
 # 1. ONE FETCH PER NAME, however many callers ask at once.
 # ---------------------------------------------------------------------------
-%CACHE = (); @QUERIES = (); @DEFERRED = ();
+cold(); @QUERIES = (); @DEFERRED = ();
 my (@gotA, @gotB);
 $API->getArtistCandidates('Madness', sub { push @gotA, $_[0] });
 $API->getArtistCandidates('Madness', sub { push @gotB, $_[0] });
@@ -178,7 +189,7 @@ ok(ref $warm eq 'ARRAY' && scalar(@$warm) == 2, '... and still answers in full')
 # A THIRD round after everything settled must fetch again if the cache is
 # cleared — i.e. the in-flight marker was released, not left pinned. A stuck
 # marker would silently wedge the name forever.
-%CACHE = (); @QUERIES = (); @DEFERRED = ();
+cold(); @QUERIES = (); @DEFERRED = ();
 my $again;
 $API->getArtistCandidates('Madness', sub { $again = $_[0] });
 ok(scalar(@QUERIES) == 1, 'the in-flight marker is released after settling');
@@ -186,7 +197,7 @@ flush();
 ok(ref $again eq 'ARRAY' && scalar(@$again) == 2, '... and the refetch answers');
 
 # Different names must not share a queue.
-%CACHE = (); @QUERIES = (); @DEFERRED = ();
+cold(); @QUERIES = (); @DEFERRED = ();
 $API->getArtistCandidates('Madness', sub {});
 $API->getArtistCandidates('Genesis', sub {});
 ok(scalar(@QUERIES) == 2, 'two different names are two different fetches');
@@ -197,7 +208,7 @@ flush();
 #    success would hang the bio leg forever, and the render waits on it.
 # ---------------------------------------------------------------------------
 {
-    %CACHE = (); @QUERIES = (); @DEFERRED = ();
+    cold(); @QUERIES = (); @DEFERRED = ();
     no warnings 'redefine';
     local *T::HTTP::get = sub {
         my ($self, $url) = @_;
@@ -219,7 +230,7 @@ flush();
 #    what lets the extras leg move off the MusicBrainz chain, so it has to keep
 #    answering exactly as it did.
 # ---------------------------------------------------------------------------
-%CACHE = (); @DEFERRED = ();
+cold(); @DEFERRED = ();
 my $sharedSecondary = 'UNSET';
 $API->sharesNameWithProminentAsync('Madness', $SECONDARY, sub { $sharedSecondary = $_[0] });
 flush();
@@ -255,7 +266,7 @@ my @WARMED;
 my $extras = \&Plugins::Discography::Browse::_warmArtistExtras;
 
 # COLD cache, secondary act: must NOT warm.
-%CACHE = (); @DEFERRED = (); @WARMED = ();
+cold(); @DEFERRED = (); @WARMED = ();
 my $done = 0;
 $extras->('client', $SECONDARY, 'Madness', sub { $done = 1 });
 flush();
@@ -264,7 +275,7 @@ ok(scalar(@WARMED) == 0,
 ok(scalar($done), '... and the leg still settles (the render waits on it)');
 
 # COLD cache, the prominent act: must warm normally.
-%CACHE = (); @DEFERRED = (); @WARMED = (); $done = 0;
+cold(); @DEFERRED = (); @WARMED = (); $done = 0;
 $extras->('client', $PROMINENT, 'Madness', sub { $done = 1 });
 flush();
 ok(scalar(@WARMED) == 1 && $WARMED[0] eq $PROMINENT,

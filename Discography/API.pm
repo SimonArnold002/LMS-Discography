@@ -56,7 +56,7 @@ my $prefs = preferences('plugin.discography');
 # first module to call DB->store() sets it and later calls are ignored.
 # tools/syntax_check.sh asserts all three agree and match install.xml.
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.2';
+use constant CACHE_VERSION => '0.56.8';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 # The families DB.pm keeps across builds, by their CURRENT key prefix, so rows
 # written under an older key version are retired at open. Taken from the key
@@ -153,15 +153,9 @@ sub _mbThrottled {
     return _mbBase() =~ m{^https?://([^/]*\.)?musicbrainz\.org/}i ? 1 : 0;
 }
 
-# Inter-page gap: the given MB-etiquette default against the public API, 0 on a
-# local mirror.
-#
-# LEGACY, and going away. Every paced loop it served now goes through _netGet
-# instead, which paces on the URL rather than on the configured base — see THE
-# ONE OUTBOUND REQUEST QUEUE below. Kept only for the callers that ask "are we
-# throttled?" as a POLICY question (whether to run a speculative pass at all),
-# which is a different question from how fast to send.
-sub _mbGap { _mbThrottled() ? $_[0] : 0 }
+# (_mbGap and the public mbGap are gone, stage 3, 2026-09-30. Pacing moved to
+# _netGet in 0.51.17; what was left were the "are we throttled?" policy checks
+# that skipped work on the public API, and those gates are removed.)
 
 # ---------------------------------------------------------------------------
 # THE ONE OUTBOUND REQUEST QUEUE (0.51.17)
@@ -211,18 +205,47 @@ sub _mbGap { _mbThrottled() ? $_[0] : 0 }
 # $onOk / $onErr receive exactly what SimpleAsyncHTTP hands its callbacks, so a
 # call site converts by replacing `->new(...)->get(...)` and nothing else.
 #
-# ADDING THE COMMUNITY API HERE (api.lms-community.org) is the intended next
-# step and needs two things this does not yet do, because nothing calls it yet:
-# the MANDATORY `X-LMS-Plugin-ID` header on every request (the dev asked for it;
-# it must carry the CALLING plugin's package), and a per-job retry/wait budget
-# for its 429s. Its limit is self-imposed politeness, not a published rule, so
-# its bucket wants serialisation and a 429 backoff but no fixed gap.
+# THE COMMUNITY API (api.lms-community.org) HAS ITS OWN BUCKET, `hosted` (stage 3
+# step 2, 2026-09-30), and its RATE IS OUR OWN, set from how MAI uses it — the
+# fleet rule (LBF ledger A2 `ONE MUSICBRAINZ QUEUE, ONE COMMUNITY-API QUEUE`,
+# Simon 2026-09-14: "we just cannot go over its rate"). The dev publishes no
+# limit, and MAI, his own plugin, sends to this service one request at a time
+# on its scanner path, synchronously, sleeping 5 s, doubling to 30, after a 429
+# (read in MusicArtistInfo master `Common.pm::call`, 2026-09-30; its token bucket
+# is for Discogs, not this service). So: ONE request in flight for the whole
+# plugin, no fixed gap (the round trip is the pacing), and a 429 moves this
+# bucket's own shared deadline, 5 s doubling to 30, only ever outward, reset by
+# a success. Every request carries the MANDATORY `X-LMS-Plugin-ID` header, the
+# dev's requirement, which is how a plugin registers with the service
+# (_hostedHeaders). The backoff is load-bearing: measured 2026-09-30, one
+# request at a time with no gap drew HTTP 429 after about 57 requests, each 429
+# taking 1-3 s to come back (ledger A3 `COMMUNITY API DOES REFUSE`). On top of
+# the fleet rule, and only ever stricter than it:
+#   * a job sent with `failFast => 1` is failed AT ONCE while its bucket is
+#     backing off, instead of waiting it out. The count lookups send that way:
+#     their caller has a MusicBrainz answer to fall back to, and a page or a
+#     search must not stand still for 5-30 s for a number it can get elsewhere;
+#   * a TIMEOUT backs the bucket off too (NET_SLOW_BACKOFF), so a slow service
+#     cannot add its whole timeout to every lookup that follows.
+#
+# LISTENBRAINZ (api.listenbrainz.org) HAS ITS OWN BUCKET TOO, `lb` (0.56.7;
+# analysis §A16). The artist page's first list comes from it. It publishes its
+# limit in headers (30 requests per 10 s, measured 2026-10-01) and a page sends
+# one request, so the bucket only has to keep it to one at a time and honour a
+# 429 or a timeout the way the community bucket does.
+#
+# BACKGROUND JOBS YIELD (0.56.7). A job sent with `background => 1` (the work a
+# page does after it is drawn, for the next visit) is queued behind every job
+# without the flag and never goes ahead of one, so a tap made meanwhile waits
+# for at most the one request already out. A shed retry goes back to the front
+# of its own kind, never ahead of a foreground job.
 use constant NET_GAP_MB        => 1.1;   # public musicbrainz.org only
 use constant NET_BACKOFF_START => 5;
 use constant NET_BACKOFF_MAX   => 30;
 use constant NET_WATCHDOG_PAD  => 5;     # past the timeout, a lost callback frees the slot
 use constant NET_SHED_RETRIES  => 3;     # a shed 503 is transient - see _netIsShed
 use constant NET_SHED_WAIT     => 0.5;   # floor when the server sends Retry-After: 0
+use constant NET_SLOW_BACKOFF  => 30;    # the community API after a timeout
 
 # One bucket per rate-limited host. A URL with no bucket is sent straight out.
 # `our`, not `my`, ON PURPOSE: the guard suite resets and inspects this between
@@ -230,14 +253,74 @@ use constant NET_SHED_WAIT     => 0.5;   # floor when the server sends Retry-Aft
 # file and eval it into another package to get at the same state, which then
 # needs every constant re-declared beside it; one word here avoids all of that.
 our %NET = (
-    mb => { gap => NET_GAP_MB, queue => [], inflight => 0, nextAt => 0,
-            timer => undef, busyUntil => 0, delay => 0, pumping => 0, repump => 0 },
+    mb     => { gap => NET_GAP_MB, queue => [], inflight => 0, nextAt => 0,
+                timer => undef, busyUntil => 0, delay => 0, pumping => 0, repump => 0 },
+    hosted => { gap => 0, queue => [], inflight => 0, nextAt => 0,
+                timer => undef, busyUntil => 0, delay => 0, pumping => 0, repump => 0,
+                slow => NET_SLOW_BACKOFF },
+    lb     => { gap => 0, queue => [], inflight => 0, nextAt => 0,
+                timer => undef, busyUntil => 0, delay => 0, pumping => 0, repump => 0,
+                slow => NET_SLOW_BACKOFF },
 );
 
 sub _netBucket {
     my ($url) = @_;
-    return 'mb' if defined $url && $url =~ m{^https?://([^/]*\.)?musicbrainz\.org/}i;
+    return undef unless defined $url;
+    return 'mb'     if $url =~ m{^https?://([^/]*\.)?musicbrainz\.org/}i;
+    return 'hosted' if $url =~ m{^https?://api\.lms-community\.org/}i;
+    return 'lb'     if $url =~ m{^https?://api\.listenbrainz\.org/}i;
     return undef;
+}
+
+# Queue a job: a background job at the very back; any other job ahead of the
+# first background job waiting. $front (a shed retry) puts it first of its own
+# kind instead.
+sub _netEnqueue {
+    my ($q, $job, $front) = @_;
+    my ($bg) = grep { $q->[$_]{background} } 0 .. $#$q;
+    if ($job->{background}) {
+        if ($front && defined $bg) { splice @$q, $bg, 0, $job }
+        else                       { push @$q, $job }
+    }
+    elsif ($front)      { unshift @$q, $job }
+    elsif (defined $bg) { splice @$q, $bg, 0, $job }
+    else                { push @$q, $job }
+    return;
+}
+
+# The package name the community API is told who is calling with. Derived from
+# this package, as LBF does, so it cannot drift: ...::API -> ...::Plugin.
+use constant PLUGIN_PACKAGE => __PACKAGE__ =~ s/\b(?:\w+)$/Plugin/r;
+
+# The MANDATORY header, the dev's spec: every call names the calling plugin's
+# package in `X-LMS-Plugin-ID`. `apiHeaders` is new in Slim::Utils::Misc and
+# absent on older LMS, so it is probed, never called blind (LBF's and MAI's
+# guarded form). Read in the LMS 9.1 source (2026-09-30): it returns
+# `X-LMS-Plugin-ID => $module`, plus `X-LMS-ID` (the server id) when the
+# Analytics plugin is enabled — but on its early-startup error path it returns a
+# HASHREF instead of a list, and `%h = apiHeaders(...)` then sends no plugin id.
+# So either shape is taken, and the plugin id is always there.
+# AUTH SLOT (dev heads-up, docs/hosted-lms-community-api.md §0.2): when a scheme
+# is published, its token and `Authorization` header are added here and a
+# 401/403 is treated as a miss, never a hard failure.
+sub _hostedHeaders {
+    my @h = Slim::Utils::Misc->can('apiHeaders')
+        ? Slim::Utils::Misc::apiHeaders(PLUGIN_PACKAGE) : ();
+    @h = %{ $h[0] } if @h == 1 && ref $h[0] eq 'HASH';
+    @h = () if @h % 2;
+    my %h = @h;
+    $h{'X-LMS-Plugin-ID'} ||= PLUGIN_PACKAGE;
+    return %h;
+}
+
+# A response-shaped object for a job failed without being sent (failFast while
+# the bucket backs off): error handlers call ->error and ->code on it.
+{
+    package Plugins::Discography::API::BackingOff;
+    sub new     { return bless {}, shift }
+    sub code    { return 0 }
+    sub error   { return 'backing off' }
+    sub content { return '' }
 }
 
 # A SHED IS NOT A RATE LIMIT, and telling them apart is the whole point
@@ -322,13 +405,39 @@ sub _netNoteLimit {
     return $s->{delay};
 }
 
+# A timeout, from the transport's error text or our own watchdog. Same "pass
+# every argument" contract as _netIsRateLimited.
+sub _netIsTimeout {
+    for my $r (@_) {
+        my $e = ref $r ? (eval { $r->error } // '') : ($r // '');
+        return 1 if $e =~ /timed?\s*out/i;
+    }
+    return 0;
+}
+
+# A bucket with a `slow` setting (the community API) is not asked again for that
+# many seconds after a timeout, so a slow service cannot add its whole timeout to
+# every job behind it. The deadline only ever moves outward, as _netNoteLimit's
+# does; the MusicBrainz bucket has no `slow` and is untouched.
+sub _netNoteSlow {
+    my ($b) = @_;
+    my $s = $NET{ $b // '' } or return;
+    return unless $s->{slow};
+    my $until = Time::HiRes::time() + $s->{slow};
+    $s->{busyUntil} = $until if $until > $s->{busyUntil};
+    $log->warn("$b timed out - not asking it for $s->{slow}s");
+    return;
+}
+
 sub _netGet {
     my ($url, $onOk, $onErr, %opt) = @_;
     my $job = { url => $url, ok => ($onOk || sub {}), err => ($onErr || sub {}),
-                timeout => ($opt{timeout} || 15), tries => 0 };
+                timeout => ($opt{timeout} || 15), tries => 0,
+                failFast => ($opt{failFast} ? 1 : 0),
+                background => ($opt{background} ? 1 : 0) };
     my $b = _netBucket($url);
     unless ($b) { _netSend(undef, $job); return }
-    push @{ $NET{$b}{queue} }, $job;
+    _netEnqueue($NET{$b}{queue}, $job);
     _netPump($b);
     return;
 }
@@ -346,8 +455,24 @@ sub _netPump {
     local $s->{pumping} = 1;
     do {
         $s->{repump} = 0;
-        while (!$s->{inflight} && @{ $s->{queue} }) {
+        while (@{ $s->{queue} }) {
             my $now = Time::HiRes::time();
+            # failFast jobs are failed AT ONCE while the bucket backs off, wherever
+            # they sit in the queue and whether or not a request is in flight:
+            # their callers have another source (see the community API note
+            # above) and must not wait out 5-30 s for this. Jobs without the flag
+            # keep their place and wait for the deadline as before.
+            if ($s->{busyUntil} > $now && grep { $_->{failFast} } @{ $s->{queue} }) {
+                my @ff = grep { $_->{failFast} } @{ $s->{queue} };
+                @{ $s->{queue} } = grep { !$_->{failFast} } @{ $s->{queue} };
+                for my $job (@ff) {
+                    _dbg("$b backing off - not sending $job->{url}");
+                    $job->{err}->(Plugins::Discography::API::BackingOff->new, 'backing off',
+                                  Plugins::Discography::API::BackingOff->new);
+                }
+                next;
+            }
+            last if $s->{inflight};
             my $at  = $s->{nextAt} > $s->{busyUntil} ? $s->{nextAt} : $s->{busyUntil};
             if ($at > $now) {
                 # CLAIM THE SLOT BEFORE SCHEDULING, and keep a boolean rather
@@ -407,8 +532,9 @@ sub _netSend {
                 my $at   = Time::HiRes::time() + $wait;
                 $s->{nextAt} = $at if $at > $s->{nextAt};
                 # Back to the FRONT: this job was already waiting its turn, and
-                # the caller's chain is stalled behind it.
-                unshift @{ $s->{queue} }, $job;
+                # the caller's chain is stalled behind it. (A background job:
+                # first of the background jobs, still behind every other.)
+                _netEnqueue($s->{queue}, $job, 1);
                 _dbg("$b shed $job->{url} - retry $job->{tries}/"
                      . NET_SHED_RETRIES . " in ${wait}s");
                 $release->();        # frees the slot and pumps; job is queued
@@ -417,7 +543,8 @@ sub _netSend {
             # ALL THREE ARGUMENTS, like the shed test above: the response
             # carries the code and the headers, the async object carries
             # ->error, and handing over only one of them blinds the shed guard.
-            _netNoteLimit($b) if $b && _netIsRateLimited(@_);
+            if ($b && _netIsRateLimited(@_)) { _netNoteLimit($b) }
+            elsif ($b && !$already && _netIsTimeout(@_)) { _netNoteSlow($b) }
             $release->();
             $job->{err}->(@_) unless $already;
         },
@@ -425,7 +552,9 @@ sub _netSend {
     );
     # USER_AGENT() with parens: it is a SUB declared further down this file, not
     # a constant, so a bareword here is a strict-subs error at compile time.
-    $http->get($job->{url}, 'Accept' => 'application/json', 'User-Agent' => USER_AGENT());
+    my @headers = ('Accept' => 'application/json', 'User-Agent' => USER_AGENT());
+    push @headers, _hostedHeaders() if ($b // '') eq 'hosted';
+    $http->get($job->{url}, @headers);
     # ARMED AFTER THE SEND, AND ONLY IF STILL UNSETTLED. The watchdog measures
     # time from the moment the request went out, which is what it is for; and a
     # transport that answers synchronously (a cached layer, a test stub) has
@@ -436,6 +565,7 @@ sub _netSend {
                 return if $settled;
                 $log->warn("no callback for $job->{url} - freeing the queue");
                 $watchdog = undef;
+                _netNoteSlow($b);
                 $release->();
                 # A response-shaped object: error handlers call ->error and
                 # ->code on their first argument.
@@ -581,6 +711,19 @@ sub _rgKey { 'dsc:rg:' . RG_CACHE_V . ':' . $_[0] }
 
 my $UUID_RE = qr/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+# The MusicBrainz artist id the library's own tag gives a contributor, or undef.
+# The first thing getArtistMbid trusts; the search row check reads it too.
+sub _libraryTagMbid {
+    my ($artistId) = @_;
+    return undef unless $artistId;
+    my $mbid = eval {
+        require Slim::Schema;
+        my $c = Slim::Schema->find('Contributor', $artistId);
+        $c ? $c->musicbrainz_id : undef;
+    };
+    return ($mbid && $mbid =~ $UUID_RE) ? lc $mbid : undef;
+}
+
 # getArtistMbid(artist_id => N, artist => 'Name', onDone => sub($mbid, $fromTag))
 # Library tag wins (exact identity); MB name search otherwise. onDone always
 # fires exactly once. $fromTag is 1 when the mbid came from the library tag, 0
@@ -588,26 +731,23 @@ my $UUID_RE = qr/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 # WRONG tag (a mis-tagged / merged same-name artist) from a name-search result,
 # and to decide whether to try a fallback if the tag mbid has no discography.
 # %a: artist (name), artist_id (library contributor), onDone,
-#     speculative => 1  - see _artistMbidByName.
+#     speculative => 1  - see _artistMbidByName,
+#     fetch => N        - entries the shared name search asks for (_nameSearch),
+#     asked => \%h      - the search row check's settled counts (see
+#                         filterRowsWithContent); the zero-release check marks
+#                         the one it asked for.
 sub getArtistMbid {
     my ($class, %a) = @_;
     my $onDone = $a{onDone} || sub {};
 
-    if ($a{artist_id}) {
-        my $mbid = eval {
-            require Slim::Schema;
-            my $c = Slim::Schema->find('Contributor', $a{artist_id});
-            $c ? $c->musicbrainz_id : undef;
-        };
-        if ($mbid && $mbid =~ $UUID_RE) {
-            _dbg("artist mbid from library tag: $mbid");
-            $onDone->(lc $mbid, 1);
-            return;
-        }
+    if (my $mbid = _libraryTagMbid($a{artist_id})) {
+        _dbg("artist mbid from library tag: $mbid");
+        $onDone->($mbid, 1);
+        return;
     }
 
     $class->_artistMbidByName($a{artist}, sub { $onDone->($_[0], 0) },
-                              $a{speculative});
+                              $a{speculative}, $a{fetch}, $a{asked});
 }
 
 # Port of the ListenBrainz plugin's getArtistMbidByName: quoted artist query,
@@ -625,17 +765,21 @@ sub getArtistMbid {
 # yields zero results (or is unreachable), we retry the SAME query ONCE against
 # the public API before accepting a miss. The MBID is universal, so a public-
 # resolved MBID then browses fine against the mirror.
-# $speculative: this lookup is a GUESS about a name we were handed, not a
-# resolution the user asked for. It suppresses the two retry paths, because
-# they are catastrophic in bulk: the dead-end row filter resolves EVERY search
-# row, and the rows it exists to DROP are precisely the ones that miss and
-# therefore take the most expensive route. Measured on one "Sonic Boom" search
-# (2026-07-19): 61 requests to musicbrainz.org and 56 alias retries, which is
-# both slow ("the delay here for resolving is painful") and an etiquette
-# violation that risks the user's IP being rate-limited.
+# $speculative: this lookup is a GUESS about a name we were handed (the search
+# row check), not a resolution the user asked for. Since stage 3 (2026-09-30)
+# it changes ONE thing: an unproven mirror's empty or failed search is not
+# retried against the public API — the retry that made one "Sonic Boom" search
+# cost 61 public requests (2026-07-19). Every pass a page lookup runs (the alias
+# field, the unquoted pass, the joint-credit split, the zero-release count)
+# runs for a row too, on every setup: the row check exists to say what the page
+# would show, and a row that skipped a pass could be kept or dropped on an
+# answer its page never gives (analysis §A12, gates #3-#5 and the unquoted pass,
+# which rows skipped even on a mirror). The bulk cost is paid differently now:
+# filterRowsWithContent answers most rows from one or two shared searches, the
+# community API most of the rest (stage 3b), and only a row it cannot decide
+# (no releases listed) reaches this resolver.
 #
-# A speculative miss is simply "no answer" - the caller decides, and
-# filterRowsWithContent fails OPEN by keeping the row.
+# A speculative miss is simply "no answer" - the caller decides.
 # The first act named in a joint credit, or undef when the string is not one.
 # Splits on the FIRST separator only — "Stan Getz / João Gilberto feat. Antônio
 # Carlos Jobim" yields "Stan Getz". Separators are matched with spaces around
@@ -692,8 +836,221 @@ sub _plausibleName {
     return (abs(@tw - @tc) <= 1) ? 1 : 0;
 }
 
+# SERVICE ANNOTATIONS ARE NOT PART OF THE NAME (see the resolver below for the
+# measured reason). The name with its bracketed annotations removed, or the name
+# itself when nothing would be left. Shared by the resolver's query and by
+# _nameMemoForget, which must find the query the resolver sent.
+sub _stripAnnotation {
+    my ($name) = @_;
+    my $q = $name;
+    $q =~ s/\s*\([^)]*\)/ /g;
+    $q =~ s/\s*\[[^\]]*\]/ /g;
+    $q =~ s/\s+/ /g;
+    $q =~ s/^\s+|\s+$//g;
+    return length $q ? $q : $name;
+}
+
+# ---------------------------------------------------------------------------
+# ONE NAME SEARCH, SHARED (stage 3 step 1; analysis §A10, §A12.6, §A12.8).
+#
+# The resolver's first pass (_artistMbidByName) and the same-name set
+# (getArtistCandidates) ask MusicBrainz the same question, `artist:"<name>"`
+# quoted: the resolver at limit 8, the set at limit 15. A cold page opened by
+# name sent both, 1.1 s apart on the public API (found live, §A10), and a search
+# resolving its typed query sends the same pair. Now the resolver asks at 15
+# (NAME_FETCH) and the set reads that very reply. Measured over all 1,117
+# library artists before this was built, the REAL resolver and set run on
+# replies captured from the public API at limits 8, 15 and 100 (§A12.8):
+#   * the resolver reads the first 8 entries of a reply at 15 or at 100 and
+#     decides exactly as it does at 8, for every artist;
+#   * the set read from the first 15 of a reply at 100 is NOT always what a reply
+#     at 15 gives (equal scores in another order, a score off by one, now and
+#     then a different member), and even a WHOLE small result can come back in
+#     another order or with a score off by one at another limit. So the set
+#     reads only a reply fetched at 15 (`exact`);
+#   * a reply at 15 that is the whole result (88% of names) has exactly the
+#     members a reply at 100 has, so the search row check — which reads only who
+#     is in the result — uses it, and asks for 100 only when the result is
+#     bigger (_rowBatch, NAME_FETCH_ROWS).
+#
+# A reply is kept in memory for NAME_MEMO_TTL per base, query and limit. A later
+# caller is answered from a kept reply that serves it: at least its entries or
+# the whole result, or, for an EXACT caller, a reply at its own limit. A caller
+# arriving while such a request is in flight waits for it, and asks again itself
+# only if the reply turns out not to serve it. Each caller gets its own SLICE,
+# never the kept list: the resolver edits its list in place (it drops
+# MusicBrainz's special entities).
+#
+# Only the QUOTED artist-field query is shared. The alias and unquoted passes run
+# only after it has found nothing, and keep their own requests unchanged.
+# ---------------------------------------------------------------------------
+use constant NAME_FETCH      => 15;    # a page or a search: the resolver's 8 + the set's 15
+use constant NAME_FETCH_ROWS => 100;   # the search row check, when the result is bigger
+use constant NAME_MEMO_TTL   => 600;   # seconds; the search list's own cache is 10 min
+use constant NAME_MEMO_MAX   => 64;    # kept replies, across queries and limits
+
+# `our`, like %NET, so the suite can reset and inspect them: {key}{limit}.
+our (%NAME_MEMO, %NAME_WAIT);
+
+# The name-search request without its limit, byte for byte what both callers
+# built before: UTF-8 octets, every non-alphanumeric byte percent-encoded.
+sub _nameQuery {
+    my ($field, $name, $loose) = @_;
+    my $q = $loose ? $field . ':' . $name : $field . ':"' . $name . '"';
+    utf8::encode($q) if utf8::is_utf8($q);
+    (my $safe = $q) =~ s/([^A-Za-z0-9])/sprintf("%%%02X",ord($1))/ge;
+    return 'artist?query=' . $safe . '&fmt=json';
+}
+
+# Does reply $r hold the first $want entries of the result? Yes when it was asked
+# for at least that many, or when it is the whole result set (fewer entries than
+# asked for, or no more than MusicBrainz counted).
+sub _nameCovers {
+    my ($r, $want) = @_;
+    return 1 if $r->{limit} >= $want;
+    my $n = scalar @{ $r->{arts} };
+    return 1 if $n < $r->{limit};
+    return 1 if defined $r->{count} && $r->{count} =~ /^\d+$/ && $r->{count} <= $n;
+    return 0;
+}
+
+sub _nameSlice {
+    my ($arts, $want) = @_;
+    my $n = @$arts < $want ? scalar @$arts : $want;
+    return [ @{$arts}[0 .. $n - 1] ];
+}
+
+sub _nameMemoPut {
+    my ($key, $limit, $r) = @_;
+    $NAME_MEMO{$key}{$limit} = $r;
+    my @all = map { my $k = $_; map { [ $k, $_, $NAME_MEMO{$k}{$_}{at} ] } keys %{ $NAME_MEMO{$k} } }
+              keys %NAME_MEMO;
+    return if @all <= NAME_MEMO_MAX;
+    my $cut  = Time::HiRes::time() - NAME_MEMO_TTL;
+    my @drop = grep { $_->[2] <= $cut } @all;
+    my @keep = sort { $a->[2] <=> $b->[2] } grep { $_->[2] > $cut } @all;
+    push @drop, @keep[0 .. @keep - NAME_MEMO_MAX - 1] if @keep > NAME_MEMO_MAX;
+    for my $d (@drop) {
+        delete $NAME_MEMO{ $d->[0] }{ $d->[1] };
+        delete $NAME_MEMO{ $d->[0] } unless %{ $NAME_MEMO{ $d->[0] } };
+    }
+    return;
+}
+
+# Refresh must ask MusicBrainz again, not answer from a reply kept a minute ago.
+# Drops the kept replies for $name's quoted query, as the resolver sends it
+# (annotation stripped) and as the same-name set sends it, on any base and limit.
+sub _nameMemoForget {
+    my ($name) = @_;
+    return unless defined $name && length $name;
+    my %q = map { _nameQuery('artist', $_, 0) => 1 } $name, _stripAnnotation($name);
+    for my $key (keys %NAME_MEMO) {
+        for my $q (keys %q) {
+            next unless length($key) >= length($q) && substr($key, -length $q) eq $q;
+            delete $NAME_MEMO{$key};
+            last;
+        }
+    }
+    return;
+}
+
+# _nameSearch($base, $q, $want, $fetch, $onOk, $onErr, $label, $exact)
+#   $q      _nameQuery() of the search
+#   $want   how many entries this caller reads
+#   $fetch  how many to ask for when it has to send (never fewer than $want)
+#   $onOk   ->(\@arts, $parseErr, $contentLength, $count): the first $want
+#           entries, or undef when the reply did not parse ($parseErr then says
+#           why); $count is MusicBrainz's count of the whole result
+#   $onErr  ->(@_ of the HTTP error callback), exactly as _netGet hands it over
+#   $label  for the log only
+#   $exact  only a reply fetched at $fetch may answer (the same-name set)
+sub _nameSearch {
+    my ($base, $q, $want, $fetch, $onOk, $onErr, $label, $exact) = @_;
+    $fetch = $want if !$fetch || $fetch < $want;
+    my $key = $base . $q;
+    my $now = Time::HiRes::time();
+    my $serves = sub {
+        my ($limit, $r, $w, $f, $ex) = @_;
+        return $ex ? $limit == $f : _nameCovers($r, $w);
+    };
+
+    # A kept reply that serves this caller, the smallest first.
+    if (my $memo = $NAME_MEMO{$key}) {
+        for my $l (sort { $a <=> $b } keys %$memo) {
+            my $m = $memo->{$l};
+            if ($m->{at} + NAME_MEMO_TTL <= $now) { delete $memo->{$l}; next }
+            next unless $serves->($l, $m, $want, $fetch, $exact);
+            _dbg('name search ' . ($label // $q) . ": answered from the reply kept"
+                . " a moment ago (limit $l, first $want read)");
+            $onOk->(_nameSlice($m->{arts}, $want), '', $m->{len}, $m->{count});
+            return;
+        }
+        delete $NAME_MEMO{$key} unless %$memo;
+    }
+
+    # A request in flight that may serve it: an exact caller waits only on its
+    # own limit; the rest on the largest in flight (a smaller one may still turn
+    # out to be the whole result).
+    my $entry = [ $want, $fetch, $onOk, $onErr, $label, $exact ];
+    if (my $waits = $NAME_WAIT{$key}) {
+        my ($l) = $exact ? grep { $_ == $fetch } keys %$waits
+                         : sort { $b <=> $a } keys %$waits;
+        if (defined $l) {
+            push @{ $waits->{$l} }, $entry;
+            return;
+        }
+    }
+    $NAME_WAIT{$key}{$fetch} = [ $entry ];
+
+    _netGet($base . $q . '&limit=' . $fetch,
+        sub {
+            my $resp     = shift;
+            my $content  = $resp->content;
+            my $data     = eval { from_json($content) };
+            my $parseErr = $@;
+            my $arts = (!$parseErr && ref $data eq 'HASH' && ref $data->{artists} eq 'ARRAY')
+                       ? $data->{artists} : undef;
+            my $len = length($content // '');
+            # Released BEFORE the callbacks run, as getArtistCandidates' own
+            # marker is: one of them may ask again, and a marker still held would
+            # wedge the query with nothing in flight to release it.
+            my $cbs = delete $NAME_WAIT{$key}{$fetch};
+            delete $NAME_WAIT{$key} unless %{ $NAME_WAIT{$key} || {} };
+            my $r;
+            if ($arts) {
+                $r = { arts => $arts, limit => $fetch, count => $data->{count},
+                       len => $len, at => Time::HiRes::time() };
+                _nameMemoPut($key, $fetch, $r);
+            }
+            for my $c (@{ $cbs || [] }) {
+                my ($cw, $cf, $ok, $err, $lbl, $ex) = @$c;
+                # A waiter this reply does not serve after all asks again itself.
+                if ($r && !$serves->($fetch, $r, $cw, $cf, $ex)) {
+                    _nameSearch($base, $q, $cw, $cf, $ok, $err, $lbl, $ex);
+                    next;
+                }
+                $ok->($arts ? _nameSlice($arts, $cw) : undef, $parseErr, $len,
+                      $r ? $r->{count} : undef);
+            }
+        },
+        sub {
+            my @e = @_;
+            my $cbs = delete $NAME_WAIT{$key}{$fetch};
+            delete $NAME_WAIT{$key} unless %{ $NAME_WAIT{$key} || {} };
+            $_->[3]->(@e) for @{ $cbs || [] };
+        },
+        timeout => 12);
+    return;
+}
+
+# $fetch: how many entries the shared first pass asks for when it has to send
+# (NAME_FETCH on a page or a search, 8 otherwise). The resolver reads the first
+# 8 whatever it fetched; the extra entries are for the same-name set that comes
+# after it (see _nameSearch).
+# $asked: the search row check's settled counts (filterRowsWithContent); the
+# zero-release check below marks the count it asked for once it has settled.
 sub _artistMbidByName {
-    my ($class, $name, $onDone, $speculative) = @_;
+    my ($class, $name, $onDone, $speculative, $fetch, $asked) = @_;
 
     $name = defined $name ? $name : '';
     $name =~ s/^\s+|\s+$//g;
@@ -734,12 +1091,7 @@ sub _artistMbidByName {
     # so each service spelling caches its own entry pointing at the same mbid.
     # Falls back to the original if stripping would leave nothing (a name that
     # IS a parenthetical).
-    my $qname = $name;
-    $qname =~ s/\s*\([^)]*\)/ /g;
-    $qname =~ s/\s*\[[^\]]*\]/ /g;
-    $qname =~ s/\s+/ /g;
-    $qname =~ s/^\s+|\s+$//g;
-    $qname = $name unless length $qname;
+    my $qname = _stripAnnotation($name);
     _dbg("MB artist search: querying '$qname' (annotation stripped from '$name')")
         if $qname ne $name;
 
@@ -760,12 +1112,9 @@ sub _artistMbidByName {
     # it can only ever rescue a definite miss.
     my $mkQuery = sub {
         my ($field, $loose) = @_;
-        my $q = $loose ? $field . ':' . $qname : $field . ':"' . $qname . '"';
-        utf8::encode($q) if utf8::is_utf8($q);
-        (my $safe = $q) =~ s/([^A-Za-z0-9])/sprintf("%%%02X",ord($1))/ge;
         # limit=8, not 1: MB's top hit is not necessarily the artist ASKED
         # for (see the exact-name preference below).
-        return 'artist?query=' . $safe . '&fmt=json&limit=8';
+        return _nameQuery($field, $qname, $loose) . '&limit=8';
     };
 
     # The configured base is a mirror when it is NOT the public host; only then is
@@ -807,29 +1156,17 @@ sub _artistMbidByName {
     # hold it) and frees when they finish. (Ported from LBF 0.9.95.)
     my $run = sub {
         my ($self, $base, $isFallback, $field, $loose) = @_;
-        my $url = $base . $mkQuery->($field, $loose);
         $log->info("resolving artist name to MBID: $name ($field field"
             . ($loose ? ', unquoted' : '')
             . ($isFallback ? ', public fallback' : '') . ')');
 
-        _netGet($url,
+        # The reply, however it arrived: its own request or the shared one
+        # (dispatch at the end of $run). $arts is this pass's list (the first 8
+        # entries), undef when the reply did not parse; $parseErr says why and
+        # $len is the reply's size, for the "unparseable" report.
+        my $onReply =
             sub {
-                my $resp = shift;
-                # CAPTURE THE PARSE ERROR HERE, not 80 lines below. $@ is a
-                # GLOBAL, and the old code re-read it at the "unparseable"
-                # branch after several intervening calls (_mbSearchVerdict ->
-                # _mbSearchProve is itself an eval, _dbg, _norm, _closeEnough) --
-                # any of which can reset it. Field symptom: a legitimately EMPTY
-                # result was reported as "unparseable MB response".
-                # Proven not to be a real parse failure: the exact URL this
-                # builds for "British Sea Power" returns valid JSON with count=0
-                # on BOTH the mirror and public MB -- correct, because MB knows
-                # that name only as an ALIAS of "Sea Power".
-                my $data     = eval { from_json($resp->content) };
-                my $parseErr = $@;
-                my $arts = (!$parseErr && ref $data eq 'HASH'
-                            && ref $data->{artists} eq 'ARRAY')
-                           ? $data->{artists} : undef;
+                my ($arts, $parseErr, $len) = @_;
 
                 # Zero results on an UNPROVEN mirror = probable unbuilt search
                 # index -> retry the public API once before caching a miss. Once
@@ -949,34 +1286,21 @@ sub _artistMbidByName {
                 # that did not exist. A parse failure is now distinguishable
                 # from an honest empty result, which keeps $why = 'no results'.
                 elsif ($parseErr) {
-                    my $len = length($resp->content // '');
                     ($why = "unparseable MB response ($len bytes: $parseErr)") =~ s/\s+/ /g;
                 }
 
                 my $decide = sub {
                     # Name field found nothing acceptable -> ONE alias-field pass
                     # (same base/fallback state; the mirror-0-results branch above
-                    # still gives the alias pass its own public retry).
-                    # SPECULATIVE MODE STILL GETS THE ALIAS FIELD WHEN UN-THROTTLED.
-                    #
-                    # 0.44.15 suppressed this for bulk row guesses, and the measured
-                    # cost that justified it was **61 requests to musicbrainz.org** —
-                    # i.e. the PUBLIC-API cascade (mirror miss -> public retry ->
-                    # alias -> another public retry), not the alias field itself.
-                    # Against a local mirror the alias field is one more query worth
-                    # milliseconds, and `filterRowsWithContent` — the only
-                    # speculative caller — already refuses to run at all when
-                    # `mbGap` is non-zero, so this can never fire against the public
-                    # API however it is reached.
-                    #
-                    # It is what makes an alias-only spelling reachable at all
+                    # still gives the alias pass its own public retry). A search
+                    # row gets it too, on every setup (stage 3; see $speculative):
+                    # it is what makes an alias-only spelling reachable at all
                     # (measured 2026-07-21): `alias:"Hall And Oates"` and even the
                     # misspelled `alias:"Darryl Hall and John Oates"` both return
                     # Daryl Hall & John Oates at score 100, while the artist field
                     # returns NOTHING for either — so every service row for that
                     # band was dropped as a dead end and the band was unreachable.
-                    my $aliasOk = !$speculative || !_mbGap(1.1);
-                    if (!$mbid && $field eq 'artist' && !$loose && $aliasOk) {
+                    if (!$mbid && $field eq 'artist' && !$loose) {
                         _dbg("MB artist search '$name' => $why on name field; retrying alias field");
                         $self->($self, $base, $isFallback, 'alias');
                         return;
@@ -984,12 +1308,11 @@ sub _artistMbidByName {
 
                     # LAST PASS — drop the quotes (see $mkQuery). Reached only when
                     # BOTH quoted passes found nothing, so there is no working
-                    # resolution to regress, only a failing one to rescue. Suppressed
-                    # under $speculative for the same reason the alias pass is: the
-                    # dead-end row filter resolves EVERY search row, and the rows it
-                    # exists to drop are precisely the ones that miss and would take
-                    # this route.
-                    if (!$mbid && !$loose && !$speculative) {
+                    # resolution to regress, only a failing one to rescue. A search
+                    # row runs it too since stage 3: rows skipped it on EVERY setup
+                    # before, a mirror included, so a row could be dropped as a dead
+                    # end for a name its page resolves ("janes addiction").
+                    if (!$mbid && !$loose) {
                         _dbg("MB artist search '$name' => $why; retrying unquoted");
                         $self->($self, $base, $isFallback, 'artist', 1);
                         return;
@@ -1055,8 +1378,7 @@ sub _artistMbidByName {
                     # match; and 0.45.0 puts MB's canonical name at the front of the
                     # service alias list, so the services get asked for "Stan Getz"
                     # rather than the unsearchable joint string.
-                    my $splitOk = !$speculative || !_mbGap(1.1);
-                    if (!$mbid && $splitOk && (my $head = _creditHead($name))) {
+                    if (!$mbid && (my $head = _creditHead($name))) {
                         _dbg("MB artist search '$name' => $why; "
                             . "treating as a joint credit, resolving '$head'");
                         $class->_artistMbidByName($head, sub {
@@ -1065,7 +1387,7 @@ sub _artistMbidByName {
                             # A held release-less hit still beats nothing — this
                             # is the last exit before a miss is cached.
                             $store->($alt || $zeroMbid);
-                        }, $speculative);
+                        }, $speculative, undef, $asked);
                         return;
                     }
                     _dbg("MB artist search '$name' ($field"
@@ -1082,14 +1404,16 @@ sub _artistMbidByName {
                 # artist is untouched (measured by test: "Radiohead" issues zero
                 # release-group requests).
                 #
-                # Throttle rule, identical to the alias and credit-split passes:
-                # a SPECULATIVE lookup (the dead-end row filter guessing about
-                # every row) never adds a request against the public API. It
-                # needs none — that filter counts release groups itself, and
-                # this writes to the very cache it reads.
-                my $countOk = $inexact && (!$speculative || !_mbGap(1.1));
-                if ($mbid && $countOk && !$counted{$mbid}++) {
+                # A search row asks it too since stage 3 (see $speculative); the
+                # count is the community API's first (warmCandidateCounts) and
+                # lands in the cache the row check reads next, so the row pays
+                # for it once: the check is told it has settled ($asked), and
+                # judges the row from it rather than asking again if it failed.
+                # This check itself never skips on $asked: its answer is cached
+                # for 30 days as the name's resolution.
+                if ($mbid && $inexact && !$counted{$mbid}++) {
                     $class->warmCandidateCounts([ { mbid => $mbid } ], sub {
+                        $asked->{ lc $mbid } = 1 if $asked;
                         my $n = $class->peekReleaseGroupCount($mbid);
                         # undef = the count could not be fetched. FAIL OPEN:
                         # an HTTP error is not evidence of an empty catalogue,
@@ -1109,7 +1433,8 @@ sub _artistMbidByName {
                     return;
                 }
                 $decide->();
-            },
+            };
+        my $onError =
             sub {
                 my $err = shift->error // '?';
                 # A mirror unreachable for search: fall back to public once.
@@ -1121,7 +1446,38 @@ sub _artistMbidByName {
                 $log->error("MB artist search failed: $err");
                 _dbg("MB artist search '$name' ($field) => HTTP error ($err; not cached, retry works)");
                 $onDone->(undef);
+            };
+
+        # THE QUOTED ARTIST-FIELD PASS IS THE SHARED ONE (see _nameSearch): the
+        # same-name set asks exactly this query, so one reply serves both. The
+        # first 8 entries are read here whatever $fetch asked for.
+        if ($field eq 'artist' && !$loose) {
+            _nameSearch($base, _nameQuery('artist', $qname, 0), 8, $fetch,
+                        $onReply, $onError, "'$qname'");
+            return;
+        }
+        _netGet($base . $mkQuery->($field, $loose),
+            sub {
+                my $resp = shift;
+                # CAPTURE THE PARSE ERROR HERE, not 80 lines below. $@ is a
+                # GLOBAL, and the old code re-read it at the "unparseable"
+                # branch after several intervening calls (_mbSearchVerdict ->
+                # _mbSearchProve is itself an eval, _dbg, _norm, _closeEnough) --
+                # any of which can reset it. Field symptom: a legitimately EMPTY
+                # result was reported as "unparseable MB response".
+                # Proven not to be a real parse failure: the exact URL this
+                # builds for "British Sea Power" returns valid JSON with count=0
+                # on BOTH the mirror and public MB -- correct, because MB knows
+                # that name only as an ALIAS of "Sea Power". (_nameSearch
+                # captures it the same way for the shared pass.)
+                my $data     = eval { from_json($resp->content) };
+                my $parseErr = $@;
+                my $arts = (!$parseErr && ref $data eq 'HASH'
+                            && ref $data->{artists} eq 'ARRAY')
+                           ? $data->{artists} : undef;
+                $onReply->($arts, $parseErr, length($resp->content // ''));
             },
+            $onError,
             timeout => 12);
     };
 
@@ -1249,18 +1605,449 @@ sub sharesNameWithProminentAsync {
 # empty by construction ("John Olson", "features on a Robert de Boron track").
 # Listing those as choices is offering the user a dead end.
 #
-# COST, and why this is a WARM rather than a filter computed inline: one MB
-# browse per candidate. On a local mirror that is milliseconds; against the
-# public API it is MusicBrainz's 1 req/s etiquette, so eight candidates would
-# block a search for eight seconds. So counts are fetched in the BACKGROUND and
-# the filter applies to whatever is already known - the plugin's established
-# second-load contract (bootleg map, emblems, similar artists all work this
-# way). On a mirror the warm finishes before you look twice; on the public API
-# the dead rows disappear on the next search for that name.
+# COST: one MusicBrainz browse per candidate, at its 1 req/s on the public API.
+# The search and the row check now WAIT for the counts (0.44.5: nothing may show
+# and then vanish), so since stage 3 step 2 (2026-09-30) each count is asked of
+# the COMMUNITY API first (_hostedCount): its own queue, no fixed gap, running
+# beside MusicBrainz's. Only an answer ABOVE ZERO for the mbid we sent is used.
+# Everything else asks MusicBrainz exactly as before:
+#   * zero: the community API lists only groups where the artist is credited
+#     FIRST (analysis §C2), so an act credited only second counts 0 there;
+#   * a different mbid in the reply: it answers an mbid it does not know by
+#     NAME (ledger A3 `silently falls back to the NAME`);
+#   * a 429, a timeout, an error, or its bucket backing off (failFast).
+# Measured on stage 3's sample (analysis §A12.3d): "has releases" agreed with
+# MusicBrainz for 141 of 145, and the four others were all zero there, i.e.
+# asked of MusicBrainz. Storing the community API's first-credit count is safe
+# because every reader of dsc:rgcount asks only "zero or not".
 # ---------------------------------------------------------------------------
 use constant RGCOUNT_TTL => 14 * 86400;
 
+use constant HOSTED_BASE_URL => 'https://api.lms-community.org/music/';
+use constant HOSTED_TIMEOUT  => 4;    # every count has MusicBrainz behind it
+
+# One path segment for the community API, percent-encoded per BYTE (LBF's
+# _hostedSeg): names arrive as wide strings, and a '/' in one would otherwise
+# invent a route.
+sub _hostedSeg {
+    my ($s) = @_;
+    $s = defined $s ? $s : '';
+    utf8::encode($s) if utf8::is_utf8($s);
+    $s =~ s/([^A-Za-z0-9\-_.~])/sprintf("%%%02X", ord($1))/ge;
+    return $s;
+}
+
+# _hostedCount(\%cand, $cb) -> $cb->($n): the community API's release-group count
+# for $cand->{mbid}, or undef when it gave no usable answer (see above; the
+# caller then asks MusicBrainz). The mbid rides as ?mbid=, which overrides the
+# name for a KNOWN artist, so the name only fills the path: the candidate's own,
+# else MusicBrainz's name for it, else a placeholder. Sent failFast: while its
+# bucket backs off the caller hears at once and asks MusicBrainz instead.
+sub _hostedCount {
+    my ($c, $cb) = @_;
+    my $mbid = lc($c->{mbid} // '');
+    my $name = $c->{name};
+    $name = Plugins::Discography::API->peekArtistName($mbid)
+        unless defined $name && length $name;
+    $name = '_' unless defined $name && length $name;
+    my $url = HOSTED_BASE_URL . 'artist/' . _hostedSeg($name)
+            . '/discography?mbid=' . $mbid;
+    _netGet($url,
+        sub {
+            my $d = eval { from_json(shift->content) };
+            if ($@ || ref $d ne 'HASH' || lc($d->{mbid} // '') ne $mbid) {
+                _dbg("community count $mbid: "
+                    . ($@ || ref $d ne 'HASH' ? 'unreadable reply'
+                          : 'answered for ' . ($d->{mbid} || 'no mbid') . ', not this one')
+                    . ' - asking MusicBrainz');
+                return $cb->(undef);
+            }
+            my $n = ref $d->{discography} eq 'ARRAY' ? scalar @{ $d->{discography} } : 0;
+            _dbg("community count $mbid: $n" . ($n ? '' : ' - asking MusicBrainz (first credits only)'));
+            $cb->($n > 0 ? $n : undef);
+        },
+        sub {
+            my $err = eval { $_[0]->error } // $_[1] // '?';
+            _dbg("community count $mbid: $err - asking MusicBrainz");
+            $cb->(undef);
+        },
+        timeout => HOSTED_TIMEOUT, failFast => 1);
+    return;
+}
+
 sub _rgCountKey { 'dsc:rgcount:1:' . lc($_[0] // '') }
+
+# THE COMMUNITY API'S ANSWER FOR A NAME (stage 3b, 2026-09-30; analysis §A11-A13):
+# its pick of an artist of that name, MusicBrainz's name for it and how many
+# release groups it lists (first credits only). $cb->({ mbid, name, n }), `mbid`
+# empty when it knows no artist of that name, or $cb->(undef) when it gave no
+# answer (refused, timed out, unreadable), which a caller must never read as "no
+# artist". By NAME it can pick another act of the name (A3 `safe drop-in`), so
+# the row check trusts it only when its name is the row's, and never hands it to
+# the page. Cached per name, found 14 days, unknown 1 day (the service is rebuilt
+# daily); Cloudflare keeps its own copy for 30. failFast, like the counts: while
+# the bucket backs off, the caller hears at once.
+use constant CMNAME_FOUND_TTL => 14 * 86400;
+use constant CMNAME_EMPTY_TTL => 86400;
+sub _cmNameKey {
+    my $k = 'dsc:cmname:1:' . lc($_[0] // '');
+    utf8::encode($k) if utf8::is_utf8($k);
+    return $k;
+}
+sub _hostedByName {
+    my ($class, $name, $cb) = @_;
+    $name = defined $name ? $name : '';
+    $name =~ s/^\s+|\s+$//g;
+    return $cb->({ mbid => '', name => '', n => 0 }) unless length $name;
+    my $c = $cache->get(_cmNameKey($name));
+    return $cb->($c) if ref $c eq 'HASH';
+    _netGet(HOSTED_BASE_URL . 'artist/' . _hostedSeg($name) . '/discography',
+        sub {
+            my $d = eval { from_json(shift->content) };
+            if ($@ || ref $d ne 'HASH') {
+                _dbg("community name '$name': unreadable reply");
+                return $cb->(undef);
+            }
+            my $mbid = lc($d->{mbid} // '');
+            $mbid = '' unless $mbid =~ $UUID_RE;
+            my $a = { mbid => $mbid, name => ($mbid ? $d->{name} // '' : ''),
+                      n => ($mbid && ref $d->{discography} eq 'ARRAY'
+                            ? scalar @{ $d->{discography} } : 0) };
+            _dbg("community name '$name': "
+                . ($mbid ? "'$a->{name}' ($mbid), $a->{n} release group(s)" : 'no artist'));
+            eval { $cache->set(_cmNameKey($name), $a,
+                               $mbid ? CMNAME_FOUND_TTL : CMNAME_EMPTY_TTL); 1 };
+            $cb->($a);
+        },
+        sub {
+            my $err = eval { $_[0]->error } // $_[1] // '?';
+            _dbg("community name '$name': $err - no answer");
+            $cb->(undef);
+        },
+        timeout => HOSTED_TIMEOUT, failFast => 1);
+    return;
+}
+
+# ---------------------------------------------------------------------------
+# THE ARTIST PAGE'S FIRST LIST (0.56.7; docs/mb-efficiency-and-community-api-
+# analysis.md §A16, route A, Simon: "A")
+# ---------------------------------------------------------------------------
+# A big artist's cold page was 13 MusicBrainz requests in a row (the artist
+# read, 6 browse pages, 6 by-id bootleg requests) and drew at 15 s (Bob Dylan,
+# §A15). It now draws from two outside lists, one request each, off the
+# MusicBrainz queue:
+#   * LISTENBRAINZ's artist metadata (`/1/metadata/artist/?inc=release_group`)
+#     lists every group the artist is credited on, first or not, uncapped:
+#     11,769 of MusicBrainz's 11,790 groups over 49 artists, fields alike on all
+#     but 16 (measured 2026-10-01). No aliases, no statuses, no release titles.
+#   * the COMMUNITY API's `/discography?withReleases=1` lists the groups where
+#     the artist is credited FIRST, with every release's status: its bootleg
+#     verdicts agree with MusicBrainz's on 9,521 of 9,685 groups. Its groups
+#     ListenBrainz lacks join the list (together: 11,786 of 11,790, the 4
+#     missing all 2026 additions).
+# What the first visit lacks, MusicBrainz gives the next one: after the page is
+# drawn, completeArtist browses it and runs the by-id check in the background
+# (aliases, edition titles, the newest groups, its own verdicts) and stores the
+# result for the next entry (promoteCompleted), never under a visit in
+# progress. Ledger A2 `THE ARTIST PAGE DRAWS FROM LISTENBRAINZ AND THE
+# COMMUNITY API`.
+#
+# Both must answer, for THIS mbid, with a list; anything else (a refusal, a
+# timeout, an echo for another artist, an empty list) and the page takes the
+# MusicBrainz browse exactly as before. There is NO size ceiling (0.56.8; the
+# 0.56.7 one at 1,500 sent The Rolling Stones, 1,904, down the 15 s path): the
+# cost that grows with an artist is the bootleg check's by-id requests, and
+# warmOfficial bounds those before the draw instead (PREDRAW_RGID_MAX). MusicBrainz's
+# special-purpose artists never take it (%MB_SPECIAL_ARTIST: Various Artists is
+# 106 MB on ListenBrainz).
+use constant LB_BASE_URL  => 'https://api.listenbrainz.org/1/';
+# The slowest uncached replies measured (2026-10-01): the community API 6.5 s
+# for Bach and 7.3 s for Mozart, 4.7 s for Springsteen; ListenBrainz 2.5 s for
+# Mozart (4.3 MB). 8 s left the composers one slow day from the old path.
+use constant FAST_TIMEOUT => 12;
+
+sub _rgFastKey  { 'dsc:rgfast:1:'  . lc($_[0] // '') }   # the list is the first one; MusicBrainz still to complete it
+sub _rgNextKey  { 'dsc:rgnext:1:'  . lc($_[0] // '') }   # MusicBrainz's completed list, for the next entry
+sub _rgFullKey  { 'dsc:rgfull:1:'  . lc($_[0] // '') }   # a Refresh asked for MusicBrainz itself
+sub _cmDiscoKey { 'dsc:cmdisco:1:' . lc($_[0] // '') }   # the community's verdicts for the first draw
+use constant RGFULL_TTL => 3600;
+
+# One spine entry from an outside list, in the browse's shape (no aliases), or
+# undef without a group id or a title.
+sub _fastEntry {
+    my ($id, $title, $date, $type, $sec) = @_;
+    return undef unless defined $id && $id =~ $UUID_RE && defined $title && length $title;
+    return {
+        mbid      => lc $id,
+        title     => $title,
+        date      => $date // '',
+        type      => $type // '',
+        secondary => ref $sec eq 'ARRAY' ? [ grep { defined && length } @$sec ] : [],
+    };
+}
+
+# $cb->(\@entries) from ListenBrainz, or $cb->(undef): no answer, an answer for
+# another artist, or an empty list.
+sub _lbGroups {
+    my ($mbid, $cb) = @_;
+    _netGet(LB_BASE_URL . 'metadata/artist/?artist_mbids=' . $mbid . '&inc=release_group',
+        sub {
+            my $d = eval { from_json(shift->content) };
+            my ($a) = grep { ref $_ eq 'HASH' && lc($_->{artist_mbid} // $_->{mbid} // '') eq $mbid }
+                      (ref $d eq 'ARRAY' ? @$d : ());
+            my $list = ($a && ref $a->{release_group} eq 'ARRAY') ? $a->{release_group} : [];
+            unless (@$list) {
+                _dbg("ListenBrainz list $mbid: " . (!$a ? 'no answer for this artist' : 'no groups'));
+                return $cb->(undef);
+            }
+            my @all = grep { $_ } map {
+                ref $_ eq 'HASH'
+                    ? _fastEntry($_->{mbid}, $_->{name}, $_->{date}, $_->{type}, $_->{secondary_types})
+                    : undef
+            } @$list;
+            $cb->(@all ? \@all : undef);
+        },
+        sub {
+            my $err = eval { $_[0]->error } // $_[1] // '?';
+            _dbg("ListenBrainz list $mbid: $err");
+            $cb->(undef);
+        },
+        timeout => FAST_TIMEOUT, failFast => 1);
+    return;
+}
+
+# $cb->({ groups => \@entries, o => { rg => 0|1 }, r => { release => rg } }) from
+# the community API, or $cb->(undef). A verdict is given only for a group whose
+# releases are listed, by the bootleg check's own rule (_isOfficial: official if
+# any release is, or has no status); a group listed without releases has none.
+sub _hostedDisco {
+    my ($mbid, $cb) = @_;
+    my $name = Plugins::Discography::API->peekArtistName($mbid);
+    $name = '_' unless defined $name && length $name;
+    _netGet(HOSTED_BASE_URL . 'artist/' . _hostedSeg($name)
+            . '/discography?mbid=' . $mbid . '&withReleases=1',
+        sub {
+            my $d = eval { from_json(shift->content) };
+            my $list = (!$@ && ref $d eq 'HASH' && ref $d->{discography} eq 'ARRAY') ? $d->{discography} : [];
+            unless (@$list && lc($d->{mbid} // '') eq $mbid) {
+                _dbg("community list $mbid: " . (ref $d ne 'HASH' ? 'unreadable reply'
+                     : lc($d->{mbid} // '') ne $mbid ? 'answered for ' . ($d->{mbid} || 'no mbid')
+                     : 'no groups'));
+                return $cb->(undef);
+            }
+            my (@groups, %o, %r);
+            for my $g (@$list) {
+                next unless ref $g eq 'HASH';
+                my $e = _fastEntry($g->{mbid}, $g->{title}, $g->{release_date},
+                                   $g->{primary_type}, $g->{secondary_types}) or next;
+                push @groups, $e;
+                my $rels = ref $g->{releases} eq 'HASH' ? $g->{releases} : {};
+                next unless %$rels;
+                my $any = 0;
+                for my $rid (keys %$rels) {
+                    $any ||= _isOfficial($rels->{$rid});
+                    $r{ lc $rid } = $e->{mbid};
+                }
+                $o{ $e->{mbid} } = $any ? 1 : 0;
+            }
+            $cb->({ groups => \@groups, o => \%o, r => \%r });
+        },
+        sub {
+            my $err = eval { $_[0]->error } // $_[1] // '?';
+            _dbg("community list $mbid: $err");
+            $cb->(undef);
+        },
+        timeout => FAST_TIMEOUT, failFast => 1);
+    return;
+}
+
+# The community's groups to add to a list that %$have holds (marked into it as
+# they are taken): only those it lists releases for. Its data keeps the old ids
+# of groups MusicBrainz has MERGED, listed with no releases (Nirvana: 233 of 789,
+# every one sampled redirects on MusicBrainz; ledger §A3); such an id would show
+# as an unchecked duplicate on the page. A real group it alone has (a new one
+# ListenBrainz has not caught up with) lists its releases.
+sub _cmExtra {
+    my ($cm, $have) = @_;
+    return grep { defined $cm->{o}{ $_->{mbid} } && !$have->{ $_->{mbid} }++ } @{ $cm->{groups} };
+}
+
+# The two requests together; $cb->(\@spine) once both have a list, cached as
+# the spine with the markers completeArtist and warmOfficial read, or
+# $cb->(undef) as soon as either has none (the caller browses). A
+# special-purpose artist (Various Artists) asks neither and browses.
+sub _fastSpine {
+    my ($mbid, $cb) = @_;
+    return $cb->(undef) if $MB_SPECIAL_ARTIST{ lc $mbid };
+    my ($lb, $cm, $decided);
+    my $finish = sub { return if $decided++; $cb->(@_) };
+    my $both = sub {
+        return unless $lb && $cm;
+        my %have = map { $_->{mbid} => 1 } @$lb;
+        my @all = sort { $a->{mbid} cmp $b->{mbid} } (@$lb, _cmExtra($cm, \%have));
+        eval {
+            $cache->set(_rgKey($mbid), \@all, RG_TTL);
+            $cache->set(_cmDiscoKey($mbid), { o => $cm->{o}, r => $cm->{r} }, RG_TTL);
+            $cache->set(_rgFastKey($mbid), 1, RG_TTL);
+            1;
+        } or do {
+            $log->warn("release-group cache set failed: $@");
+            $cache->remove($_) for _rgKey($mbid), _cmDiscoKey($mbid), _rgFastKey($mbid);
+            return $finish->(undef);
+        };
+        _dbg("release groups for $mbid: " . scalar(@all) . ' from ListenBrainz ('
+             . scalar(@$lb) . ') and the community API (' . scalar(@{ $cm->{groups} })
+             . '), ' . scalar(keys %{ $cm->{o} }) . ' with its verdict, '
+             . scalar(grep { !$have{ $_->{mbid} } } @{ $cm->{groups} })
+             . " of its own left out (no releases: merged-away ids); MusicBrainz completes it after the page");
+        $finish->(\@all);
+    };
+    _lbGroups($mbid, sub {
+        $lb = shift;
+        return $finish->(undef) unless $lb;
+        $both->();
+    });
+    _hostedDisco($mbid, sub {
+        $cm = shift;
+        unless ($cm) { _dbg("first list for $mbid: no community answer - the browse"); return $finish->(undef) }
+        $both->();
+    });
+    return;
+}
+
+# A REFRESH PAST THE CAP (0.56.8; found live on 0.56.7): a Refresh takes
+# MusicBrainz's list, awaited, and that browse stops at RG_MAX_PAGES. Without
+# this the groups past it (Johnny Cash's live albums) vanished for RG_TTL, since
+# nothing completes a browsed list. Called once the browse's first page gives
+# the count, so both lists come in alongside its remaining pages. Returns
+# $merge->(\@mb, $done): $done->(\@list, \%cm) with the groups MusicBrainz did
+# not reach added, plus the community's verdicts and release map for THOSE
+# groups only (MusicBrainz's by-id check answers for its own) and `past`, the
+# kept ids, whose by-id check may wait until after the draw (warmOfficial); or
+# $done->(\@mb) when either source has no list or neither has a group past the
+# cap. It waits for both answers (each failFast, FAST_TIMEOUT). The community's
+# merged-away ids are left out, as on a first list (_cmExtra).
+sub _pastCap {
+    my ($mbid, $total) = @_;
+    my ($lb, $cm, $answered, $waiting) = (undef, undef, 0);
+    _dbg("Refresh of $mbid: MusicBrainz lists $total groups, past its cap of "
+         . RG_MAX_PAGES * RG_PAGE_SIZE . ' - ListenBrainz and the community API asked for the rest');
+    my $in = sub { $waiting->() if ++$answered == 2 && $waiting };
+    _lbGroups($mbid,    sub { $lb = shift; $in->() });
+    _hostedDisco($mbid, sub { $cm = shift; $in->() });
+    return sub {
+        my ($mb, $done) = @_;
+        my $go = sub {
+            unless ($lb && $cm) {
+                _dbg("release groups for $mbid: no list past the cap - MusicBrainz's " . scalar(@$mb) . ' only');
+                return $done->($mb);
+            }
+            my %have = map { $_->{mbid} => 1 } @$mb;
+            my @extra = ((grep { !$have{ $_->{mbid} }++ } @$lb), _cmExtra($cm, \%have));
+            unless (@extra) {
+                _dbg("release groups for $mbid: nothing past the cap - MusicBrainz's " . scalar(@$mb) . ' only');
+                return $done->($mb);
+            }
+            my @all = sort { $a->{mbid} cmp $b->{mbid} } (@$mb, @extra);
+            _pruneAliases(\@all);
+            my %x = map { $_->{mbid} => 1 } @extra;
+            my %o = map { ($_ => $cm->{o}{$_}) } grep { $x{$_} } keys %{ $cm->{o} };
+            my %r = map { ($_ => $cm->{r}{$_}) } grep { $x{ $cm->{r}{$_} } } keys %{ $cm->{r} };
+            _dbg("release groups for $mbid: MusicBrainz's " . scalar(@$mb) . ' and ' . scalar(@extra)
+                 . ' past its cap from ListenBrainz and the community API, ' . scalar(keys %o)
+                 . ' of those with its verdict');
+            $done->(\@all, { o => \%o, r => \%r, past => \%x });
+        };
+        $answered == 2 ? $go->() : ($waiting = $go);
+    };
+}
+
+# AFTER THE PAGE IS DRAWN, for the next visit: MusicBrainz's browse and its
+# by-id bootleg check, every request sent as background work so a tap goes
+# first. $cb->() when done or when there is nothing to do (no first list
+# pending, or one already completing).
+#   * The list: MusicBrainz's entry wins where both have a group (aliases,
+#     titles, types, dates); groups only it has (the newest) are added; groups
+#     only the first list has are kept only when the browse was cut at its cap
+#     (they are past it), else dropped (merged away or removed in MusicBrainz).
+#     Aliases are pruned over the whole. Stored for the next entry, never
+#     under the visit in progress (promoteCompleted).
+#   * The verdicts: MusicBrainz's over the browse's groups, with their edition
+#     titles and release map; the community's stay for groups it did not
+#     classify. Written at once: visibility is frozen per visit (Browse `snap`).
+#   * A failure stores nothing and leaves the marker, so the next visit tries
+#     again. A Refresh meanwhile (the marker gone) discards the result.
+my %completing;
+sub completeArtist {
+    my ($class, $mbid, $cb) = @_;
+    $cb ||= sub {};
+    $mbid = lc($mbid // '');
+    return $cb->() unless length $mbid && $cache->get(_rgFastKey($mbid));
+    return $cb->() if $completing{$mbid};
+    $completing{$mbid} = 1;
+    my $done = sub {
+        my ($why) = @_;
+        _dbg("completing $mbid from MusicBrainz: $why") if $why;
+        delete $completing{$mbid};
+        $cb->();
+    };
+    _dbg("completing $mbid from MusicBrainz in the background");
+    _browseGroups($mbid,
+        sub {
+            my ($mb, $total, $truncated) = @_;
+            my $drawn = $class->peekReleaseGroups($mbid) || [];
+            my %inMb = map { $_->{mbid} => 1 } @$mb;
+            my @kept = $truncated ? (map { { %$_ } } grep { !$inMb{ $_->{mbid} } } @$drawn) : ();
+            my @merged = sort { $a->{mbid} cmp $b->{mbid} } (@$mb, @kept);
+            _pruneAliases(\@merged);
+            _officialById([ map { $_->{mbid} } @$mb ], sub {
+                my ($res, $err) = @_;
+                return $done->('bootleg check ' . ($err // 'failed') . ' - kept for the next visit')
+                    unless $res;
+                return $done->('a Refresh came first - result discarded')
+                    unless $cache->get(_rgFastKey($mbid));
+                my $cur = $cache->get(_officialKey($mbid));
+                $cur = {} unless ref $cur eq 'HASH';
+                my $ok = eval {
+                    $cache->set(_officialKey($mbid), {
+                        o => { %{ $cur->{o} || {} }, %{ $res->{o} } },
+                        r => { %{ $cur->{r} || {} }, %{ $res->{r} } },
+                        # merged: a group past the cap keeps the titles its
+                        # own check found (warmOfficial, _officialLater)
+                        t => { %{ $cur->{t} || {} }, %{ $res->{t} } },
+                    }, OFFICIAL_TTL());   # parens: the constant is declared further down
+                    $cache->set(_rgNextKey($mbid), \@merged, RG_TTL);
+                    1;
+                };
+                return $done->("cache set failed: $@") unless $ok;
+                $cache->remove($_) for _rgFastKey($mbid), _cmDiscoKey($mbid);
+                _dbg("completed $mbid from MusicBrainz: " . scalar(@merged) . ' groups ('
+                     . scalar(@$mb) . " of $total browsed, " . scalar(@kept) . ' kept past the cap), '
+                     . scalar(keys %{ $res->{o} }) . ' verdicts, for the next visit');
+                $done->();
+            }, background => 1);
+        },
+        sub { $done->('browse failed (' . ($_[0] // '?') . ') - kept for the next visit') },
+        background => 1);
+    return;
+}
+
+# On a FRESH entry to an artist page (never a positional walk, whose tree must
+# stay the one the client holds), MusicBrainz's completed list replaces the
+# first one. 1 when it did.
+sub promoteCompleted {
+    my ($class, $mbid) = @_;
+    $mbid = lc($mbid // '');
+    return 0 unless length $mbid;
+    my $next = $cache->get(_rgNextKey($mbid));
+    return 0 unless ref $next eq 'ARRAY';
+    eval { $cache->set(_rgKey($mbid), $next, RG_TTL); 1 } or return 0;
+    # MusicBrainz's list now: no first list is left to complete.
+    $cache->remove($_) for _rgNextKey($mbid), _rgFastKey($mbid), _cmDiscoKey($mbid);
+    _dbg("release groups for $mbid: MusicBrainz's completed list (" . scalar(@$next)
+         . ') replaces the first one');
+    return 1;
+}
 
 # undef = never counted (the caller must NOT treat that as zero - fail open).
 sub peekReleaseGroupCount {
@@ -1273,18 +2060,27 @@ sub peekReleaseGroupCount {
 sub warmCandidateCounts {
     my ($class, $cands, $cb) = @_;
     $cb ||= sub {};
-    my @todo = grep { $_->{mbid} && !defined $cache->get(_rgCountKey($_->{mbid})) }
-               @{ $cands || [] };
+    my %seen;
+    my @todo = grep {
+        $_->{mbid} && !$seen{ lc $_->{mbid} }++
+        && !defined $cache->get(_rgCountKey($_->{mbid}))
+    } @{ $cands || [] };
     return $cb->() unless @todo;
 
-    my $i = 0;
-    my $next = sub {
+    my $pending = scalar @todo;           # counts not yet settled; $cb at 0
+    my $settle  = sub { $cb->() unless --$pending };
+
+    # MusicBrainz for what the community API could not answer, ONE AT A TIME
+    # as before: this chain keeps a single request in the MusicBrainz queue, so
+    # a page's own requests are never stuck behind a burst of counts. No gap of
+    # its own: _netGet paces on the URL (0.51.17).
+    my (@mbTodo, $mbBusy);
+    my $mbRun = sub {
         my ($self) = @_;
-        my $c = $todo[$i++];
-        return $cb->() unless $c;
-        # No gap of its own: _netGet paces on the URL (0.51.17). Keeping one
-        # here as well would DOUBLE the wait on the public host.
-        my $step = sub { $self->($self) };
+        return if $mbBusy;
+        my $c = shift @mbTodo or return;
+        $mbBusy = 1;
+        my $after = sub { $mbBusy = 0; $settle->(); $self->($self) };
         _netGet(_mbBase() . 'release-group?artist=' . $c->{mbid} . '&fmt=json&limit=1',
             sub {
                 my $d = eval { from_json(shift->content) };
@@ -1293,12 +2089,25 @@ sub warmCandidateCounts {
                 # and hide a legitimate artist for a fortnight.
                 eval { $cache->set(_rgCountKey($c->{mbid}), $n + 0, RGCOUNT_TTL); 1 }
                     if defined $n;
-                $step->();
+                $after->();
             },
-            sub { $step->() },
+            sub { $after->() },
             timeout => 12);
     };
-    $next->($next);
+
+    # The community API first, every candidate at once: its own queue sends them
+    # one at a time with no gap, beside whatever MusicBrainz is doing.
+    for my $c (@todo) {
+        _hostedCount($c, sub {
+            my ($n) = @_;
+            if (defined $n) {
+                eval { $cache->set(_rgCountKey($c->{mbid}), $n + 0, RGCOUNT_TTL); 1 };
+                return $settle->();
+            }
+            push @mbTodo, $c;
+            $mbRun->($mbRun);
+        });
+    }
     return;
 }
 
@@ -1321,34 +2130,57 @@ sub warmCandidateCounts {
 #     Piano Project", both of which have real pages. Filtering on it would hide
 #     two genuine artists to remove four dead ends.
 #
-# THROTTLE-GATED — an OPEN VIOLATION, not a decision: CLAUDE.md's top rule
-# ("Known violations, OPEN") makes a gate that skips work on the public API a
-# defect, and stage 3 removes it (docs/mb-efficiency-and-community-api-
-# analysis.md §F step 3). How it works meanwhile: one resolve + one count per
-# row, cached (dsc:mbid, dsc:rgcount) and serialised at MB's 1 req/s
-# etiquette, is milliseconds against a mirror but 15-30s for a first search of
-# a new name on the public API. So the filter runs only where MB is
-# un-throttled; elsewhere every row is kept, exactly as before. Deterministic
-# per install — a given user always sees the same list, so nothing ever shows
-# then disappears.
+# RUNS ON EVERY SETUP SINCE STAGE 3 (2026-09-30; analysis §A12). It returned
+# early on the public API from 0.44.7, a gate that skipped work there instead
+# of pacing it — CLAUDE.md's top rule makes that a defect, and public users got
+# no dead-end hiding, no alias fold, no library attach by tag. Removing it as it
+# stood made a multi-row first search three to six times slower (measured), so
+# the rows are now resolved in three passes, cheapest first:
+#   1. the TYPED QUERY's own reply (the shared name search the search already
+#      made, when its 15 entries are the whole result, else one request at
+#      100): a row takes the artist when exactly ONE artist in it has the row's
+#      exact name, or (stage 3b) when none has it and exactly ONE carries it as
+#      an alias;
+#   2. ONE combined search, `artist:"A" OR artist:"B" ...`, for two or more rows
+#      left: the name rule, trusted only when the reply is COMPLETE. Since
+#      0.56.6 (analysis §A14) the rows pass 1 answered by name but could not
+#      PROVE ride in it too, to be proven (never re-picked);
+#   3. since stage 3b (2026-09-30, analysis §A13), the COMMUNITY API by name for
+#      the rest (see the loop below for how far its answer is trusted); the
+#      real resolver only where it cannot decide (no releases listed), for the
+#      row named as typed (answered from the search's own lookup) and for a
+#      library row.
+# Passes 1-2 answered 124 of 149 sampled rows with one or two requests, every
+# answer identical to the real resolver's (analysis §A12.3b-c). What the two
+# passes decide is handed to the page ONLY when it is PROVEN (_rememberProven:
+# the reply holds every artist of the row's name, exactly one); everything else
+# decides the list only, and a row opened from the list resolves itself.
+# NOT the oracle the note above rules out: nothing is dropped for being absent
+# from a batch reply. A row the batch cannot answer goes on to the next pass;
+# only "no artist", a zero count, or a pick under another name that merges
+# into no row drops it.
+#
+# $opt: query => the typed query (pass 1); asked => a hash the caller shares,
+# which collects every mbid whose count this check asked for and saw SETTLE, so
+# the search's same-name section does not ask again for one that failed.
 sub filterRowsWithContent {
-    my ($class, $rows, $cb) = @_;
+    my ($class, $rows, $cb, $opt) = @_;
     $cb ||= sub {};
     $rows ||= [];
+    $opt  ||= {};
+    my $asked = $opt->{asked} || {};
     return $cb->($rows, 0) unless @$rows;
 
-    # mbGap is 0 only for a non-musicbrainz.org host, i.e. a mirror with no
-    # courtesy delay. That is the same signal the rest of the plugin uses.
-    return $cb->($rows, 0) if $class->mbGap(1.1);
-
-    # PARALLEL, because this only ever runs un-throttled. The serial version
-    # cost ~2 requests per row strictly in sequence - 30 round trips for a
-    # 15-row search, visibly slow even against a local mirror. Order is
-    # preserved by writing into a slot per row rather than pushing on
+    # Rows are resolved concurrently and their requests share the queues, so
+    # order is preserved by writing into a slot per row rather than pushing on
     # completion.
     my @slot = (undef) x scalar(@$rows);
     my @mbof = (undef) x scalar(@$rows);
     my $left = scalar @$rows;
+    # Rows kept ONLY so the fold can merge them into a row of the same artist
+    # (a community API answer under another name, see below): never the fold's
+    # survivor, never attached, and dropped if nothing takes them in.
+    my %mergeOnly;
 
     my $finish = sub {
         my @kept = grep { defined $slot[$_] } 0 .. $#slot;
@@ -1377,7 +2209,9 @@ sub filterRowsWithContent {
         for my $i (@kept) {
             push @{ $group{ $mbof[$i] } }, $i if $mbof[$i];
         }
-        my @dup = grep { scalar @{ $group{$_} } > 1 } keys %group;
+        # A group of merge-only rows alone has nothing to merge into.
+        my @dup = grep { scalar @{ $group{$_} } > 1
+                         && grep { !$mergeOnly{$_} } @{ $group{$_} } } keys %group;
 
         my $emit = sub {
             my %folded;
@@ -1406,7 +2240,7 @@ sub filterRowsWithContent {
                                       $slot[$_]{artist_id}) } @owned;
                     ($keepIdx) = sort { $n{$b} <=> $n{$a} || $a <=> $b } @owned;
                 }
-                $keepIdx = $idx[0] unless defined $keepIdx;
+                ($keepIdx) = grep { !$mergeOnly{$_} } @idx unless defined $keepIdx;
 
                 my $didFold = 0;
 
@@ -1480,6 +2314,20 @@ sub filterRowsWithContent {
                     next if $i == $keepIdx;
                     my $a = Plugins::Discography::Sources::_norm($slot[$i]{name} // '');
                     my $b = Plugins::Discography::Sources::_norm($slot[$keepIdx]{name} // '');
+                    # A MERGE-ONLY row (the community API's pick, made under
+                    # another name) merges only when ITS OWN name is one
+                    # MusicBrainz records for this artist, or a joint credit
+                    # headed by it: the survivor's alias proves nothing about a
+                    # row whose pick may be wrong ("The 3 Stooges" answered as
+                    # The Stooges stays out of The Stooges' row, and goes).
+                    if ($mergeOnly{$i}
+                        && !($alias{$a} || (length $canonNorm && $a eq $canonNorm)
+                             || $splitsTo->($slot[$i]{name}, $b))) {
+                        _dbg("search rows: NOT merging '" . ($slot[$i]{name} // '?')
+                            . "' into '" . ($slot[$keepIdx]{name} // '?')
+                            . "' - its own name is not one MusicBrainz records for $mbid");
+                        next;
+                    }
                     my $split = $splitsTo->($slot[$i]{name}, $b)
                              || $splitsTo->($slot[$keepIdx]{name}, $a);
                     unless ($alias{$a} || $alias{$b} || $split) {
@@ -1643,7 +2491,7 @@ sub filterRowsWithContent {
             my %carried = map { $slot[$_]{artist_id} => 1 }
                           grep { !$folded{$_} && $slot[$_]{artist_id} } @kept;
             for my $i (@kept) {
-                next if $folded{$i};
+                next if $folded{$i} || $mergeOnly{$i};
                 next if $slot[$i]{artist_id};
                 next unless $mbof[$i];
                 my @hits = @{ Plugins::Discography::Sources::localArtistsByMbid($mbof[$i]) };
@@ -1670,7 +2518,11 @@ sub filterRowsWithContent {
                     . $mbof[$i]);
             }
 
-            my @out = map { $slot[$_] } grep { !$folded{$_} } @kept;
+            for my $i (grep { $mergeOnly{$_} && !$folded{$_} } @kept) {
+                _dbg("search row DROP '" . ($slot[$i]{name} // '?')
+                    . "': answered under another name, and no row of that artist to merge into");
+            }
+            my @out = map { $slot[$_] } grep { !$folded{$_} && !$mergeOnly{$_} } @kept;
             _dbg('search rows: ' . scalar(@out) . ' of ' . scalar(@$rows)
                 . ' lead somewhere');
             $cb->(\@out, scalar(@$rows) - scalar(@out));
@@ -1685,69 +2537,379 @@ sub filterRowsWithContent {
         }
     };
 
+    # Every row settles exactly once: kept (with its mbid, for the fold) or
+    # dropped. The last one to settle runs $finish.
+    my $settle = sub {
+        my ($i, $keep, $mbid) = @_;
+        $slot[$i] = $rows->[$i] if $keep;
+        $mbof[$i] = $mbid       if $keep;
+        $finish->() unless --$left;
+    };
+
+    # A NON-library row, resolved (or not) to $mbid: does it lead anywhere?
+    # PER-ROW REASONS ARE LOGGED. The summary line ("1 of 9 lead somewhere")
+    # says nothing about WHY a given row went, which left a real complaint - The
+    # Iron Maidens vanishing from an Iron Maiden search - undiagnosable without
+    # another build.
+    my $judge = sub {
+        my ($i, $mbid, $how) = @_;
+        my $name = $rows->[$i]{name};
+        # Unresolvable -> the page could only say "couldn't identify", so the
+        # row leads nowhere and is dropped.
+        unless ($mbid) {
+            _dbg("search row DROP '$name': no MB artist ($how)");
+            return $settle->($i, 0);
+        }
+        # PROVEN EMPTY by an earlier render (0.46.6) — MusicBrainz lists
+        # releases for this artist but nothing here can play any of them, so
+        # the row leads to "No releases found". Checked BEFORE the count fetch:
+        # it is a cache read, and it is a stronger answer than the count, which
+        # only ever knew what MB holds. Library rows never reach here, and the
+        # verdict is only ever set with the pools resolved — see
+        # Browse::_buildList.
+        if ($class->peekArtistEmpty($mbid)) {
+            _dbg("search row DROP '$name': proven empty on a previous "
+                . "render (mbid=$mbid)");
+            return $settle->($i, 0);
+        }
+        my $decide = sub {
+            my $n = $class->peekReleaseGroupCount($mbid);
+            # undef = the count fetch FAILED. Keep the row: a failed request
+            # must never read as "this artist has nothing".
+            my $keep = (!defined $n || $n > 0) ? 1 : 0;
+            _dbg("search row " . ($keep ? 'keep' : 'DROP') . " '$name': "
+                . "mbid=$mbid rgcount=" . (defined $n ? $n : 'unknown') . " ($how)");
+            $settle->($i, $keep, $mbid);
+        };
+        # ASKED ONCE PER SEARCH (stage 3 review, 2026-09-30). A count this
+        # search has already asked for, and that has SETTLED, is decided from
+        # what it got: cached if it answered, undef (keep) if it failed. Asking
+        # again only repeated the failure, and while MusicBrainz is refusing it
+        # waited out the 5-30 s backoff to do it. Marked only once settled, so
+        # a count still in flight for another row is never read as "failed".
+        return $decide->() if $asked->{ lc $mbid };
+        $class->warmCandidateCounts([{ mbid => $mbid }], sub {
+            $asked->{ lc $mbid } = 1;
+            $decide->();
+        });
+    };
+
+    my @pend;   # [index, name] of the rows to resolve by name
     for my $i (0 .. $#$rows) {
         my $row  = $rows->[$i];
-        my $done = sub {
-            my ($keep, $mbid) = @_;
-            $slot[$i] = $row  if $keep;
-            $mbof[$i] = $mbid if $keep;
-            $finish->() unless --$left;
-        };
         my $name = $row->{name};
-        unless (defined $name && length $name) { $done->(1); next }
+        unless (defined $name && length $name) { $settle->($i, 1); next }
 
         # A LIBRARY row is never filtered - an artist the user owns that MB
         # does not list must not vanish from search - but it still RESOLVES,
-        # so it can take part in folding and carry its artist_id across.
-        if ($row->{artist_id}) {
-            $class->getArtistMbid(artist => $name,
-                                  artist_id => $row->{artist_id},
-                                  speculative => 1,
-                                  onDone => sub { $done->(1, $_[0]) });
+        # so it can take part in folding and carry its artist_id across. Its
+        # own tag first, as getArtistMbid always has.
+        if ($row->{artist_id} && (my $tag = _libraryTagMbid($row->{artist_id}))) {
+            $settle->($i, 1, $tag);
             next;
         }
+        push @pend, [ $i, $name ];
+    }
+    return unless @pend;
+
+    $class->_rowBatch($opt->{query}, \@pend, sub {
+        my ($pick, $proven) = @_;
+        my @batched = grep {  defined $pick->{ $_->[0] } } @pend;
+        my @rest    = grep { !defined $pick->{ $_->[0] } } @pend;
+        # What the shared searches PROVED goes to the page (see _rememberProven).
+        $class->_rememberProven($rows->[$_]{name}, $proven->{$_}) for keys %{ $proven || {} };
+        _dbg('search rows: ' . scalar(@batched) . ' of ' . scalar(@pend)
+            . ' answered by the shared searches (' . scalar(keys %{ $proven || {} })
+            . ' handed to the page), ' . scalar(@rest) . ' left');
+
+        # The batch answers' counts in ONE warm: the community API sends them
+        # back to back, and whatever falls to MusicBrainz goes one at a time.
+        # Each row is then judged from what the warm got, never asked again.
+        my @counted = map  { $pick->{ $_->[0] } }
+                      grep { !$rows->[ $_->[0] ]{artist_id} } @batched;
+        $class->warmCandidateCounts([ map { { mbid => $_ } } @counted ], sub {
+            $asked->{ lc $_ } = 1 for @counted;
+            for my $p (@batched) {
+                my $i = $p->[0];
+                if ($rows->[$i]{artist_id}) { $settle->($i, 1, $pick->{$i}); next }
+                $judge->($i, $pick->{$i}, 'shared search');
+            }
+        });
 
         # 'artist' is the name parameter (NOT 'name' - that silently resolves
-        # nothing and hides every row).
-        $class->getArtistMbid(artist => $name, speculative => 1, onDone => sub {
-            my ($mbid) = @_;
-            # Unresolvable -> the page could only say "couldn't identify", so
-            # the row leads nowhere and is dropped. Speculative mode means this
-            # is ONE mirror query with no public-API retry (see
-            # _artistMbidByName); the cost of being wrong is a hidden row, not
-            # a wrong page.
-            #
-            # PER-ROW REASONS ARE LOGGED. The summary line ("1 of 9 lead
-            # somewhere") says nothing about WHY a given row went, which left a
-            # real complaint - The Iron Maidens vanishing from an Iron Maiden
-            # search - undiagnosable without another build.
-            unless ($mbid) {
-                _dbg("search row DROP '$name': no MB artist (speculative)");
-                return $done->(0);
-            }
-            # PROVEN EMPTY by an earlier render (0.46.6) — MusicBrainz lists
-            # releases for this artist but nothing here can play any of them,
-            # so the row leads to "No releases found". Checked BEFORE the count
-            # fetch: it is a cache read, and it is a stronger answer than the
-            # count, which only ever knew what MB holds. Library rows never
-            # reach here (they are exempt above), and the verdict is only ever
-            # set with the pools resolved — see Browse::_buildList.
-            if ($class->peekArtistEmpty($mbid)) {
-                _dbg("search row DROP '$name': proven empty on a previous "
-                    . "render (mbid=$mbid)");
-                return $done->(0);
-            }
-            $class->warmCandidateCounts([{ mbid => $mbid }], sub {
-                my $n = $class->peekReleaseGroupCount($mbid);
-                # undef = the count fetch FAILED. Keep the row: a failed
-                # request must never read as "this artist has nothing".
-                my $keep = (!defined $n || $n > 0) ? 1 : 0;
-                _dbg("search row " . ($keep ? 'keep' : 'DROP') . " '$name': "
-                    . "mbid=$mbid rgcount=" . (defined $n ? $n : 'unknown'));
-                $done->($keep, $mbid);
+        # nothing and hides every row). `asked`: the resolver's own zero-release
+        # check marks the count it settled, so the row is judged from it.
+        my $resolve = sub {
+            my ($i, $name) = @_;
+            $class->getArtistMbid(artist => $name, speculative => 1,
+                                  asked => $asked, onDone => sub {
+                my ($mbid) = @_;
+                return $settle->($i, 1, $mbid) if $rows->[$i]{artist_id};
+                $judge->($i, $mbid, 'resolver');
             });
-        });
+        };
+
+        # THE REST ASK THE COMMUNITY API, not MusicBrainz (stage 3b, 2026-09-30;
+        # analysis §A11-A13). They are mostly the services' junk, which no
+        # shared search answers, and the resolver spent 3-5 MusicBrainz requests
+        # at 1.1 s on each: Pretenders took 60 requests and 67 s. One request
+        # each on the community API's own queue instead (§A13: 319 MusicBrainz
+        # requests -> 36 for the 16 test searches, the list the same but for
+        # four rows). By name it can pick another act of the name (A3 `safe
+        # drop-in`), so its answer is trusted only as far as it goes:
+        #   - no answer at all (refused, timed out)   -> kept, unchecked, as a
+        #     failed count is: a failed request never hides a row;
+        #   - no artist                                -> dropped;
+        #   - ITS name is the row's, releases listed   -> kept, with its id and
+        #     count;
+        #   - its name is the row's, NO releases       -> the resolver decides:
+        #     its lists hold first credits only, and by name it may have picked
+        #     another act of the name (Luke Bushell, Mixtape Madness);
+        #   - another name                             -> kept ONLY to merge
+        #     into a kept row of the same id through the fold below (one name an
+        #     MB alias of the other), else dropped: "The Pretenders" joins
+        #     Pretenders; "Bush Lily" answered as "Cluster" goes.
+        # Its id is never handed to the page, which resolves such a row itself.
+        # The row named as typed, and a library row, keep the resolver: the
+        # first is answered from the search's own lookup (cached), the second is
+        # never hidden and its id joins the fold and the library attach.
+        (my $qlc = lc($opt->{query} // '')) =~ s/^\s+|\s+$//g;
+        for my $p (@rest) {
+            my ($i, $name) = @$p;
+            (my $nlc = lc $name) =~ s/^\s+|\s+$//g;
+            if ($rows->[$i]{artist_id} || (length $qlc && $nlc eq $qlc)) {
+                $resolve->($i, $name);
+                next;
+            }
+            $class->_hostedByName($name, sub {
+                my ($a) = @_;
+                unless ($a) {
+                    _dbg("search row keep '$name': the community API gave no answer - unchecked");
+                    return $settle->($i, 1, undef);
+                }
+                return $judge->($i, undef, 'community API') unless $a->{mbid};
+                my $n = Plugins::Discography::Sources::_norm(_stripAnnotation($name));
+                my $same = length($n)
+                    && $n eq Plugins::Discography::Sources::_norm(_stripAnnotation($a->{name} // ''));
+                unless ($same) {
+                    _dbg("search row '$name': the community API answered '"
+                        . ($a->{name} // '?') . "' ($a->{mbid}) - kept only to merge");
+                    $mergeOnly{$i} = 1;
+                    return $settle->($i, 1, $a->{mbid});
+                }
+                return $resolve->($i, $name) unless $a->{n};
+                eval { $cache->set(_rgCountKey($a->{mbid}), $a->{n} + 0, RGCOUNT_TTL); 1 }
+                    unless defined $cache->get(_rgCountKey($a->{mbid}));
+                $asked->{ lc $a->{mbid} } = 1;
+                $judge->($i, $a->{mbid}, 'community API');
+            });
+        }
+    });
+    return;
+}
+
+# THE SEARCH HANDS THE PAGE WHAT IT HAS PROVEN (stage 3b, 2026-09-30; analysis
+# §A13 part 2). A row whose artist came from a reply holding EVERY artist of its
+# name, and exactly one of them, has the answer the page's own lookup would
+# reach: the resolver's exact-name pick, and a same-name set of that one artist.
+# So both are written as those entries, and a tap resolves from the cache: one
+# MusicBrainz request and 1.2-1.4 s less (measured on the rig, §A12.12), as the
+# typed name's own row already had. An entry already there is left alone (a
+# cached miss excepted: this is proof there is an artist).
+sub _rememberProven {
+    my ($class, $name, $a) = @_;
+    return unless defined $name && length $name && ref $a eq 'HASH' && $a->{id};
+    my $mbid = lc $a->{id};
+    my $k = _mbidKey($name);
+    my $had = $cache->get($k);
+    eval { $cache->set($k, $mbid, MBID_FOUND_TTL); 1 }
+        unless defined $had && length $had;
+    my $ck = _candKey($name);
+    eval { $cache->set($ck, [ {
+        mbid  => $mbid,
+        name  => $a->{name},
+        score => $a->{score} // 0,
+        disambiguation => $a->{disambiguation},
+        country        => $a->{country},
+        type           => $a->{type},
+    } ], CAND_TTL); 1 } unless defined $cache->get($ck);
+    if (defined $a->{name} && length $a->{name} && !$class->peekArtistName($mbid)) {
+        $mbNameMem{$mbid} = $a->{name};
+        _setMbName($mbid, $a->{name});
     }
+    return;
+}
+
+# The batch passes of filterRowsWithContent (see its header): the typed query's
+# own reply, then one combined search. $cb->(\%pick, \%proven): row index =>
+# mbid, for the rows they answer, and row index => the reply's entry for those
+# whose answer is PROVEN (see _rememberProven). Every other row is left for the
+# next step: none named exactly like the row, several so named (which of several
+# the page opens is the resolver's call), an incomplete combined reply, or a
+# failed request.
+sub _rowBatch {
+    my ($class, $q, $pend, $cb) = @_;
+    # %recheck: rows pass 1 answered by name without proof, for pass 2 to prove.
+    my (%pick, %proven, %recheck);
+    my $norm = \&Plugins::Discography::Sources::_norm;
+
+    # The ONE artist in $arts named exactly like the row (after _norm and the
+    # annotation strip, as measured), or undef.
+    my $unique = sub {
+        my ($arts, $name) = @_;
+        my $w = $norm->(_stripAnnotation($name));
+        return undef unless defined $w && length $w;
+        my @ex = grep {
+            $_->{id} && !$MB_SPECIAL_ARTIST{ lc $_->{id} }
+            && $norm->($_->{name} // '') eq $w
+        } @{ $arts || [] };
+        return @ex == 1 ? lc $ex[0]{id} : undef;
+    };
+
+    # The ONE artist in $arts that carries the row's name as an ALIAS, when none
+    # is NAMED so (stage 3b). MusicBrainz lists every artist's aliases in a name
+    # search reply, so this costs nothing, and it is what the resolver's alias
+    # pass would have found: "Genesis P-Orridge" is an alias of "Genesis Breyer
+    # P-Orridge", and "Genesis Mohanraj" of Tommy Genesis. Never PROVEN: artists
+    # holding the alias whose name lacks the typed words are not in this reply.
+    my $uniqueAlias = sub {
+        my ($arts, $name) = @_;
+        my $w = $norm->(_stripAnnotation($name));
+        return undef unless defined $w && length $w;
+        my @ok = grep { $_->{id} && !$MB_SPECIAL_ARTIST{ lc $_->{id} } } @{ $arts || [] };
+        return undef if grep { $norm->($_->{name} // '') eq $w } @ok;
+        my @al = grep {
+            grep { ref $_ eq 'HASH' && $norm->($_->{name} // '') eq $w } @{ $_->{aliases} || [] }
+        } @ok;
+        return @al == 1 ? lc $al[0]{id} : undef;
+    };
+
+    # The reply's entry for a pick that is PROVEN, given a reply holding every
+    # artist of the row's name: exactly one of them, by the same-name set's own
+    # key, and it is the pick. A name with an annotation is left to the page (the
+    # set is keyed on the name as given, the pick on the name stripped).
+    my $provenEntry = sub {
+        my ($arts, $name, $mbid) = @_;
+        return undef unless defined $mbid && _stripAnnotation($name) eq $name;
+        my $want = _nameKey($name);
+        my @same = grep { $_->{id} && _nameKey($_->{name}) eq $want } @{ $arts || [] };
+        return (@same == 1 && lc $same[0]{id} eq $mbid) ? $same[0] : undef;
+    };
+
+    $q = defined $q ? $q : '';
+    $q =~ s/^\s+|\s+$//g;
+    # A row whose name IS the query: the resolver answered that very name for
+    # the search a moment ago, so it goes to the resolver and costs nothing.
+    my $isQuery = sub {
+        my ($n) = @_;
+        $n =~ s/^\s+|\s+$//g;
+        return length($q) && lc($n) eq lc($q);
+    };
+
+    # PASS 2: one combined search for the rows still unanswered. Only for two or
+    # more: for one, the resolver's own first pass is that same question.
+    # The rows pass 1 answered by name but could not prove RIDE in it (0.56.6,
+    # analysis §A14): a common query's reply is partial (Genesis 140 matches,
+    # Air 628), so it cannot show a name has one artist, and the tap on such a
+    # row paid for its own name search. They ride only when the search is sent
+    # anyway, so they cost no request (every one of 42 searches measured sent
+    # it), and they never change a pick: they can only be proven.
+    my $combined = sub {
+        my @left = grep { !defined $pick{ $_->[0] } && !$isQuery->($_->[1]) } @$pend;
+        return $cb->(\%pick, \%proven) if @left < 2;
+        my @check = grep { $recheck{ $_->[0] } } @$pend;
+        my $query = join ' OR ', map {
+            (my $n = _stripAnnotation($_->[1])) =~ s/"/ /g;
+            'artist:"' . $n . '"';
+        } @left, @check;
+        utf8::encode($query) if utf8::is_utf8($query);
+        (my $safe = $query) =~ s/([^A-Za-z0-9])/sprintf("%%%02X",ord($1))/ge;
+        _netGet(_mbBase() . 'artist?query=' . $safe . '&fmt=json&limit=100',
+            sub {
+                my $d = eval { from_json(shift->content) };
+                my $arts = (!$@ && ref $d eq 'HASH' && ref $d->{artists} eq 'ARRAY')
+                           ? $d->{artists} : undef;
+                my $count = ($arts && defined $d->{count} && $d->{count} =~ /^\d+$/)
+                            ? $d->{count} : undef;
+                # COMPLETE or nothing: "exactly one artist so named" means
+                # something only when every artist the search matched is here.
+                # And then it holds every artist of each row's name (each row's
+                # own phrase is one of the terms), so an answer is proven.
+                my ($got, $upgraded) = (0, 0);
+                if ($arts && defined $count && $count <= @$arts) {
+                    for my $p (@left) {
+                        my $m = $unique->($arts, $p->[1]) or next;
+                        $pick{ $p->[0] } = $m;
+                        my $e = $provenEntry->($arts, $p->[1], $m);
+                        $proven{ $p->[0] } = $e if $e;
+                        $got++;
+                    }
+                    # A ridden row is proven only when the one artist of its
+                    # name here is pass 1's pick. Two so named, or another one,
+                    # and the pick stands unproven: the page decides it.
+                    for my $p (@check) {
+                        my $m = $unique->($arts, $p->[1]);
+                        next unless $m && $m eq $pick{ $p->[0] };
+                        my $e = $provenEntry->($arts, $p->[1], $m) or next;
+                        $proven{ $p->[0] } = $e;
+                        $upgraded++;
+                    }
+                }
+                _dbg("search rows: one combined search for " . scalar(@left)
+                    . " rows answered $got"
+                    . (@check ? ", and proved $upgraded of " . scalar(@check)
+                       . " answered by the typed query's reply" : '')
+                    . ($arts && !(defined $count && $count <= @$arts)
+                       ? ' (reply incomplete, ' . ($count // 'no count') . ' matched)' : ''));
+                $cb->(\%pick, \%proven);
+            },
+            sub { $cb->(\%pick, \%proven) },
+            timeout => 12);
+    };
+
+    # PASS 1: the typed query's own reply. The search resolved the query with
+    # NAME_FETCH (15) entries; when those are the whole result (88% of names,
+    # measured) they have exactly the members a reply at 100 has, and that
+    # reply answers this with no request. Otherwise one request at
+    # NAME_FETCH_ROWS (100), as the rule was measured.
+    return $combined->() unless length $q;
+    my $qq = _stripAnnotation($q);
+    my $qk = _nameKey($qq);
+    _nameSearch(_mbBase(), _nameQuery('artist', $qq, 0), NAME_FETCH_ROWS, NAME_FETCH_ROWS,
+        sub {
+            my ($arts, undef, undef, $count) = @_;
+            # A WHOLE reply holds every artist whose name contains the typed
+            # words, so for a row whose name contains them it holds every artist
+            # of that name too: the condition for a proven answer here.
+            my $whole = $arts && defined $count && $count =~ /^\d+$/ && $count <= @$arts;
+            my ($byAlias) = (0);
+            if ($arts) {
+                for my $p (@$pend) {
+                    next if $isQuery->($p->[1]);
+                    if (my $m = $unique->($arts, $p->[1])) {
+                        $pick{ $p->[0] } = $m;
+                        unless ($whole && length $qk
+                            && index(' ' . _nameKey($p->[1]) . ' ', ' ' . $qk . ' ') >= 0) {
+                            # Not provable here: pass 2 may prove it. Not a
+                            # name with an annotation, which is never proven.
+                            $recheck{ $p->[0] } = 1 if _stripAnnotation($p->[1]) eq $p->[1];
+                            next;
+                        }
+                        my $e = $provenEntry->($arts, $p->[1], $m);
+                        $proven{ $p->[0] } = $e if $e;
+                    }
+                    elsif (my $ma = $uniqueAlias->($arts, $p->[1])) {
+                        $pick{ $p->[0] } = $ma;
+                        $byAlias++;
+                    }
+                }
+            }
+            _dbg("search rows: the typed query's reply answered $byAlias row(s) by an alias")
+                if $byAlias;
+            $combined->();
+        },
+        sub { $combined->() },
+        "'$qq' (search rows)");
     return;
 }
 
@@ -1977,10 +3139,7 @@ sub getArtistCandidates {
     # pass in _artistMbidByName has to apply to a top hit.
     my $mkQ = sub {
         my ($loose) = @_;
-        my $q = $loose ? 'artist:' . $name : 'artist:"' . $name . '"';
-        utf8::encode($q) if utf8::is_utf8($q);
-        (my $safe = $q) =~ s/([^A-Za-z0-9])/sprintf("%%%02X",ord($1))/ge;
-        return 'artist?query=' . $safe . '&fmt=json&limit=15';
+        return _nameQuery('artist', $name, $loose) . '&limit=15';
     };
     my $mirror = !_mbThrottled();
 
@@ -1988,11 +3147,11 @@ sub getArtistCandidates {
     # reference-cycle leak (same fix as _artistMbidByName, ported from LBF 0.9.95).
     my $run = sub {
         my ($self, $base, $isFb, $loose) = @_;
-        _netGet($base . $mkQ->($loose),
+        # The reply, however it arrived (dispatch at the end of $run): the first
+        # 15 entries, or undef when it did not parse.
+        my $onReply =
             sub {
-                my $data = eval { from_json(shift->content) };
-                my $arts = (!$@ && ref $data eq 'HASH' && ref $data->{artists} eq 'ARRAY')
-                           ? $data->{artists} : undef;
+                my ($arts) = @_;
                 # Same proven-index rule as _artistMbidByName above.
                 if (_mbSearchVerdict($arts, $mirror, $isFb)) {
                     _dbg("artist candidates '$name': 0 on mirror; retrying public API");
@@ -2032,7 +3191,8 @@ sub getArtistCandidates {
                 # HTTP failure below is NOT cached (same rule as the rest).
                 eval { $cache->set(_candKey($name), \@out, CAND_TTL); 1 };
                 $settle->(\@out);
-            },
+            };
+        my $onError =
             sub {
                 my $err = shift->error // '?';
                 return $self->($self, MB_DEFAULT_BASE_URL, 1, $loose) if $mirror && !$isFb;
@@ -2041,16 +3201,29 @@ sub getArtistCandidates {
                 # leg gates the render, so a queue drained only on success would
                 # hang the page rather than degrade it.
                 $settle->([]);
+            };
+
+        # The QUOTED query is the one the resolver's first pass asks too, so it
+        # goes through the shared search (_nameSearch): a reply the resolver
+        # fetched a moment ago answers it, reading the first 15 entries.
+        # EXACT: only a reply fetched at 15 answers it (a first 15 read from a
+        # reply at 100 is not always the same set; see _nameSearch).
+        return _nameSearch($base, _nameQuery('artist', $name, 0), 15, 15,
+                           $onReply, $onError, "'$name'", 1)
+            unless $loose;
+        _netGet($base . $mkQ->($loose),
+            sub {
+                my $data = eval { from_json(shift->content) };
+                my $arts = (!$@ && ref $data eq 'HASH' && ref $data->{artists} eq 'ARRAY')
+                           ? $data->{artists} : undef;
+                $onReply->($arts);
             },
+            $onError,
             timeout => 12);
     };
     $run->($run, _mbBase(), 0, 0);
 }
 
-# Public throttle-aware inter-request gap (0 on a local mirror). Callers that
-# make their OWN serial MB requests (the disambiguation probe) use it to keep to
-# MusicBrainz's <=1 req/s etiquette on the public API.
-sub mbGap { _mbGap($_[1] // 1.1) }
 
 # ---------------------------------------------------------------------------
 # MBID -> release groups
@@ -2067,9 +3240,12 @@ sub mbGap { _mbGap($_[1] // 1.1) }
 # first (_readArtist), because the page makes that request anyway for its band
 # members, and for an artist with fewer than 25 groups the reply carries the
 # whole spine, so the browse is not sent at all. At 25 or more, or when the read
-# fails, the browse runs as before. Every other caller (the same-name
-# disambiguation, the release page, play) leaves it off and browses: for them
-# the read would be an extra request.
+# fails, the list comes from ListenBrainz and the community API (0.56.7,
+# _fastSpine), and the browse runs only when they give none, or after a Refresh
+# (_rgFullKey). Every other caller (the same-name disambiguation, the release
+# page, play) leaves it off and browses: for them the read would be an extra
+# request.
+
 # Sync cache read of an artist's release groups — undef when not yet fetched.
 # The detail page needs the same MB title spine the list used (to resolve the
 # same service artist) and cannot afford an async fetch mid-render.
@@ -2092,7 +3268,84 @@ sub getReleaseGroups {
         $onDone->($c);
         return;
     }
+    # The drawn list has expired but MusicBrainz's completed one is waiting
+    # (0.56.7): there is no tree to keep stable, so it is taken at once.
+    if (!$a{force} && $class->promoteCompleted($mbid)) {
+        $onDone->($class->peekReleaseGroups($mbid) || []);
+        return;
+    }
 
+    # MusicBrainz's list, cached as the spine. It replaces a first list from
+    # ListenBrainz (0.56.7), so that list's markers go with it.
+    # $refresh (0.56.8): a Refresh whose browse will be cut at the cap also
+    # keeps the groups past it, from ListenBrainz and the community API, asked
+    # alongside the browse's remaining pages (_pastCap).
+    my $browse = sub {
+        my ($refresh) = @_;
+        my $past;
+        _browseGroups($mbid,
+            sub {
+                my ($all, $total, $truncated) = @_;
+                my $store = sub {
+                    my ($list, $cm) = @_;
+                    $cache->remove($_) for _rgFastKey($mbid), _cmDiscoKey($mbid), _rgFullKey($mbid);
+                    eval {
+                        $cache->set($key, $list, RG_TTL);
+                        $cache->set(_cmDiscoKey($mbid), $cm, RG_TTL) if $cm;
+                        1;
+                    } or do {
+                        # Without the verdicts the kept groups would all be
+                        # asked by id: MusicBrainz's own list instead.
+                        $log->warn("release-group cache set failed: $@");
+                        $cache->remove(_cmDiscoKey($mbid));
+                        $list = $all;
+                        eval { $cache->set($key, $all, RG_TTL); 1 }
+                            or $log->warn("release-group cache set failed: $@");
+                    };
+                    $log->info("release groups for $mbid: " . scalar(@$list) . " of $total");
+                    $onDone->($list);
+                };
+                return $store->($all) unless $truncated && $past;
+                $past->($all, $store);
+            },
+            $onError,
+            ($refresh ? (onTotal => sub {
+                my ($total) = @_;
+                $past = _pastCap(lc $mbid, $total)
+                    if $total > RG_MAX_PAGES * RG_PAGE_SIZE && !$MB_SPECIAL_ARTIST{ lc $mbid };
+            }) : ()));
+    };
+
+    if ($a{read}) {
+        # The read caches the spine itself when it carries the whole list
+        # (fewer than 25 groups); otherwise it answers without one.
+        _readArtist($mbid, sub {
+            my ($r) = @_;
+            return $onDone->($r->{rgs}) if $r && $r->{rgs};
+            # THE ARTIST PAGE'S FIRST LIST (0.56.7; analysis §A16): from
+            # ListenBrainz and the community API, not the browse, unless a
+            # Refresh asked for MusicBrainz itself. See _fastSpine.
+            my $refresh = $cache->get(_rgFullKey($mbid));
+            if (!$a{force} && !$refresh) {
+                return _fastSpine(lc $mbid, sub {
+                    my ($rgs) = @_;
+                    return $onDone->($rgs) if $rgs;
+                    $browse->();
+                });
+            }
+            $browse->($refresh ? 1 : 0);
+        });
+        return;
+    }
+    $browse->();
+}
+
+# The release-group browse: $onOk->(\@all, $total, $truncated), every page up to
+# RG_MAX_PAGES, entries built and their aliases pruned; $onErr->($err). Nothing
+# is cached here. `background => 1` sends every page as background work;
+# `onTotal => sub { $total }` is told MusicBrainz's count after the first page.
+sub _browseGroups {
+    my ($mbid, $onOk, $onErr, %opt) = @_;
     my @all;
     my $page = 0;
 
@@ -2121,7 +3374,7 @@ sub getReleaseGroups {
                 my $data = eval { from_json($resp->content) };
                 if ($@ || ref $data ne 'HASH' || ref $data->{'release-groups'} ne 'ARRAY') {
                     _dbg("MB release-group page unparseable for $mbid (offset $offset)");
-                    $onError->('bad MB response'); return;
+                    $onErr->('bad MB response'); return;
                 }
 
                 for my $rg (@{ $data->{'release-groups'} }) {
@@ -2131,6 +3384,9 @@ sub getReleaseGroups {
 
                 my $total = $data->{'release-group-count'} // scalar @all;
                 $page++;
+                # The count, once, before the next page is asked for (a
+                # Refresh starts its past-the-cap requests here, 0.56.8).
+                $opt{onTotal}->($total) if $opt{onTotal} && $page == 1;
                 if ($offset + RG_PAGE_SIZE < $total && $page < RG_MAX_PAGES) {
                     # Straight on to the next page: the pages are serial by
                     # construction (each is asked for from the previous one's
@@ -2140,35 +3396,23 @@ sub getReleaseGroups {
                     return;
                 }
 
+                my $truncated = $offset + RG_PAGE_SIZE < $total ? 1 : 0;
                 $log->warn("release-group list truncated at " . scalar(@all) . " of $total for $mbid")
-                    if $offset + RG_PAGE_SIZE < $total;
+                    if $truncated;
 
                 _pruneAliases(\@all);
-
-                eval { $cache->set($key, \@all, RG_TTL); 1 }
-                    or $log->warn("release-group cache set failed: $@");
-                $log->info("release groups for $mbid: " . scalar(@all) . " of $total");
-                $onDone->(\@all);
+                $onOk->(\@all, $total, $truncated);
             },
             sub {
                 my $err = shift->error // 'HTTP error';
                 $log->error("MB release-group fetch failed: $err");
-                $onError->($err);
+                $onErr->($err);
             },
-            timeout => 20);
+            timeout => 20, ($opt{background} ? (background => 1) : ()));
     };
 
-    if ($a{read}) {
-        # The read caches the spine itself when it carries the whole list
-        # (fewer than 25 groups); otherwise it answers without one.
-        _readArtist($mbid, sub {
-            my ($r) = @_;
-            return $onDone->($r->{rgs}) if $r && $r->{rgs};
-            $fetchPage->($fetchPage, 0);
-        });
-        return;
-    }
     $fetchPage->($fetchPage, 0);
+    return;
 }
 
 # One MusicBrainz release group -> its spine entry, or undef without an id or a
@@ -2247,6 +3491,10 @@ sub clearArtistMbid {
 # Refresh OR the HTTP `discography clearcache` command. Recovers the mbid from a
 # cached HIT when the caller passes only a name (a MISS has no mbid-keyed caches
 # to clear). Returns an arrayref of the cache classes touched, for logging.
+# `refresh => 1` (the page's Refresh row, not the clearcache command): the next
+# list for this artist comes from MusicBrainz itself, awaited, not the first list
+# from ListenBrainz and the community API (0.56.7, _rgFullKey). The command keeps
+# a plain cold start, which is the fast path.
 sub clearArtistCache {
     my ($class, %a) = @_;
     my $name = $a{name};
@@ -2278,10 +3526,19 @@ sub clearArtistCache {
             $cache->remove(_rgCountKey($c->{mbid})) if $c->{mbid};
         }
         $cache->remove(_candKey($name));
+        # And the name-search reply kept in memory (_nameSearch), or a Refresh
+        # inside NAME_MEMO_TTL would resolve from the reply it means to replace.
+        _nameMemoForget($name);
         push @cleared, qw(mbid bio candnames);
     }
     if ($mbid) {
         $cache->remove(_rgKey($mbid));       push @cleared, 'rg';
+        # The first list's markers and MusicBrainz's completed list (0.56.7).
+        $cache->remove($_) for _rgFastKey($mbid), _rgNextKey($mbid), _cmDiscoKey($mbid);
+        if ($a{refresh}) {
+            eval { $cache->set(_rgFullKey($mbid), 1, RGFULL_TTL); 1 };
+            push @cleared, 'musicbrainz-next';
+        }
         $cache->remove(_officialKey($mbid)); push @cleared, 'official';
         $cache->remove(_bandsKey($mbid));    push @cleared, 'bands';
         $cache->remove(_collabsKey($mbid));
@@ -2374,6 +3631,11 @@ use constant OFFICIAL_TTL       => 14 * 86400;
 # and is never paged. MEASURED: 100 ids make a 5,160-character URL, HTTP 200,
 # all 100 returned (Kraftwerk, public API, 2026-09-29).
 use constant RGID_BATCH_MAX     => 100;
+# The most groups the bootleg check asks by id BEFORE a page is drawn when
+# the rest may follow it (0.56.8, warmOfficial): two requests. Every rock artist
+# measured needs one (the community classifies the rest); Bach, Beethoven, Mozart
+# and Vivaldi leave 327-746 unclassified, which would be 4-8 requests in a row.
+use constant PREDRAW_RGID_MAX   => 2 * RGID_BATCH_MAX;
 
 sub _officialKey { 'dsc:rgo:v5:' . $_[0] }   # v5: built by id from the search (stage 2)
 
@@ -2980,43 +4242,144 @@ sub warmOfficial {
     }
     my $asked = scalar @ids;
 
-    my (%official, %rgOf, %editions);
-    my $finish = sub {
+    my $store = sub {
+        my ($official, $rgOf, $editions, $how) = @_;
         eval { $cache->set(_officialKey($artistMbid),
-                           { o => \%official, r => \%rgOf,
-                             t => { map { $_ => [ sort keys %{ $editions{$_} } ] } keys %editions } },
-                           OFFICIAL_TTL); 1 }
+                           { o => $official, r => $rgOf, t => $editions }, OFFICIAL_TTL); 1 }
             or $log->warn("official-status cache set failed: $@");
 
-        my $boot = grep { !$official{$_} } keys %official;
-        _dbg("official-status: $artistMbid -> " . scalar(keys %official) . " of $asked"
-             . " release-groups classified, $boot bootleg-only, "
-             . scalar(keys %rgOf) . " releases mapped to groups");
+        my $boot = grep { !$official->{$_} } keys %$official;
+        _dbg("official-status: $artistMbid -> " . scalar(keys %$official) . " of $asked"
+             . " release-groups classified" . ($how ? " ($how)" : '') . ", $boot bootleg-only, "
+             . scalar(keys %$rgOf) . " releases mapped to groups");
 
         delete $officialInFlight{$artistMbid};
         $cb->();
     };
     # No groups on the page: nothing to ask, and an empty map says so.
-    return $finish->() unless @ids;
+    return $store->({}, {}, {}) unless @ids;
 
     $officialInFlight{$artistMbid} = 1;
-    my $fail = sub {
-        my ($why) = @_;
-        # Nothing cached: the view keeps showing everything and the check is
-        # asked again on a later visit.
-        _dbg("official-status: $why - nothing cached, retried next visit");
-        delete $officialInFlight{$artistMbid};
-        $cb->('failed');
+
+    # $cm: the community's verdicts and release map, or undef. The groups it
+    # does not classify, or all of them, are asked BY ID; its own answers stand
+    # beside MusicBrainz's. $mayWait (0.56.8): which of those may be checked
+    # AFTER the page. At most PREDRAW_RGID_MAX of them are asked before the draw;
+    # the rest show unchecked on this visit (the check's fail-open rule) and are
+    # asked as background work, for the next one (_officialLater). Without it,
+    # every group is asked before the draw, as before.
+    my $check = sub {
+        my ($cm, $mayWait) = @_;
+        my @rest = $cm ? grep { !defined $cm->{o}{$_} } @ids : @ids;
+        my @later;
+        if ($mayWait) {
+            my @may = grep { $mayWait->($_) } @rest;
+            @rest  = ((grep { !$mayWait->($_) } @rest), splice(@may, 0, PREDRAW_RGID_MAX));
+            @later = @may;
+        }
+        my $how = $cm ? 'the community API for ' . ($asked - @rest - @later) . ', MusicBrainz for '
+                      . scalar(@rest) : '';
+        $how .= ($how ? ', ' : '') . scalar(@later) . ' after the page' if @later;
+        my $done = sub { $store->(@_); _officialLater($artistMbid, \@later) if @later };
+        return $done->({ %{ $cm->{o} } }, { %{ $cm->{r} || {} } }, {}, $how) unless @rest;
+        _officialById(\@rest, sub {
+            my ($res, $why) = @_;
+            unless ($res) {
+                # Nothing cached: the view keeps showing everything and the
+                # check is asked again on a later visit.
+                _dbg("official-status: $why - nothing cached, retried next visit");
+                delete $officialInFlight{$artistMbid};
+                return $cb->('failed');
+            }
+            $done->({ %{ $cm ? $cm->{o} : {} },      %{ $res->{o} } },
+                    { %{ $cm ? $cm->{r} || {} : {} }, %{ $res->{r} } },
+                    $res->{t}, $how);
+        });
     };
 
+    # A FIRST LIST (0.56.7, _fastSpine) takes the community's verdicts, kept
+    # with it: they agree with MusicBrainz's on 9,521 of 9,685 groups, and they
+    # spare the page up to 6 requests before it is drawn. MusicBrainz's own
+    # check follows after the page, with the edition titles (completeArtist).
+    # Any of its groups may wait.
+    my $all = sub { 1 };
+    my $cm = $cache->get(_cmDiscoKey($artistMbid));
+    $cm = undef unless ref $cm eq 'HASH' && ref $cm->{o} eq 'HASH';
+    if ($cache->get(_rgFastKey($artistMbid))) {
+        return $check->($cm, $all) if $cm;
+        return _hostedDisco(lc $artistMbid, sub { $check->($_[0], $all) });
+    }
+    # A Refresh's list past MusicBrainz's cap (0.56.8, _pastCap) keeps the
+    # community's verdicts for those groups only; MusicBrainz's own are asked
+    # by id before the draw, as before, and only the kept ones may wait.
+    return $check->($cm, ref $cm->{past} eq 'HASH' ? sub { $cm->{past}{ $_[0] } } : undef) if $cm;
+    # A list longer than MusicBrainz's browse ever gives (a first list after
+    # its completion, the community's verdicts gone with it) whose map has
+    # expired: asked of the community again, as for a first list, rather than
+    # by id in full (Bob Dylan: 12 requests before the draw).
+    return _hostedDisco(lc $artistMbid, sub { $check->($_[0], $all) })
+        if @ids > RG_MAX_PAGES * RG_PAGE_SIZE;
+    $check->(undef);
+}
+
+# The rest of a bounded bootleg check (warmOfficial, 0.56.8), after the page,
+# as background work: merged into the map for the NEXT visit (this one's
+# visibility is frozen). It never creates a map: one gone meanwhile (a Refresh)
+# would come back holding only these groups and stop the full check.
+sub _officialLater {
+    my ($mbid, $ids) = @_;
+    _officialById($ids, sub {
+        my ($res, $why) = @_;
+        unless ($res) {
+            _dbg("official-status after the page for $mbid: " . ($why // 'failed')
+                 . ' - those groups stay unchecked until the map is rebuilt');
+            return;
+        }
+        my $cur = $cache->get(_officialKey($mbid));
+        unless (ref $cur eq 'HASH') {
+            _dbg("official-status after the page for $mbid: the map is gone (a Refresh) - discarded");
+            return;
+        }
+        eval {
+            $cache->set(_officialKey($mbid), {
+                o => { %{ $cur->{o} || {} }, %{ $res->{o} } },
+                r => { %{ $cur->{r} || {} }, %{ $res->{r} } },
+                t => { %{ $cur->{t} || {} }, %{ $res->{t} } },
+            }, OFFICIAL_TTL());
+            1;
+        } or return $log->warn("official-status cache set failed: $@");
+        _dbg("official-status after the page for $mbid: " . scalar(keys %{ $res->{o} })
+             . ' more classified, for the next visit');
+    }, background => 1);
+    return;
+}
+
+# THE BY-ID CHECK (stage 2): the groups in $ids asked for by id, 100 to a
+# request, each group's every release read for its status, its id and, when
+# official, its title. $cb->({ o => {rg => 0|1}, r => {release => rg},
+# t => {rg => [edition titles]} }) once all are in, or $cb->(undef, $why) at the
+# first failure. `background => 1` sends every request as background work.
+sub _officialById {
+    my ($ids, $cb, %opt) = @_;
+    my (%want, @ids);
+    for my $i (@{ $ids || [] }) {
+        my $id = lc($i // '');
+        push @ids, $id if length $id && !$want{$id}++;
+    }
+    my (%official, %rgOf, %editions);
     my @batches;
     push @batches, [ splice(@ids, 0, RGID_BATCH_MAX) ] while @ids;
+    _dbg("official-status warm: " . scalar(keys %want) . " release-group(s) by id, "
+         . scalar(@batches) . ' request(s)' . ($opt{background} ? ' (background)' : ''));
 
     # Self-passing closure, not a captured lexical (the 0.30.1 leak fix): this
     # runs once per artist page whose official map is cold.
     my $fetch = sub {
         my ($self) = @_;
-        my $batch = shift @batches or return $finish->();
+        my $batch = shift @batches or return $cb->({
+            o => \%official, r => \%rgOf,
+            t => { map { $_ => [ sort keys %{ $editions{$_} } ] } keys %editions },
+        });
 
         # Everything but letters, digits and '-' is percent-encoded. The ids
         # come from MusicBrainz, so this is Lucene's own syntax; leaving '-'
@@ -3030,7 +4393,7 @@ sub warmOfficial {
         _netGet($url,
             sub {
                 my $data = eval { from_json(shift->content) };
-                return $fail->('unreadable reply')
+                return $cb->(undef, 'unreadable reply')
                     unless !$@ && ref $data eq 'HASH' && ref $data->{'release-groups'} eq 'ARRAY';
 
                 for my $g (@{ $data->{'release-groups'} }) {
@@ -3067,13 +4430,12 @@ sub warmOfficial {
                 }
                 $self->($self);
             },
-            sub { $fail->('request failed (' . (shift->error // 'HTTP error') . ')') },
-            timeout => 20);
+            sub { $cb->(undef, 'request failed (' . (shift->error // 'HTTP error') . ')') },
+            timeout => 20, ($opt{background} ? (background => 1) : ()));
     };
 
-    _dbg("official-status warm: $asked release-group(s) by id for $artistMbid, "
-         . scalar(@batches) . ' request(s)');
     $fetch->($fetch);
+    return;
 }
 
 # CAA cover by release-group MBID — a plain URL; CAA redirects to the front

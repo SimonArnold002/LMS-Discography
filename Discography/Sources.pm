@@ -31,7 +31,7 @@ my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.2';
+use constant CACHE_VERSION => '0.56.8';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
@@ -1576,6 +1576,27 @@ sub _albumCountFor {
     return (defined $n && $n =~ /^\d+$/) ? $n : 0;
 }
 
+# The albums a contributor performs on, as ids, AND their count, from ONE query
+# (the same filter as _albumCountFor): { count => N, albums => [ids] }. The
+# split needs both for the same contributors — the count orders the rows, the
+# ids say whether a same-name contributor is its own act or only a credit on the
+# main act's albums (splitOwnedByIdentity). `count` is the full total; `albums`
+# stops at OWNED_ALBUMS_MAX, so a caller must check the list is whole.
+use constant OWNED_ALBUMS_MAX => 500;
+sub _albumsFor {
+    my ($id) = @_;
+    my %none = (count => 0, albums => []);
+    return \%none unless $id;
+    my $req = eval { Slim::Control::Request::executeRequest(undef,
+        ['albums', 0, OWNED_ALBUMS_MAX, "artist_id:$id", 'role_id:' . PERFORMANCE_ROLES]) };
+    return \%none unless $req;
+    my @ids = map  { $_->{id} }
+              grep { ref $_ eq 'HASH' && defined $_->{id} }
+              @{ $req->getResult('albums_loop') || [] };
+    my $n = $req->getResult('count');
+    return { count => ((defined $n && $n =~ /^\d+$/) ? $n : scalar @ids), albums => \@ids };
+}
+
 # LMS's OWN per-artist icon URL, keyed by artist_id — the ARTIST art it shows in
 # its artist menu (folder artist-art MAI ingests on rescan), NOT an album cover.
 # Returns { artist_id => 'contributor/<hash>/image' | '' } for every same-name
@@ -1727,7 +1748,8 @@ sub _contribMbid {
 # STREAMING SOURCES ARE DELIBERATELY NOT ATTRIBUTED. A service "The Bees" entity
 # carries no MBID, so knowing which owned act it belongs to would mean the
 # per-row spine scoring the search path refuses to pay (0.44.7 / 0.46.6). Each
-# split row therefore shows only "Local"; the CORRECT streaming catalogue is
+# split row therefore lists only "Local" as its source (with its owned album
+# count, `_owned`, to tell the rows apart); the CORRECT streaming catalogue is
 # recovered on drill-in, where `_resolveArtist` scores it against that identity's
 # spine. The planned library identity index is what makes attributing them cheap
 # and safe later — until then, honest "Local" beats a guessed service label.
@@ -1736,6 +1758,27 @@ sub _contribMbid {
 # disambiguation section to exclude owned acts by mbid rather than by the older
 # name-match heuristic. It is in-memory only — never rendered, never cached (the
 # cache holds the pre-split merged list, same shape as before).
+#
+# A CONTRIBUTOR FOUND ONLY ON THE MAIN ACT'S ALBUMS IS NOT ANOTHER ACT (Simon,
+# 2026-09-30: "Why do we get 2 air?" ... "yes we need a merge"). A different tag
+# is not always a different act. One track on Air's own Premiers Symptômes,
+# "Gordini Mix (Brakes On mix)", carries "Air" with Alex Gopher's MusicBrainz id
+# (MB credits that recording to him), so LMS made a second "Air" and the search
+# showed a "1 album" Air that opened Alex Gopher's page under Air's name. The
+# Dream Syndicate's second result is the same shape (15 Minutes' id on the
+# Expanded Edition's bonus tracks), and so are the rocksteady names with two
+# contributors on one compilation. So an identity every one of whose albums the
+# main act (the one holding the most) also performs on MERGES into it: a result
+# of its own would open nothing that the main act's page does not already hold.
+# Measured on the rig's library the same day (by name over JSON-RPC, which
+# cannot see tags): 46 names have 2+ performing contributors; this leaves 15 of
+# them one result, and the 31 others (The Bees, The Charlatans, Blur...) hold an
+# album of their own each and keep their own results. Library
+# only, one album query per contributor as before, no MusicBrainz request. An
+# identity with no albums is left as it was (Saint Etienne's empty ones), and so
+# is one whose list is cut short at OWNED_ALBUMS_MAX: only a whole list proves
+# it. Discography-verified in the ledger's sense (A2 `Duplicate streaming
+# artist entities are NOT`): shared albums decide it, never the name.
 sub splitOwnedByIdentity {
     my ($class, $rows) = @_;
     return $rows unless $rows && @$rows;
@@ -1786,38 +1829,68 @@ sub splitOwnedByIdentity {
             next;
         }
 
-        # SEVERAL identities -> one Local row per act. Emit the act holding the
-        # most albums FIRST, contributor id breaking ties so the item_id walk
-        # stays stable. Field (Simon, Saint Etienne, 2026-09-19): a Various
-        # Artists compilation tagged with the curator as a track artist minted
-        # ~20 empty same-name contributors, all with LOWER ids than the real
-        # act; ordering by id alone put an empty one at the top of the search,
-        # and it drilled to a stranger's blank page.
-        _dbg("search rows: '$name' is " . scalar(@order)
+        # SEVERAL identities. Each contributor's albums are asked ONCE, before
+        # any sort: _albumsFor is a DB query, and inside a comparator it runs
+        # O(n log n) times and then again for the winner (what the 0.51.x note
+        # already claimed, "no new query", made true 2026-09-20). The same query
+        # carries the album ids the merge below reads.
+        my %alb = map { ($_->{artist_id} // '') => _albumsFor($_->{artist_id}) } @contribs;
+        my $count = sub { $alb{ $_[0]{artist_id} // '' }{count} };
+        my @reps;
+        for my $key (@order) {
+            # Within one identity, the contributor holding the most albums is
+            # the one that drills to content (apostrophe-variant duplicates).
+            my ($rep) = sort { $count->($b) <=> $count->($a) } @{ $grp{$key} };
+            push @reps, [ $rep, ($key =~ /^id:/ ? undef : $key), $count->($rep), $key ];
+        }
+        # The act holding the most albums FIRST, contributor id breaking ties so
+        # the item_id walk stays stable. Field (Simon, Saint Etienne,
+        # 2026-09-19): a Various Artists compilation tagged with the curator as a
+        # track artist minted ~20 empty same-name contributors, all with LOWER
+        # ids than the real act; ordering by id alone put an empty one at the
+        # top of the search, and it drilled to a stranger's blank page.
+        @reps = sort { $b->[2] <=> $a->[2]
+                       || $a->[0]{artist_id} <=> $b->[0]{artist_id} } @reps;
+
+        # MERGE an identity found only on the main act's albums (see the note
+        # above the sub): it needs albums, a whole list, and every one of them
+        # among the albums the main act performs on.
+        my ($main, @others) = @reps;
+        my %mainAlbum = map { $_ => 1 }
+                        map { @{ $alb{ $_->{artist_id} // '' }{albums} } }
+                        @{ $grp{ $main->[3] } };
+        my (@keep, @merged);
+        for my $p (@others) {
+            my @lists = map { $alb{ $_->{artist_id} // '' } } @{ $grp{ $p->[3] } };
+            my @ids   = map { @{ $_->{albums} } } @lists;
+            my $whole = !grep { $_->{count} > @{ $_->{albums} } } @lists;
+            if (@ids && $whole && !grep { !$mainAlbum{$_} } @ids) { push @merged, $p }
+            else                                                  { push @keep,   $p }
+        }
+        _dbg("search rows: '$name' - merged contributor(s) "
+             . join(', ', map { $_->[0]{artist_id} } @merged)
+             . " into $main->[0]{artist_id}: found only on its albums") if @merged;
+
+        # Only the main act is left: an ordinary owned row again, opening on
+        # the main act's contributor (the row may have carried the merged one),
+        # with its streaming sources and no album count.
+        unless (@keep) {
+            my %row = %$r;
+            $row{artist_id}   = $main->[0]{artist_id};
+            $row{_ident_mbid} = $main->[1];
+            push @out, \%row;
+            next;
+        }
+
+        # Still SEVERAL acts -> one Local row per act, in that order.
+        _dbg("search rows: '$name' is " . (1 + @keep)
              . ' distinct owned acts (by MB identity) - splitting into rows');
         # LMS's own per-act artist icons (one browselibrary query), so same-name
         # acts get their OWN artist art instead of MAI's online photo of the
         # prominent one.
         my $icons = _artistMenuIcons($name);
-        my @reps;
-        for my $key (@order) {
-            # Within one identity, the contributor holding the most albums is
-            # the one that drills to content (apostrophe-variant duplicates).
-            # COUNT ONCE PER CONTRIBUTOR, before the sort: _albumCountFor is a
-            # DB query, and inside a comparator it runs O(n log n) times and
-            # then again for the winner. Same order, same winner — this is
-            # what the 0.51.x note already claimed ("no new query"), now true.
-            my %n = map { ($_->{artist_id} // '') => _albumCountFor($_->{artist_id}) }
-                    @{ $grp{$key} };
-            my ($rep) = sort { $n{ $b->{artist_id} // '' }
-                                   <=> $n{ $a->{artist_id} // '' } }
-                        @{ $grp{$key} };
-            push @reps, [ $rep, ($key =~ /^id:/ ? undef : $key),
-                          $n{ $rep->{artist_id} // '' } ];
-        }
-        for my $pair (sort { $b->[2] <=> $a->[2]
-                             || $a->[0]{artist_id} <=> $b->[0]{artist_id} } @reps) {
-            my ($rep, $identMbid) = @$pair;
+        for my $pair ($main, @keep) {
+            my ($rep, $identMbid, $owned) = @$pair;
             # LMS's ARTIST icon for this act: a URL when it has artist art (use
             # it), '' when LMS knows the act but has none (show a neutral icon,
             # NOT MAI's online guess of the prominent act), undef/absent when the
@@ -1832,6 +1905,11 @@ sub splitOwnedByIdentity {
                  : defined $ic             ? (_noart => 1)
                  :                           ()),
                 _exact     => $r->{_exact},
+                # The albums this act's row opens on (the count the order above
+                # used): the row's line2 shows it, because split rows share a
+                # name and a "Local" line and are otherwise identical on screen
+                # (Browse::_searchResultRow; stage 3 live check, 2026-09-30).
+                _owned     => $owned,
                 # keep the split rows clustered where the original row sat;
                 # rankArtistHits' stable sort preserves the emission order above
                 # for equal _seq.

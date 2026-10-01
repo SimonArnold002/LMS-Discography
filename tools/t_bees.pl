@@ -53,6 +53,30 @@ my @LIB = (
     { name => 'The Dupes', artist_id => 800 },
     { name => 'The Dupes', artist_id => 801 },   # same MB tag as 800
     { name => 'The Dupes', artist_id => 810 },   # a genuinely different act
+    # THE MERGE (Simon, 2026-09-30: "Why do we get 2 air?"). One track on Air's
+    # own Premiers Symptômes carries "Air" with Alex Gopher's MB id, so LMS holds
+    # a second "Air" found only on that album. Listed FIRST, as LMS may.
+    { name => 'Air', artist_id => 151914 },
+    { name => 'Air', artist_id => 151906 },      # the duo, 5 albums
+    # 15 Minutes' id on the bonus tracks of the band's Expanded Edition.
+    { name => 'The Dream Syndicate', artist_id => 155735 },
+    { name => 'The Dream Syndicate', artist_id => 155737 },
+    # Two contributors on ONE compilation (First Class Rock Steady's shape).
+    { name => 'The Jets', artist_id => 157355 },
+    { name => 'The Jets', artist_id => 157388 },
+    # One album of its OWN besides a shared one: a separate act.
+    { name => 'The Mixed', artist_id => 1100 },
+    { name => 'The Mixed', artist_id => 1101 },
+    # Three identities: one found only on the main act's albums, one with its own.
+    { name => 'The Three', artist_id => 1200 },
+    { name => 'The Three', artist_id => 1201 },
+    { name => 'The Three', artist_id => 1202 },
+    # An UNTAGGED contributor found only on the main act's albums.
+    { name => 'The Untagged', artist_id => 1300 },
+    { name => 'The Untagged', artist_id => 1301 },
+    # Lists longer than one page of albums (OWNED_ALBUMS_MAX).
+    { name => 'The Big', artist_id => 1400 },
+    { name => 'The Big', artist_id => 1401 },
 );
 my %MBID = (
     75007 => '276cfa71-6bc0-4b0f-8a9c-000000000001',
@@ -71,11 +95,49 @@ my %MBID = (
     800   => 'd0be0000-6bc0-4b0f-8a9c-000000000800',
     801   => 'd0be0000-6bc0-4b0f-8a9c-000000000800',   # SAME tag as 800
     810   => 'd0be0000-6bc0-4b0f-8a9c-000000000810',
+    151906 => 'cb67438a-7f50-4f2b-a6f1-2bb2729fd538',   # Air
+    151914 => 'ee1a6d4a-b1ff-46a8-acf2-af575424bda5',   # Alex Gopher, tagged "Air"
+    155735 => '8577c385-6bc0-4b0f-8a9c-000000155735',   # The Dream Syndicate
+    155737 => 'a819c124-6bc0-4b0f-8a9c-000000155737',   # 15 Minutes
+    157355 => '1e7a0000-6bc0-4b0f-8a9c-000000157355',
+    157388 => '1e7a0000-6bc0-4b0f-8a9c-000000157388',
+    1100  => 'a1100000-6bc0-4b0f-8a9c-000000001100',
+    1101  => 'a1100000-6bc0-4b0f-8a9c-000000001101',
+    1200  => 'a1200000-6bc0-4b0f-8a9c-000000001200',
+    1201  => 'a1200000-6bc0-4b0f-8a9c-000000001201',
+    1202  => 'a1200000-6bc0-4b0f-8a9c-000000001202',
+    1300  => 'a1300000-6bc0-4b0f-8a9c-000000001300',   # 1301 deliberately untagged
+    1400  => 'a1400000-6bc0-4b0f-8a9c-000000001400',
+    1401  => 'a1400000-6bc0-4b0f-8a9c-000000001401',
 );
 my %ALBUMS = (75007 => 18, 79768 => 7, 77854 => 1, 400 => 5, 401 => 0,
               500 => 3, 501 => 2, 100 => 9, 200 => 4,
               600 => 0, 601 => 0, 602 => 0, 650 => 31, 700 => 2, 710 => 2,
               800 => 6, 801 => 0, 810 => 2);
+# The ALBUMS themselves, where the merge needs to see which are shared. Every
+# contributor above that is not listed here gets albums of its own
+# ("<id>.<n>", as many as %ALBUMS says), so none of the earlier sections merges.
+my %ALBUM_IDS = (
+    151906 => [qw(air.10000hz air.moonsafari air.premiers air.talkiewalkie air.virginsuicides)],
+    151914 => [qw(air.premiers)],
+    155735 => [qw(ds.days ds.medicine ds.ghost ds.outofthegrey ds.expanded)],
+    155737 => [qw(ds.expanded)],
+    157355 => [qw(comp.firstclassrocksteady)],
+    157388 => [qw(comp.firstclassrocksteady)],
+    1100   => [qw(mx.1 mx.2 mx.3 mx.4)],
+    1101   => [qw(mx.1 mx.own)],
+    1200   => [qw(t3.1 t3.2 t3.3 t3.4)],
+    1201   => [qw(t3.2)],
+    1202   => [qw(t3.other1 t3.other2)],
+    1300   => [qw(un.1 un.2 un.3)],
+    1301   => [qw(un.3)],
+    1400   => [ map { "big.$_" } 1 .. 600 ],
+    1401   => [ map { "big.$_" } 1 .. 501 ],      # one more than a page
+);
+sub album_ids {
+    my ($aid) = @_;
+    return $ALBUM_IDS{$aid} || [ map { "$aid.$_" } 1 .. ($ALBUMS{$aid} // 0) ];
+}
 # LMS's own artist icon per act (folder artist-art). Two acts HAVE art; the
 # bootleg act (77854) is in the menu but has NONE -> the split must give it a
 # neutral icon, never MAI's online guess of the prominent act.
@@ -106,7 +168,13 @@ BEGIN {
         if (($args->[0] // '') eq 'albums') {
             my ($aid) = map { /^artist_id:(\d+)/ ? $1 : () } @$args;
             push @main::ALBQ, $aid;      # §10 counts these
-            return bless { count => ($ALBUMS{$aid} // 0) }, 'T::Req';
+            # The ids as well (the merge reads them), cut at the request's own
+            # page size as LMS cuts them; `count` stays the whole total.
+            my $ids = main::album_ids($aid);
+            my $max = $args->[2] // 0;
+            my @page = @$ids[0 .. ($max < @$ids ? $max : scalar @$ids) - 1];
+            return bless { count => scalar(@$ids),
+                           loop  => [ map { { id => $_ } } grep { defined } @page ] }, 'T::Req';
         }
         if (($args->[0] // '') eq 'browselibrary') {
             my ($q) = map { /^search:(.*)/ ? $1 : () } @$args;
@@ -215,6 +283,12 @@ sub beeRow { row(name => 'The Bees', artist_id => 79768,
        '... the acts WITH artist art get their OWN LMS icon (not a shared MAI photo)');
     ok(scalar($img{77854} eq 'NOART'),
        '... the art-less act gets a neutral icon, NOT MAI online (the reported bug)');
+    # Stage 3 live check (The Dream Syndicate, 2026-09-30): split rows share a
+    # name and a "Local" line, so each carries the album count its row opens on,
+    # which Browse::_searchResultRow puts on the row to tell them apart.
+    my %own = map { ($_->{artist_id} => $_->{_owned}) } @$out;
+    ok(scalar(($own{75007} // -1) == 18 && ($own{79768} // -1) == 7 && ($own{77854} // -1) == 1),
+       '... each carries its OWN album count (18, 7, 1) to tell the rows apart');
 }
 
 # ---------------------------------------------------------------------------
@@ -228,6 +302,8 @@ sub beeRow { row(name => 'The Bees', artist_id => 79768,
     ok(scalar($out->[0]{_ident_mbid} eq $MBID{400}), '... stamped with the shared mbid');
     ok(scalar(grep { $_ eq 'Qobuz' } @{ $out->[0]{sources} }),
        '... and a single-identity row keeps its streaming sources');
+    ok(scalar(!exists $out->[0]{_owned}),
+       '... and no album count: nothing on the list shares its name');
 }
 
 # ---------------------------------------------------------------------------
@@ -344,6 +420,57 @@ our @ALBQ;
        'no contributor is counted twice: one album query each');
     ok(scalar(@ALBQ == 3),
        '... 3 contributors, 3 queries (it was 4, the comparator ran one twice)');
+}
+
+# ---------------------------------------------------------------------------
+# 11. THE MERGE (Simon, 2026-09-30: "Why do we get 2 air?" ... "yes we need a
+#     merge"). A same-name identity every one of whose albums the main act also
+#     performs on is not another act: its result would open nothing the main
+#     act's page does not hold. It merges; an identity with an album of its own
+#     does not. The Bees (§1) and Saint Etienne's empty ones (§8) are the
+#     controls: both keep every result they had.
+# ---------------------------------------------------------------------------
+{
+    my $out = split_([ row(name => 'Air', artist_id => 151914,
+                           sources => ['Local', 'Qobuz']) ]);
+    ok(scalar(@$out == 1),
+       "Air: a contributor found only on the main act's albums MERGES - one result");
+    ok(scalar(($out->[0]{artist_id} // 0) == 151906),
+       '... opening on the MAIN act (5 albums), though the row carried the merged contributor');
+    ok(scalar(($out->[0]{_ident_mbid} // '') eq $MBID{151906}),
+       "... stamped with the main act's identity, not Alex Gopher's");
+    ok(scalar(join(',', @{ $out->[0]{sources} || [] }) eq 'Local,Qobuz'),
+       '... an ordinary owned result again: its streaming sources kept');
+    ok(scalar(!exists $out->[0]{_owned}),
+       '... with no album count: nothing else on the list shares its name');
+
+    $out = split_([ row(name => 'The Dream Syndicate', artist_id => 155735) ]);
+    ok(scalar(@$out == 1 && ($out->[0]{artist_id} // 0) == 155735),
+       "The Dream Syndicate: 15 Minutes' id on the Expanded Edition merges into the band");
+
+    $out = split_([ row(name => 'The Jets', artist_id => 157388) ]);
+    ok(scalar(@$out == 1 && ($out->[0]{artist_id} // 0) == 157355),
+       'two contributors on ONE compilation: one result, the lower id on a tie');
+
+    $out = split_([ row(name => 'The Untagged', artist_id => 1300) ]);
+    ok(scalar(@$out == 1 && ($out->[0]{_ident_mbid} // '') eq $MBID{1300}),
+       "an UNTAGGED contributor found only on the main act's albums merges too");
+
+    $out = split_([ row(name => 'The Mixed', artist_id => 1100) ]);
+    ok(scalar(@$out == 2),
+       'ONE album of its own besides a shared one keeps it a separate act: two results');
+
+    @ALBQ = ();
+    $out = split_([ row(name => 'The Three', artist_id => 1200) ]);
+    ok(scalar(join(',', map { $_->{artist_id} } @$out) eq '1200,1202'),
+       "three identities: the one found only on the main act's albums goes, the one with its own stays");
+    ok(scalar(($out->[0]{_owned} // -1) == 4 && ($out->[1]{_owned} // -1) == 2),
+       '... the two left are still split results, each with its own album count');
+    ok(scalar(@ALBQ == 3), '... still one album query per contributor');
+
+    $out = split_([ row(name => 'The Big', artist_id => 1400) ]);
+    ok(scalar(@$out == 2),
+       'a list cut short at OWNED_ALBUMS_MAX proves nothing: no merge');
 }
 
 print "\n$pass passed, $fail failed\n";

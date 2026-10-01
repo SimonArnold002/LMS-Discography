@@ -27,7 +27,7 @@ use FindBin;
 use Time::HiRes ();
 
 our (%CACHE, $DATA, @URLS, %FAIL, @EV, @WHEN);
-our $BASE = 'http://mirror:5000/ws/2/';   # a mirror: _mbGap is 0
+our $BASE = 'http://mirror:5000/ws/2/';   # a mirror base unless a section sets another
 
 BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
@@ -71,7 +71,8 @@ sub get    { return $main::CACHE{ $_[1] } }
 sub set    { $main::CACHE{ $_[1] } = $_[2]; return 1 }
 sub remove { delete $main::CACHE{ $_[1] }; return 1 }
 package T::Prefs;
-# A mirror base ($BASE) leaves _mbGap at 0; the public API makes it 1.1.
+# A mirror base ($BASE) by default; §5 sets the public API. (Pacing is the
+# queue's, API::_netGet, since 0.51.17.)
 sub get { return $_[1] eq 'mb_base_url' ? $main::BASE : undef }
 sub set { return 1 } sub init { return 1 } sub setChange { return 1 }
 package T::Resp;

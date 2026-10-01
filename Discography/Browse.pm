@@ -33,7 +33,7 @@ my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.2';
+use constant CACHE_VERSION => '0.56.8';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -990,6 +990,10 @@ sub topLevel {
         return;
     }
 
+    # A FRESH list render, not a positional walk: the one place MusicBrainz's
+    # completed list may replace a first one (0.56.7, API::promoteCompleted). A
+    # walk must rebuild the tree the client holds, item_id for item_id.
+    $opts->{fresh} = $walking ? 0 : 1;
     _discographyView($client, $callback, $opts);
 }
 
@@ -1194,6 +1198,10 @@ sub _discographyView {
                 $callback->({ items => \@items, cachetime => 0 });
                 return;
             }
+
+            # MusicBrainz's completed list, when a first one was drawn last time
+            # (0.56.7): on a fresh entry only, before anything reads the spine.
+            Plugins::Discography::API->promoteCompleted($mbid) if $opts->{fresh};
 
             # Warm the streaming candidate caches in the background (async, does
             # NOT delay this render): the first list view may be badge-less, but
@@ -1472,10 +1480,15 @@ sub _discographyView {
                             };
                             return $collabs->()
                                 if ($state // '') eq 'busy' || !@{ $rgs || [] };
-                            Plugins::Discography::API->warmLocalReleases(
-                                _unplacedReleases($local, $rgs,
-                                    Plugins::Discography::API->peekReleaseMap($mbid)),
-                                $collabs);
+                            # A first list (0.56.7): MusicBrainz completes it
+                            # first, in the background, so its release map
+                            # places the owned albums the community's did not.
+                            Plugins::Discography::API->completeArtist($mbid, sub {
+                                Plugins::Discography::API->warmLocalReleases(
+                                    _unplacedReleases($local, $rgs,
+                                        Plugins::Discography::API->peekReleaseMap($mbid)),
+                                    $collabs);
+                            });
                         };
                         if ($await) {
                             Plugins::Discography::API->warmOfficial($mbid, $rgs, sub {
@@ -1573,6 +1586,10 @@ sub _resolveArtistMbid {
     $api->getArtistMbid(
         artist_id => $opts->{artist_id},
         artist    => $name,
+        # The page asks the same-name set next (the warm and the bio guard), so
+        # the resolver's name search fetches enough entries to answer both
+        # (API::_nameSearch): one request where there were two.
+        fetch     => Plugins::Discography::API::NAME_FETCH(),
         onDone    => sub {
             my ($mbid, $fromTag) = @_;
             return $cb->($mbid) unless $mbid && $fromTag && defined $name && length $name;
@@ -3147,9 +3164,12 @@ sub _refreshItem {
             # the owned releases' groups, and streaming candidates — so the
             # re-entry re-pulls the lot. (A person view re-resolves by name; a
             # band view keeps its stashed mbid, so it re-pulls by mbid.)
+            # refresh => 1: the re-entry takes MusicBrainz's own list,
+            # awaited, not the first list from ListenBrainz and the community
+            # API (0.56.7).
             Plugins::Discography::API->clearArtistCache(
                 name => $pass->{artist}, mbid => $pass->{mbid},
-                artist_id => $pass->{artist_id});
+                artist_id => $pass->{artist_id}, refresh => 1);
             Plugins::Discography::Sources->clearCandidates($pass->{artist}, $pass->{mbid})
                 if defined $pass->{artist} && length $pass->{artist};
             $cb->({ items => [] });
@@ -3479,60 +3499,68 @@ sub _artistSearchView {
         $finish->($merged);
     };
 
-    Plugins::Discography::Sources->searchArtists($client, $q, sub {
-        my ($bySvc, $failed) = @_;
+    # THE TYPED QUERY'S MUSICBRAINZ LOOKUP RUNS ALONGSIDE THE SERVICE SEARCH
+    # (stage 3 review, 2026-09-30), and the rest waits for BOTH. It needs only
+    # the query, never the services' answer; started after them it added its
+    # whole time to every new search (a round trip when the name is found at
+    # once, 2-3 s when it needs the alias or unquoted pass), where alongside
+    # them it is usually done before they are. Each callback fires exactly
+    # once, in either order, and either may fire at once (a cached name).
+    #
+    # ON EVERY SETUP SINCE STAGE 3 (2026-09-30). This was skipped on the
+    # public API from 0.45.2, a gate CLAUDE.md's top rule makes a defect:
+    # "British Sea Power" found no Qobuz row there (verified live). Asked at
+    # NAME_FETCH (15) entries, as a page asks: the same-name section below
+    # reads this very reply, and so does the row check's first pass whenever
+    # it is the whole result (API::_nameSearch, _rowBatch).
+    my ($svcAns, $mbDone, $mbid, $joined);
+    my $both = sub {
+        return if !$svcAns || !$mbDone || $joined++;
+        my ($bySvc, $failed) = @$svcAns;
+        my $canon = $mbid
+            ? Plugins::Discography::API->peekArtistName($mbid) : undef;
+        # The spelling to actually search the services under (see
+        # _svcQueryName): MB's canonical name with typographic marks folded
+        # to ASCII. _norm MUST NOT gate this — it discards the very
+        # punctuation the services key on, so "The Las" and MB's "The La’s"
+        # both fold to "the las" and the pass was skipped as "same as typed",
+        # leaving Qobuz (which only matches the straight-apostrophe form)
+        # permanently absent from the row.
+        my $svcName = _svcQueryName($canon);
 
-        # THROTTLE-GATED, matching filterRowsWithContent's mbGap gate — an
-        # OPEN VIOLATION, not policy: CLAUDE.md's top rule ("Known
-        # violations, OPEN") makes a gate that skips work on the public API a
-        # defect, and stage 3 removes it (analysis §F step 3). This costs one
-        # MB lookup per NEW search term -- milliseconds against a mirror, but
-        # 1.1s of etiquette delay on the public API, on every search a user
-        # types; it was written on the belief that extra MB work runs only
-        # where MB is un-throttled.
-        if (Plugins::Discography::API->mbGap(1.1)) {
+        # Nothing to add: no MB artist, or the service spelling of the
+        # canonical name IS what the first pass already searched (case-only
+        # difference; also the straight-apostrophe query whose first pass
+        # already matched). This gate is STRICTLY WIDER than the old _norm
+        # one — _norm folds more than _svcQueryName, so _norm-equal implies
+        # svcName-equal — hence it can only ADD second passes, never drop one.
+        if (!$canon || lc($svcName) eq lc($q)) {
             return $runMerge->($bySvc, $failed);
         }
 
-        Plugins::Discography::API->getArtistMbid(artist => $q, onDone => sub {
-            my ($mbid) = @_;
-            my $canon = $mbid
-                ? Plugins::Discography::API->peekArtistName($mbid) : undef;
-            # The spelling to actually search the services under (see
-            # _svcQueryName): MB's canonical name with typographic marks folded
-            # to ASCII. _norm MUST NOT gate this — it discards the very
-            # punctuation the services key on, so "The Las" and MB's "The La’s"
-            # both fold to "the las" and the pass was skipped as "same as typed",
-            # leaving Qobuz (which only matches the straight-apostrophe form)
-            # permanently absent from the row.
-            my $svcName = _svcQueryName($canon);
-
-            # Nothing to add: no MB artist, or the service spelling of the
-            # canonical name IS what the first pass already searched (case-only
-            # difference; also the straight-apostrophe query whose first pass
-            # already matched). This gate is STRICTLY WIDER than the old _norm
-            # one — _norm folds more than _svcQueryName, so _norm-equal implies
-            # svcName-equal — hence it can only ADD second passes, never drop one.
-            if (!$canon || lc($svcName) eq lc($q)) {
-                return $runMerge->($bySvc, $failed);
+        _dbg("artist search '$q': MB canonical '$canon' (service spelling "
+             . "'$svcName') differs from the query - searching services under it too");
+        Plugins::Discography::Sources->searchArtists($client, $svcName, sub {
+            my ($bySvc2, $failed2) = @_;
+            # Union per service. mergeArtistHits buckets by _norm, so a
+            # duplicate hit collapses into the same row rather than
+            # doubling it; this only ever ADDS services to that row.
+            for my $svc (keys %$bySvc2) {
+                push @{ $bySvc->{$svc} ||= [] }, @{ $bySvc2->{$svc} || [] };
             }
-
-            _dbg("artist search '$q': MB canonical '$canon' (service spelling "
-                 . "'$svcName') differs from the query - searching services under it too");
-            Plugins::Discography::Sources->searchArtists($client, $svcName, sub {
-                my ($bySvc2, $failed2) = @_;
-                # Union per service. mergeArtistHits buckets by _norm, so a
-                # duplicate hit collapses into the same row rather than
-                # doubling it; this only ever ADDS services to that row.
-                for my $svc (keys %$bySvc2) {
-                    push @{ $bySvc->{$svc} ||= [] }, @{ $bySvc2->{$svc} || [] };
-                }
-                # A failure in EITHER pass makes the set incomplete, so the
-                # merged list must not be cached (0.42.2's rule, unchanged).
-                $failed->{$_} = 1 for keys %{ $failed2 || {} };
-                $runMerge->($bySvc, $failed, $canon);
-            });
+            # A failure in EITHER pass makes the set incomplete, so the
+            # merged list must not be cached (0.42.2's rule, unchanged).
+            $failed->{$_} = 1 for keys %{ $failed2 || {} };
+            $runMerge->($bySvc, $failed, $canon);
         });
+    };
+
+    Plugins::Discography::API->getArtistMbid(artist => $q,
+        fetch  => Plugins::Discography::API::NAME_FETCH(),
+        onDone => sub { ($mbid) = @_; $mbDone = 1; $both->() });
+    Plugins::Discography::Sources->searchArtists($client, $q, sub {
+        $svcAns = [ @_ ];
+        $both->();
     });
 }
 
@@ -3566,6 +3594,10 @@ sub _artistSearchView {
 sub _withMbCandidates {
     my ($client, $callback, $features, $q, $merged) = @_;
 
+    # Every way out of the list: one row per title, as Material counts rows
+    # (see _distinctTitles).
+    my $reply = sub { $callback->({ items => _distinctTitles($_[0]) }) };
+
     # Attach owned artists the Local leg could not spell-match, BEFORE anything
     # else looks at the rows (see Sources::attachLibraryArtists for the "The
     # Las" case this exists for). Deliberately here rather than beside the
@@ -3595,8 +3627,11 @@ sub _withMbCandidates {
     # Drop rows whose page could only be empty BEFORE building any of them —
     # both the row list and the "already covered above" test below must see the
     # same set, or the disambiguation section would hide a candidate on the
-    # strength of a row that is no longer there. No-op unless MB is un-throttled
-    # (see API::filterRowsWithContent).
+    # strength of a row that is no longer there. On every setup since stage 3,
+    # most rows answered from the typed query's own reply (see
+    # API::filterRowsWithContent). %asked collects the counts it asked for and
+    # saw settle; the same-name section below does not ask for those again.
+    my %asked;
     Plugins::Discography::API->filterRowsWithContent($merged, sub {
     my ($kept) = @_;
     $merged = $kept;
@@ -3619,7 +3654,7 @@ sub _withMbCandidates {
         if (@$cands < 2) {
             _dbg("artist search '$q': " . scalar(@$cands)
                 . ' MB same-name artist(s) — no disambiguation section');
-            return $callback->({ items => \@rows });
+            return $reply->(\@rows);
         }
 
         # WAIT for the release-group counts rather than filtering on whatever a
@@ -3633,12 +3668,16 @@ sub _withMbCandidates {
         # Simon: "I dont want users getting confused by stuff showing then
         # disappearing", and chose correctness over resolution latency.
         #
-        # COST: one MB browse per uncounted candidate, serialised at MB's
-        # 1 req/s etiquette (mbGap) — milliseconds against a local mirror,
-        # a few seconds against the public API, then cached for RGCOUNT_TTL.
-        # The planned move to the hosted LMS-community API removes the
-        # throttle, which is why this trade was acceptable.
-        Plugins::Discography::API->warmCandidateCounts($cands, sub {
+        # COST: one count per uncounted candidate, cached for RGCOUNT_TTL. Since
+        # stage 3 step 2 each is asked of the community API first (its own
+        # queue, one request at a time, no fixed gap), and only a zero or no
+        # answer costs a MusicBrainz browse at its 1 req/s (see
+        # API::warmCandidateCounts). A candidate the row check above already
+        # asked about is not asked again: its count is cached if it answered,
+        # and if it failed the section shows it (undef), exactly as a second
+        # failure would, without waiting out a backoff for it (stage 3 review).
+        Plugins::Discography::API->warmCandidateCounts(
+            [ grep { !$asked{ lc($_->{mbid} // '') } } @$cands ], sub {
 
         # A candidate MB has catalogued NO releases for can only ever render an
         # empty page — drop it. undef still means SHOW: an HTTP failure leaves
@@ -3686,7 +3725,7 @@ sub _withMbCandidates {
         if (@$cands < 2) {
             _dbg("artist search '$q': " . scalar(@$cands)
                 . ' same-spelling artist(s) after filtering — no section');
-            return $callback->({ items => \@rows });
+            return $reply->(\@rows);
         }
 
         # DROP THE ACT THE ROWS ABOVE ALREADY REACH. getArtistCandidates sorts
@@ -3713,7 +3752,7 @@ sub _withMbCandidates {
         shift @show if $covered;
         unless (@show) {
             _dbg("artist search '$q': every MB artist is already listed above");
-            return $callback->({ items => \@rows });
+            return $reply->(\@rows);
         }
 
         _dbg("artist search '$q': " . scalar(@$cands)
@@ -3726,10 +3765,34 @@ sub _withMbCandidates {
             \@mb);
         push @rows, @mb;
 
-        $callback->({ items => \@rows });
+        $reply->(\@rows);
         });   # warmCandidateCounts
     });
-    });       # filterRowsWithContent
+    }, { query => $q, asked => \%asked });   # filterRowsWithContent
+}
+
+# ONE ROW PER TITLE, AS MATERIAL COUNTS ROWS (stage 3 live check, 2026-09-30).
+# Material gives a row with no item_id the id "<parent id>.<title>", the title
+# being the name's first line (read in the bundle on plex:9000, 2026-09-30), and
+# draws one tile per id: of two rows with one name only the LATER shows (0.51.1,
+# the Zappa bands row). This level sends same-named rows by design, the owned
+# acts split by MusicBrainz identity (0.50.0) and the "Other artists with this
+# name" rows, so searching The Dream Syndicate opened 15 Minutes (Steve Wynn's
+# earlier band, one owned album) and the band's own row never showed; Blur,
+# Richard Hawley and The Charlatans showed their one- or two-album act, and Air
+# an MB-only act instead of the user's. So each REPEAT of a name gets invisible
+# WORD JOINERs (U+2060), one more per repeat: a different title to Material, the
+# same text on screen. Only the displayed name changes: the rows' params and
+# passthrough keep the real name, which is what a tap opens.
+sub _distinctTitles {
+    my ($rows) = @_;
+    my %seen;
+    for my $r (@{ $rows || [] }) {
+        next unless ref $r eq 'HASH' && defined $r->{name} && length $r->{name};
+        my $n = $seen{ $r->{name} }++;
+        $r->{name} .= "\x{2060}" x $n if $n;
+    }
+    return $rows;
 }
 
 # One MB artist row. Entered by MBID (fixedParams `mbid`), which _discographyView
@@ -3826,7 +3889,18 @@ sub _searchResultRow {
                        || ($hit->{_noart} ? IMG_BASE . 'dsc-bio_MTL_icon_person.png'
                                           : ($hit->{artist_id} ? undef : $hit->{img}))
                        || _artistImg($name, $hit->{artist_id}),
-        line2       => join(" \x{00B7} ", @{ $hit->{sources} || [] }),
+        # A row split from a same-named owned act (Sources::splitOwnedByIdentity)
+        # also says how many albums it opens on: the rows share a name and a
+        # "Local" line, so the count is what tells them apart ("Local · 5
+        # albums" / "Local · 1 album"; The Dream Syndicate and 15 Minutes, stage
+        # 3 live check, 2026-09-30).
+        line2       => join(" \x{00B7} ", @{ $hit->{sources} || [] },
+                            (defined $hit->{_owned}
+                             ? ($hit->{_owned} == 1
+                                ? cstring($client, 'PLUGIN_DISCOGRAPHY_OWNED_ALBUM')
+                                : sprintf(cstring($client, 'PLUGIN_DISCOGRAPHY_OWNED_ALBUMS'),
+                                          $hit->{_owned}))
+                             : ())),
         # Self-identifying go (stale-view fix): fresh top-level entry.
         itemActions => { items => { command => ['discography', 'items'],
             fixedParams => \%fixed } },

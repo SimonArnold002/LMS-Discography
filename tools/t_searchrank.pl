@@ -117,7 +117,9 @@ ok(scalar(($EMITTED[1] // '') eq 'Unowned Wide'),
 {
     no warnings 'redefine'; no strict 'refs';
     my $prev = \&Plugins::Discography::API::filterRowsWithContent;
-    *{'Plugins::Discography::API::filterRowsWithContent'} = sub { $_[-1]->($_[1]) };
+    # ($class, $rows, $cb, $opt): the callback is the THIRD argument; since
+    # stage 3 an options hash (the typed query) follows it.
+    *{'Plugins::Discography::API::filterRowsWithContent'} = sub { $_[2]->($_[1]) };
     @EMITTED = ();
     $B->can('_withMbCandidates')->(undef, sub { }, '', 'q', rows());
     ok(scalar(join(',', @EMITTED) eq 'Unowned Wide,Unowned Two,Owned By Tag'),

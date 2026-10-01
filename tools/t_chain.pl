@@ -30,7 +30,12 @@
 #      to the visit whose check it is;
 #   6. official_wait 0 renders before the check; the deadline renders without
 #      it and the check still finishes;
-#   7. a warm revisit sends nothing.
+#   7. a warm revisit sends nothing;
+#   8. (0.56.7, analysis §A16) an artist whose read lists 25 draws from
+#      ListenBrainz's and the community API's lists with the community's
+#      verdicts and ONE by-id request; MusicBrainz completes it after the
+#      render, every request as background work; the completed list waits for a
+#      fresh entry; a Refresh takes MusicBrainz's own list, awaited.
 #
 # FIXTURES ARE CAPTURED (tools/fixtures/, public API, 2026-09-29): Ladyhawke's
 # read (mb_artist_ladyhawke_aliases_artistrels_releasegroups.json, 24 groups)
@@ -112,8 +117,8 @@ my $B   = 'Plugins::Discography::Browse';
 {
     no strict 'refs'; no warnings 'redefine';
     *{"${API}::_netGet"} = sub {
-        my ($url, $ok, $err) = @_;
-        push @EV, "GET $url";
+        my ($url, $ok, $err, %opt) = @_;
+        push @EV, "GET $url" . ($opt{background} ? ' [bg]' : '');
         my $fire = sub {
             my $r = $RESPONDER->($url);
             return $err->(T::Resp->new) if !ref $r && $r eq 'FAIL';
@@ -213,13 +218,14 @@ sub fresh {
 }
 my @PAGES;
 sub page {
-    my ($mbid, $name) = @_;
+    my ($mbid, $name, %o) = @_;
     my $got;
     $B->can('_discographyView')->(undef, sub { $got = shift; push @PAGES, $got },
-        { mbid => $mbid, artist => $name, artist_id => 7 });
+        { mbid => $mbid, artist => $name, artist_id => 7, fresh => ($o{fresh} ? 1 : 0) });
     return \$got;
 }
 sub gets    { grep { /^GET / } @_ }
+sub mbgets  { grep { m{^GET https://musicbrainz\.org/} } @_ }
 sub upto    { my ($what, @ev) = @_; my @o; for (@ev) { last if $_ eq $what; push @o, $_ } @o }
 sub after   { my ($what, @ev) = @_; my $seen; grep { my $k = $seen; $seen ||= ($_ eq $what); $k } @ev }
 sub idx     { my ($re, @ev) = @_; for my $i (0 .. $#ev) { return $i if $ev[$i] =~ $re } return -1 }
@@ -263,8 +269,13 @@ ok(scalar(grep { $_ eq "local $OFFPAGE" } @EV) == 1,
 fresh();
 $LOCAL = [ { _mbid => "$RH_GROUPS[4]-r", _albumid => 1 } ];
 page($RH, 'Radiohead');
-my @g3 = gets(upto('render', @EV));
+# Since 0.56.7 the first list is asked for between the read and the browse;
+# this responder gives none, so MusicBrainz's three requests are the subject.
+my @g3 = mbgets(upto('render', @EV));
 ok(scalar(@g3) == 3, '3: a cold page listing 25 in its read takes three requests');
+ok(scalar(grep { m{api\.listenbrainz\.org/} } gets(@EV)) == 1
+   && scalar(grep { m{api\.lms-community\.org/} } gets(@EV)) == 1,
+   '3: ... after the first list was asked for (none came: the browse)');
 ok(scalar($g3[0] =~ m{/artist/\Q$RH\E\?} && $g3[1] =~ m{/release-group\?artist=\Q$RH\E&}
           && $g3[2] =~ m{/release-group\?query=.*&limit=30&}),
    '3: ... the read, the browse, then all 30 groups by id');
@@ -346,6 +357,120 @@ ok(join(',', @{ $unpl->($loc7, $rgs7, { 'rel-a' => 'g1', 'rel-c' => 'g-off' }) }
 ok(join(',', @{ $unpl->($loc7, $rgs7, undef) }) eq 'rel-a,rel-b,rel-c',
    '7: no map (the check failed): every owned release but the group id goes');
 ok(scalar(@{ $unpl->([], $rgs7, {}) }) == 0, '7: nothing owned, nothing to look up');
+
+# ---------------------------------------------------------------------------
+# 8. THE FIRST LIST (0.56.7; analysis §A16). Radiohead's read lists 25, so the
+#    page asks ListenBrainz and the community API. ListenBrainz: groups 0-28
+#    and a group MusicBrainz has since dropped (STALE). The community: groups
+#    0-26 (0-24 with an official release, 25 bootleg-only, 26 listed without
+#    releases) and one group of its own (CMONLY). MusicBrainz's browse: 0-29.
+# ---------------------------------------------------------------------------
+my $STALE  = 'eeeeeeee-0000-4000-8000-000000000001';
+my $CMONLY = 'eeeeeeee-0000-4000-8000-000000000002';
+my @BYID8;
+sub fast_responder {
+    my ($url) = @_;
+    if ($url =~ m{^https://api\.listenbrainz\.org/1/metadata/artist/\?artist_mbids=\Q$RH\E&inc=release_group$}) {
+        return [ { artist_mbid => $RH, name => 'Radiohead', release_group => [
+            (map { { mbid => $RH_GROUPS[$_], name => "Group $_", type => 'Album', date => '2000' } } 0 .. 28),
+            { mbid => $STALE, name => 'Stale', type => 'Album', date => '1999' } ] } ];
+    }
+    if ($url =~ m{^https://api\.lms-community\.org/music/artist/[^/]+/discography\?mbid=\Q$RH\E&withReleases=1$}) {
+        return { mbid => $RH, name => 'Radiohead', discography => [
+            (map { { mbid => $RH_GROUPS[$_], title => "Group $_", primary_type => 'Album',
+                     release_date => '2000', releases => { "$RH_GROUPS[$_]-r" => 'Official' } } } 0 .. 24),
+            { mbid => $RH_GROUPS[25], title => 'Group 25', primary_type => 'Album',
+              releases => { "$RH_GROUPS[25]-r" => 'Bootleg' } },
+            { mbid => $RH_GROUPS[26], title => 'Group 26', primary_type => 'Album' },
+            { mbid => $CMONLY, title => 'Community only', primary_type => 'Album',
+              releases => { "$CMONLY-r" => 'Official' } } ] };
+    }
+    push @BYID8, scalar(() = $url =~ /rgid%3A/g) if $url =~ m{/release-group\?query=};
+    return responder($url);
+}
+fresh();
+@BYID8 = ();
+$RESPONDER = \&fast_responder;
+$LOCAL = [ { _mbid => "$RH_GROUPS[4]-r", _albumid => 1 } ];
+page($RH, 'Radiohead');
+my @pre8 = gets(upto('render', @EV));
+ok(scalar(@pre8) == 4 && $pre8[0] =~ m{/artist/\Q$RH\E\?} && $pre8[1] =~ m{api\.listenbrainz\.org/}
+   && $pre8[2] =~ m{api\.lms-community\.org/} && $pre8[3] =~ m{/release-group\?query=},
+   '8: before the render: the read, ListenBrainz, the community API, ONE by-id request (no browse)');
+ok(($BYID8[0] // 0) == 4,
+   "8: ... the by-id request asks only for the 4 groups without the community's verdict");
+my %drawn8 = map { $_->{mbid} => 1 } @{ $BUILT[0]{rgs} || [] };
+ok(scalar(@BUILT) == 1 && scalar(keys %drawn8) == 31 && $drawn8{$STALE} && $drawn8{$CMONLY} && !$drawn8{ $RH_GROUPS[29] },
+   "8: the page is drawn from the two lists together (31 groups)");
+my $o8 = $BUILT[0]{official} || {};
+ok(($o8->{ $RH_GROUPS[0] } // -1) == 1 && ($o8->{ $RH_GROUPS[25] } // -1) == 0
+   && ($o8->{ $RH_GROUPS[27] } // -1) == 1 && ($o8->{$CMONLY} // -1) == 1,
+   "8: ... filtered by the community's verdicts and the by-id answers (25 bootleg-only)");
+my @post8 = after('render', @EV);
+ok(scalar(@post8) == 4 && $post8[0] =~ m{/release-group\?artist=\Q$RH\E&.* \[bg\]$}
+   && $post8[1] =~ m{/release-group\?query=.*&limit=30&.* \[bg\]$}
+   && $post8[2] eq 'local ' && $post8[3] eq 'collabs',
+   '8: AFTER the render: the browse and the by-id check as background work, then the lookups, then collaborations');
+my $next8 = $CACHE{"dsc:rgnext:1:$RH"};
+my %n8 = map { $_->{mbid} => 1 } @{ $next8 || [] };
+ok(ref $next8 eq 'ARRAY' && scalar(@$next8) == 30 && $n8{ $RH_GROUPS[29] } && !$n8{$STALE} && !$n8{$CMONLY},
+   "8: MusicBrainz's completed list is stored for the next entry: its 30 (the newest added, what it lacks dropped)");
+ok(!defined $CACHE{"dsc:rgfast:1:$RH"} && !defined $CACHE{"dsc:cmdisco:1:$RH"}
+   && scalar(@{ $CACHE{"dsc:rg:v2:$RH"} || [] }) == 31,
+   '8: ... the first-list markers go, and the drawn list stays for the visit in progress');
+ok(($API->peekOfficial($RH)->{ $RH_GROUPS[25] } // -1) == 1 && ($API->peekOfficial($RH)->{$CMONLY} // -1) == 1,
+   "8: ... MusicBrainz's verdicts replace the community's where it gave one, the community's stay elsewhere");
+
+@EV = (); @BUILT = ();
+page($RH, 'Radiohead');                         # a rebuild (a walk, a toggle): not fresh
+ok(scalar(gets(@EV)) == 0 && scalar(@{ $BUILT[0]{rgs} || [] }) == 31 && ref $CACHE{"dsc:rgnext:1:$RH"} eq 'ARRAY',
+   '8: a rebuild that is not a fresh entry keeps the drawn list, and sends nothing');
+@EV = (); @BUILT = ();
+page($RH, 'Radiohead', fresh => 1);             # the next entry
+ok(scalar(gets(@EV)) == 0 && scalar(@{ $BUILT[0]{rgs} || [] }) == 30 && !defined $CACHE{"dsc:rgnext:1:$RH"},
+   "8: the next fresh entry draws MusicBrainz's completed list, and sends nothing");
+
+# The completion failing keeps the first list's marker, so the next visit tries
+# again; a page re-entered meanwhile does not start a second one.
+fresh();
+$RESPONDER = sub { $_[0] =~ /release-group\?artist=/ ? 'FAIL' : fast_responder($_[0]) };
+page($RH, 'Radiohead');
+ok(defined $CACHE{"dsc:rgfast:1:$RH"} && !defined $CACHE{"dsc:rgnext:1:$RH"}
+   && scalar(grep { /^local / } @EV) == 1,
+   '8: a failed completion stores nothing, keeps the marker, and the lookups still run');
+fresh();
+$RESPONDER = \&fast_responder;
+$DEFER = 1;
+page($RH, 'Radiohead');
+step() for 1 .. 3;                              # read, both lists, the by-id request
+my $m8 = scalar @EV;
+page($RH, 'Radiohead');                         # re-entered while the completion runs
+ok(scalar(grep { /\[bg\]$/ } @EV[$m8 .. $#EV]) == 0,
+   '8: a page re-entered while the completion runs does not start another');
+flush();
+
+# ---------------------------------------------------------------------------
+# 9. A REFRESH takes MusicBrainz's own list, awaited: no ListenBrainz, no
+#    community list; the marker is used once.
+# ---------------------------------------------------------------------------
+fresh();
+$RESPONDER = \&fast_responder;
+$API->clearArtistCache(mbid => $RH, refresh => 1);
+page($RH, 'Radiohead');
+my @pre9 = gets(upto('render', @EV));
+ok(scalar(@pre9) == 3 && $pre9[1] =~ m{/release-group\?artist=} && !grep({ m{listenbrainz|lms-community} } @pre9),
+   '9: after a Refresh: the read, the browse, the check, as before 0.56.7');
+ok(!defined $CACHE{"dsc:rgfull:1:$RH"} && !defined $CACHE{"dsc:rgfast:1:$RH"} && !grep({ /\[bg\]$/ } @EV),
+   '9: ... the Refresh marker is used up, and nothing is left to complete');
+{
+    # The page's Refresh row is what sets the marker; no suite drives that row's
+    # url, so its call is pinned on the source.
+    open my $fh, '<', "$FindBin::Bin/../Discography/Browse.pm" or die $!;
+    my $src = do { local $/; <$fh> };
+    my ($body) = $src =~ /^(sub _refreshItem \{.*?^\})/ms;
+    ok(scalar($body && $body =~ /clearArtistCache\(.*refresh\s*=>\s*1/s),
+       "9: the page's Refresh row asks clearArtistCache for MusicBrainz's own list next (refresh => 1)");
+}
 
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

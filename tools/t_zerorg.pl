@@ -202,14 +202,17 @@ ok((resolve('Errcount') // '') eq $ERRC,
 ok(!defined resolve('Nobody At All Xyzzy'), 'an unknown name still misses');
 
 # ---------------------------------------------------------------------------
-# 5. THROTTLE POLICY. A SPECULATIVE lookup against the PUBLIC API adds no
-#    requests — the same rule the alias and credit-split passes follow.
+# 5. A SEARCH ROW'S LOOKUP (speculative) RUNS EVERY PASS A PAGE RUNS, on the
+#    PUBLIC API too (stage 3, 2026-09-30). Until then it asked for NO count
+#    there, so a row could be kept or dropped on an answer its own page never
+#    gave; the row check now pays for it, with the count asked of the community
+#    API first (analysis §A12.6 steps 2-3).
 # ---------------------------------------------------------------------------
 {
     local $main::MB_BASE = 'https://musicbrainz.org/ws/2/';
     ok((resolve('Beatles', 1) // '') eq $FABS,
        'public API + speculative: still resolves');
-    ok(counts_asked() == 0, '... and asks for NO counts (bulk row guesses stay cheap)');
+    ok(counts_asked() == 1, '... and checks the inexact winner exactly as a page does (once)');
 
     ok((resolve('Shostakovich') // '') eq $DMITRI,
        'public API, NOT speculative: the fix still applies');

@@ -155,8 +155,10 @@ ok((Plugins::Discography::API->peekArtistName($MBID) // '') eq 'Sea Power',
 #    response the resolver had to fetch anyway.
 # ---------------------------------------------------------------------------
 # Release-group counts are excluded: those are 0.47.1's zero-release identity
-# check, not the name capture this section is about.
-my $urls_with_capture = scalar grep { !m|release-group\?artist=| } @URLS;
+# check, not the name capture this section is about. Since stage 3 step 2 a
+# count asks the community API first (api.lms-community.org), so that request
+# is the same check and is excluded with it.
+my $urls_with_capture = scalar grep { !m{release-group\?artist=|api\.lms-community\.org/} } @URLS;
 ok($urls_with_capture <= 3,
    "capture is free: $urls_with_capture request(s), no lookup added");
 
