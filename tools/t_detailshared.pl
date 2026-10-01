@@ -23,6 +23,7 @@ use warnings;
 use FindBin;
 
 our (%SHARED, @SHARECALLS, @LA, @LT, $URLS);
+our (%CANON, @CANDOPTS);   # section 6: MusicBrainz's names, what the pool is asked for
 
 BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
@@ -59,11 +60,12 @@ BEGIN {
     };
     *{"${A}::getReleaseGroupUrls"}  = sub { $main::URLS++ };   # compose never runs
     *{"${A}::peekReleaseGroups"}    = sub { [] };
+    *{"${A}::peekArtistName"}       = sub { $main::CANON{ $_[1] // '' } };   # the pool's search name (0.56.13)
     *{"${A}::peekReleaseMap"}       = sub { {} };
     *{"${A}::peekLocalReleaseMap"}  = sub { {} };
     *{"${A}::peekOfficial"}         = sub { {} };
     *{"${A}::getReleaseGroups"}     = sub { my ($c, %a) = @_; $a{onError}->() };
-    *{"${S}::getCandidates"}        = sub { $_[-2]->({}) };
+    *{"${S}::getCandidates"}        = sub { push @main::CANDOPTS, [ $_[2], $_[-1] ]; $_[-2]->({}) };
     *{"${S}::localAlbums"}          = sub { shift; push @main::LA, [@_]; [] };
     *{"${S}::localTracks"}          = sub { shift; push @main::LT, [@_]; [] };
     # matchesFor pulls the lazy track pool, as the real one does for a miss.
@@ -135,6 +137,43 @@ ok(scalar(@SHARECALLS == 0 && @LA == 1), '4: flag present and false -> lookup ru
 # 5. No artist mbid (stale passthrough): nothing to compare; lookup as before.
 detail();
 ok(scalar(@LA == 1), '5: no mbid -> lookup runs (nothing to guard against)');
+
+# 6. THE POOL IS SEARCHED UNDER MUSICBRAINZ'S NAME (0.56.13). Field: a page opened
+#    as "James Yorkston & The Big Eyes Family Players" resolves to James Yorkston,
+#    and searching the services under ITS name stored a joint artist's 2 albums as
+#    his pool. _poolQuery chooses the name; the detail page must pass it on, as the
+#    list page does, or the two build the same pool under different names.
+{
+    my $pq = $B->can('_poolQuery');
+    my $JOINT = 'James Yorkston & The Big Eyes Family Players';
+    %CANON = ('m1' => 'James Yorkston', 'm2' => "The La\x{2019}s", 'm3' => "\x{41a}\x{438}\x{43d}\x{43e}");
+    my ($q, $al) = $pq->($JOINT, 'm1', []);
+    ok(scalar(($q // '') eq 'James Yorkston' && "@$al" eq $JOINT),
+       "6: another name for the artist -> MusicBrainz's name searched, the page's retried after it");
+    ($q, $al) = $pq->('The Las', 'm2', []);
+    ok(scalar(($q // '') eq "The La's"), "6: ... folded to the marks the services key on (a straight apostrophe)");
+    ($q, $al) = $pq->('James Yorkston', 'm1', [ 'J. Yorkston' ]);
+    ok(scalar(!defined $q && "@$al" eq 'J. Yorkston'), '6: the same name -> searched as before, aliases untouched');
+    ($q, $al) = $pq->('Kino', 'm3', []);
+    ok(scalar(!defined $q && ($al->[0] // '') eq $CANON{m3}),
+       '6: a canonical name with no Latin letter is retried, not searched first (Kino)');
+    ($q, $al) = $pq->($JOINT, 'unknown', [ 'X' ]);
+    ok(scalar(!defined $q && "@$al" eq 'X'), '6: no canonical name cached -> as before');
+    ($q, $al) = $pq->($JOINT, 'm1', [ 'James Yorkston', 'J. Yorkston', $JOINT ]);
+    ok(scalar("@$al" eq "$JOINT J. Yorkston"), '6: aliases keep no copy of either name');
+
+    @CANDOPTS = ();
+    detail(mbid => 'm1', artist => $JOINT);
+    my ($name, $o) = @{ $CANDOPTS[-1] || [] };
+    ok(scalar(($o->{query} // '') eq 'James Yorkston' && ($o->{aliases}[0] // '') eq $JOINT && ($o->{mbid} // '') eq 'm1'),
+       '6: the detail page asks for the pool under the same name the list page does');
+    @CANDOPTS = ();
+    detail(mbid => 'unknown', artist => $JOINT);
+    ($name, $o) = @{ $CANDOPTS[-1] || [] };
+    ok(scalar(ref $o eq 'HASH' && !exists $o->{query} && !exists $o->{aliases}),
+       '6: control: no canonical name -> the detail page asks as before');
+    %CANON = ();
+}
 
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

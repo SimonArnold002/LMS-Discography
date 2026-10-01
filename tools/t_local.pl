@@ -472,5 +472,56 @@ ok(scalar(@QUERIES) == 0, 'an explicit artist_id outranks the tag (and the name)
     %LIBRARY = ();
 }
 
+# ---------------------------------------------------------------------------
+# 12. THE SEARCH'S LOCAL LEG KEEPS EVERY HIT OF THE TYPED SPELLING (Simon,
+#     2026-10-01: "the search should find that, we never added exact search it
+#     was always supposed to be fuzzy"). LMS's `artists search:Elvis Costello`
+#     returns Elvis Costello AND Elvis Costello & The Attractions; 0.46.0 kept
+#     only the exact name whenever there was one, so the owned Attractions
+#     never reached the list (the typo "Elvis Costelllo" found it: no exact
+#     hit to narrow to). Only a RECOVERY step's hits are narrowed.
+# ---------------------------------------------------------------------------
+{
+    no warnings 'redefine';
+    local *Plugins::Discography::Sources::orderedAdapters = sub { () };
+    my $local = sub {
+        my $got;
+        Plugins::Discography::Sources->searchArtists(undef, $_[0], sub { $got = $_[0] });
+        return join ' | ', sort map { $_->{name} } @{ $got->{Local} || [] };
+    };
+
+    %LIBRARY = ('Elvis Costello' => [ { id => 151881, artist => 'Elvis Costello' },
+                                      { id => 157600, artist => 'Elvis Costello & The Attractions' } ]);
+    ok($local->('Elvis Costello') eq 'Elvis Costello | Elvis Costello & The Attractions',
+       'typed spelling: the exact name does NOT push out the other library hits (the field case)');
+
+    # Control: a RECOVERY step (term probe) is still narrowed to the exact name.
+    # "Janes Addiction" finds nothing typed; the probe 'Addiction' returns the
+    # band and another act, and only the band is the name typed.
+    %LIBRARY = ('Addiction' => [ { id => 31, artist => "Jane's Addiction" },
+                                 { id => 32, artist => 'Addiction Crew' } ]);
+    ok($local->('Janes Addiction') eq "Jane's Addiction",
+       'recovery step: a term probe\'s hits are still narrowed to the exact name');
+
+    # Control: a recovery step with NO exact hit keeps what it found (unchanged;
+    # the merge's relevance gate judges them).
+    %LIBRARY = ('Addiction' => [ { id => 32, artist => 'Addiction Crew' } ]);
+    ok($local->('Janes Addiction') eq 'Addiction Crew',
+       'recovery step with no exact hit: kept as before, for the merge to judge');
+
+    # The step is reported: typed / variant / probe.
+    my $how = '';
+    %LIBRARY = ('Elvis Costello' => [ { id => 151881, artist => 'Elvis Costello' } ]);
+    $rows->('Elvis Costello', { how => \$how });
+    ok($how eq 'typed', "_localArtistRows reports 'typed' for the spelling as given");
+    %LIBRARY = ('Simon & Garfunkel' => [ { id => 41, artist => 'Simon & Garfunkel' } ]);
+    $rows->('Simon and Garfunkel', { how => \$how });
+    ok($how eq 'variant', "... 'variant' for the &/and spelling");
+    %LIBRARY = ('Addiction' => [ { id => 31, artist => "Jane's Addiction" } ]);
+    $rows->('Janes Addiction', { how => \$how });
+    ok($how eq 'probe', "... 'probe' for a term probe");
+    %LIBRARY = ();
+}
+
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

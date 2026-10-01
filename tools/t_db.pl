@@ -472,5 +472,38 @@ my %FAMILY = (
 package T::Resp; sub content { '{}' } sub error { '' }
 package main;
 
+# 11c. Clearing by LIBRARY ID finds the mbid the page uses: the library tag
+#      first, as getArtistMbid resolves (0.56.15). Field: `clearcache
+#      artist_id:154055` (Radiohead, tagged) found nothing under the name,
+#      cleared only name-keyed pools, and the next open read the MB-keyed one.
+{
+    fresh();
+    my $API = 'Plugins::Discography::API';
+    my $TAG = 'a74b1b7f-71a5-4011-9441-d0b5e4122711';
+    my $NAM = '11111111-2222-3333-4444-555555555555';
+    my %TAGS = (154055 => $TAG);
+    {
+        no warnings 'redefine'; no strict 'refs';
+        $INC{'Slim/Schema.pm'} = 1;
+        *{'Slim::Schema::find'} = sub { my ($c, $t, $id) = @_; bless { m => $TAGS{$id} }, 'T::TagC' };
+        *{'T::TagC::musicbrainz_id'} = sub { $_[0]{m} };
+        *{'Plugins::Discography::Sources::localAlbums'} = sub { [] };
+    }
+    Plugins::Discography::DB::set(Plugins::Discography::API::_rgKey($TAG), [ 'x' ], 3600);
+    my ($cl, $used) = $API->clearArtistCache(name => 'Radiohead', artist_id => 154055);
+    ok(($used // '') eq $TAG, '11c: an artist_id with a library tag clears under the TAG mbid');
+    ok(!defined Plugins::Discography::DB::get(Plugins::Discography::API::_rgKey($TAG)),
+       "11c: ... and that mbid's release groups are gone");
+
+    Plugins::Discography::DB::set(Plugins::Discography::API::_mbidKey('Radiohead'), $NAM, 3600);
+    ($cl, $used) = $API->clearArtistCache(name => 'Radiohead', artist_id => 154055);
+    ok(($used // '') eq $TAG, "11c: the tag wins over the name's cached mbid, as the page resolves");
+    ($cl, $used) = $API->clearArtistCache(name => 'Radiohead', artist_id => 154055, mbid => $NAM);
+    ok(($used // '') eq $NAM, '11c: control: an mbid passed in is still used as given');
+    Plugins::Discography::DB::set(Plugins::Discography::API::_mbidKey('Radiohead'), $NAM, 3600);
+    ($cl, $used) = $API->clearArtistCache(name => 'Radiohead', artist_id => 999);
+    ok(($used // '') eq $NAM, "11c: control: an untagged artist_id falls back to the name's mbid, as before");
+}
+
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

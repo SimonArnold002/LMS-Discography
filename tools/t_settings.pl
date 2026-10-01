@@ -67,7 +67,7 @@ my %DEFAULTS = (
     material_action => 1, hide_unmatched => 1, show_bio => 1, show_library_extras => 1,
     show_streaming_extras => 0, show_all_versions => 0, debug_log => 0,
     sort_order => 'newest', show_types => 'ALBUMS,EPS', mb_base_url => '',
-    layout_albums => 'tiles', layout_singles => 'list',
+    layout_albums => 'tiles', layout_singles => 'list', layout_search => 'split',
     svc_priority_local => 1, svc_priority_qobuz => 2, svc_priority_tidal => 3, svc_priority_deezer => 4,
     svc_priority_spotify => 5,
 );
@@ -80,6 +80,7 @@ sub form_post {
         saveSettings => 1, dsc_types_form => 1,
         pref_sort_order => 'newest', pref_mb_base_url => '',
         pref_layout_albums => 'tiles', pref_layout_singles => 'list',
+        pref_layout_search => 'split',
         pref_svc_priority_local => 1, pref_svc_priority_qobuz => 2,
         pref_svc_priority_tidal => 3, pref_svc_priority_deezer => 4,
         pref_svc_priority_spotify => 5,
@@ -163,6 +164,24 @@ open my $fh2, '<', "$FindBin::Bin/../Discography/HTML/EN/plugins/Discography/set
 my $page = do { local $/; <$fh2> };
 ok(scalar(() = $page =~ /name="pref_layout_(?:albums|singles)" value="(?:tiles|list)"/g) == 4,
    '7: the page has a Tiles and a List radio for each layout');
+
+# The search page's layout (0.56.10): split (the default) or all tiles.
+my (undef, @lpn) = Plugins::Discography::Settings->prefs;
+ok(scalar(grep { $_ eq 'layout_search' } @lpn), '7: layout_search is in prefs() (the base saves it)');
+reset_store();
+$p = form_post(); $p->{pref_layout_search} = 'tiles';
+Plugins::Discography::Settings->handler(undef, $p);
+ok($STORE{layout_search} eq 'tiles', "7: the search layout's All tiles radio saves");
+reset_store();
+$p = form_post(); $p->{pref_layout_search} = 'list';
+Plugins::Discography::Settings->handler(undef, $p);
+ok($STORE{layout_search} eq 'split', '7: an unknown search layout keeps the current value');
+reset_store(); $STORE{layout_search} = 'tiles';
+$p = form_post(); delete $p->{pref_layout_search};
+Plugins::Discography::Settings->handler(undef, $p);
+ok($STORE{layout_search} eq 'tiles', '7: ... and so does a missing one');
+ok(scalar(() = $page =~ /name="pref_layout_search" value="(?:split|tiles)"/g) == 2,
+   '7: the page has a Split and an All tiles radio for the search');
 
 # ===================================================================================
 section('8. the Spotify priority (docs/spotify-adapter-plan.md)');

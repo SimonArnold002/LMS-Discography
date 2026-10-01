@@ -36,6 +36,7 @@ our @DEFERRED;
 our $MB_BASE = 'https://musicbrainz.org/ws/2/';
 our %REPLY;          # url prefix => reply | 'ERROR'
 our %TAG;            # contributor id => its MusicBrainz tag
+our @BGQ;            # per request in @QUERIES: 1 when sent as background work
 
 BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
@@ -108,7 +109,12 @@ my $API = 'Plugins::Discography::API';
     *{'Plugins::Discography::API::_netGet'} = sub {
         my ($url, $ok, $err, %opt) = @_;
         push @QUERIES, $url;
+        # The real queue's rule (t_netqueue.pl): a job is background when asked
+        # so or when made while $NET_BG is set, and its answer runs under it.
+        my $bg = ($opt{background} || $Plugins::Discography::API::NET_BG) ? 1 : 0;
+        push @BGQ, $bg;
         push @DEFERRED, sub {
+            local $Plugins::Discography::API::NET_BG = $bg;
             my ($hit) = grep { index($url, $_) == 0 } sort { length $b <=> length $a } keys %REPLY;
             my $r = defined $hit ? $REPLY{$hit} : undef;
             return $err->(T::Resp->new(''), 'stub error', T::Resp->new(''))
@@ -148,8 +154,9 @@ sub section {
     eval { $code->(); 1 } or do { (my $e = $@) =~ s/\s+/ /g; ok(0, "$n: the section died: $e") };
 }
 sub cold {
-    %CACHE = (); @QUERIES = (); @DEFERRED = (); %REPLY = (); %TAG = ();
+    %CACHE = (); @QUERIES = (); @DEFERRED = (); %REPLY = (); %TAG = (); @BGQ = ();
     no warnings "once";
+    %Plugins::Discography::API::ROWCHECK_BUSY = ();
     %Plugins::Discography::API::NAME_MEMO = ();
     %Plugins::Discography::API::NAME_WAIT = ();
 }
@@ -777,6 +784,134 @@ section('9', sub {
     kept('genesis', map { { name => $_, sources => ['Qobuz'] } } 'Genesis Brass', 'Au Pair', 'Hall Of Fam');
     ok(($CACHE{ Plugins::Discography::API::_mbidKey('Genesis Brass') } // '') eq id(3),
        '9: a ridden row\'s proof is cached as the name\'s resolution for the page');
+});
+
+section('10', sub {
+    # -----------------------------------------------------------------------
+    # 10. THE SEARCH DOES NOT WAIT FOR THE CHECK (0.56.9; Simon: the search
+    #     "should be the quickest part ... just hide them on 2nd search").
+    #     `known`: every row decided from what earlier checks left, the rest
+    #     shown unchecked; the reply goes out before any request; the full check
+    #     then runs as background work and keeps its answers per result name, so
+    #     the next search hides the junk and merges the credit variant.
+    # -----------------------------------------------------------------------
+    cold();
+    my $TP = id(20);
+    $REPLY{ q_for('tom petty') } = { count => 1, artists => [ { id => $TP, name => 'Tom Petty', score => 100 } ] };
+    $CACHE{ Plugins::Discography::API::_mbidKey('Tom Petty') } = $TP;   # the typed query's own lookup
+    $CACHE{ Plugins::Discography::API::_rgCountKey($TP) } = 50;
+    $REPLY{ cm_url('Jeff Lynne;Tom Petty') } = { name => '' };
+    $REPLY{ cm_url('Cypress Hill Tom Petty Led Zeppelin') } = {};
+    $REPLY{ cm_url('Tom Petty & Jeff Lynne') } = cm_answer($TP, 'Tom Petty', 50);
+    $REPLY{ $MB_BASE . "artist/$TP?inc=aliases" } =
+        { name => 'Tom Petty', aliases => [], relations => [], 'release-groups' => [] };
+    $TAG{9} = id(21);
+    my @rows = ({ name => 'Tom Petty', sources => ['Qobuz'] },
+                { name => 'Jeff Lynne;Tom Petty', sources => ['Qobuz'] },
+                { name => 'Tom Petty & Jeff Lynne', sources => ['Deezer'] },
+                { name => 'Cypress Hill Tom Petty Led Zeppelin', sources => ['Qobuz'] },
+                { name => 'Tom Petty and the Heartbreakers', sources => ['Local'], artist_id => 9 });
+    my $copy = sub { [ map { +{ %$_, sources => [ @{ $_->{sources} } ] } } @rows ] };
+    my ($out, $sentAtReply);
+    my $search = sub {
+        ($out, $sentAtReply) = (undef, undef);
+        $API->filterRowsWithContent($copy->(), sub { $out = $_[0]; $sentAtReply = scalar @QUERIES },
+                                    { query => 'tom petty', known => 1 });
+    };
+
+    $search->();
+    ok(scalar(defined $out && $sentAtReply == 0), '10: the list is answered at once, before any request');
+    ok(names($out) eq join(',', map { $_->{name} } @rows),
+       '10: ... every row nothing is known about shown, unchecked');
+    ok(scalar(@QUERIES && !grep { !$_ } @BGQ), '10: then the check is asked, as background work');
+
+    my $n = scalar @QUERIES;
+    $search->();
+    ok(scalar(@QUERIES == $n), '10: a repeat search while that check runs does not start another');
+
+    flush();
+    ok(scalar(combined_asked() == 1 && cm_asked('Jeff Lynne;Tom Petty') == 1),
+       '10: ... once its answers came: one combined search, one community request per name');
+    ok(scalar(!grep { !$_ } @BGQ), '10: every request the check\'s answers led to is background work too');
+    my $rv = sub { $CACHE{ Plugins::Discography::API::_rowKey($_[0]) } };
+    ok(scalar(ref $rv->('Jeff Lynne;Tom Petty') eq 'HASH' && $rv->('Jeff Lynne;Tom Petty')->{m} eq ''),
+       '10: the community\'s "no artist" is kept for the name');
+    ok(scalar(ref $rv->('Tom Petty & Jeff Lynne') eq 'HASH' && $rv->('Tom Petty & Jeff Lynne')->{m} eq $TP
+              && $rv->('Tom Petty & Jeff Lynne')->{o}),
+       '10: a pick under another name is kept as merge-only');
+    ok(scalar(!defined $rv->('Tom Petty and the Heartbreakers')),
+       '10: a library row its tag decides is not kept (the tag answers every time)');
+
+    @QUERIES = (); @BGQ = ();
+    $search->();
+    ok(names($out) eq 'Tom Petty,Tom Petty and the Heartbreakers',
+       '10: the next search hides the junk and merges the credit variant');
+    my ($tp) = grep { $_->{name} eq 'Tom Petty' } @{ $out || [] };
+    ok(scalar($tp && join(',', @{ $tp->{sources} }) eq 'Qobuz,Deezer'),
+       '10: ... the merged row carrying both services');
+    ok(scalar(!@QUERIES), '10: ... and asks nothing, everything being known');
+
+    # A count not known yet: the row is kept, and its count asked after.
+    delete $CACHE{ Plugins::Discography::API::_rgCountKey($TP) };
+    @QUERIES = (); @BGQ = ();
+    $search->();
+    ok(scalar(grep { $_->{name} eq 'Tom Petty' } @{ $out || [] }), '10: a row whose count is not known is kept');
+    ok(scalar(@QUERIES && !grep { !$_ } @BGQ), '10: ... and its count is asked after, as background work');
+    flush();
+
+    # The branches the known mode decides on, each from the cache alone.
+    cold();
+    my $sentBefore;
+    my $known = sub {
+        my ($r) = (undef);
+        $API->filterRowsWithContent([ map { +{ %$_, sources => [ @{ $_->{sources} } ] } } @_ ],
+                                    sub { $r = $_[0]; $sentBefore = scalar @QUERIES },
+                                    { query => 'tom petty', known => 1 });
+        return $r;
+    };
+    my $rk = sub { Plugins::Discography::API::_rowKey($_[0]) };
+    $CACHE{ Plugins::Discography::API::_mbidKey('Tom Petty') } = $TP;
+    $CACHE{ Plugins::Discography::API::_rgCountKey($TP) } = 50;
+    # A merge-only row whose artist's aliases are not cached: it cannot fold yet,
+    # so it is shown as an ordinary row and the aliases are asked after.
+    $CACHE{ $rk->('Tom Petty & Jeff Lynne') } = { m => $TP, o => 1 };
+    $out = $known->({ name => 'Tom Petty', sources => ['Qobuz'] },
+                    { name => 'Tom Petty & Jeff Lynne', sources => ['Deezer'] });
+    ok(names($out) eq 'Tom Petty,Tom Petty & Jeff Lynne',
+       '10: a merge-only row whose aliases are not cached is shown, not dropped');
+    ok(scalar(grep { m{artist/$TP\?inc=aliases} } @QUERIES),
+       '10: ... and the aliases are asked after, for the next search');
+    flush();
+    # Count 0, a proven-empty page, the resolver's "not found": each drops.
+    cold();
+    my ($Z, $E) = (id(30), id(31));
+    $CACHE{ $rk->('Zero Act') } = { m => $Z, o => 0 };
+    $CACHE{ Plugins::Discography::API::_rgCountKey($Z) } = 0;
+    $CACHE{ $rk->('Empty Act') } = { m => $E, o => 0 };
+    $CACHE{ Plugins::Discography::API::_rgCountKey($E) } = 4;
+    $CACHE{ Plugins::Discography::API::_emptyKey($E) } = 1;
+    $CACHE{ Plugins::Discography::API::_mbidKey('Unknown Act') } = '';
+    # Kept 7 days for the name, after the community's own 1-day answer is gone.
+    $CACHE{ $rk->('Junk Credit') } = { m => '', o => 0 };
+    $out = $known->({ name => 'Zero Act', sources => ['Qobuz'] }, { name => 'Empty Act', sources => ['Qobuz'] },
+                    { name => 'Unknown Act', sources => ['Qobuz'] }, { name => 'Junk Credit', sources => ['Qobuz'] },
+                    { name => 'New Act', sources => ['Qobuz'] });
+    ok(names($out) eq 'New Act',
+       '10: a known count of 0, a proven-empty page, the resolver\'s "not found" and a kept "no artist" each drop; the unknown row stays');
+    ok(scalar(defined $sentBefore && $sentBefore == 0), '10: ... all decided before any request is sent');
+    flush();
+
+    # CONTROL: without `known` the check still waits for its answers (the
+    # background run itself, and any other caller).
+    cold();
+    $REPLY{ q_for('tom petty') } = { count => 1, artists => [ { id => $TP, name => 'Tom Petty', score => 100 } ] };
+    $REPLY{ cm_url('Jeff Lynne;Tom Petty') } = { name => '' };
+    $out = undef;
+    $API->filterRowsWithContent([ { name => 'Jeff Lynne;Tom Petty', sources => ['Qobuz'] } ],
+                                sub { $out = $_[0] }, { query => 'tom petty' });
+    ok(scalar(!defined $out), '10: control: without known the check waits for its answers');
+    flush();
+    ok(scalar(ref $out eq 'ARRAY' && !@$out), '10: control: ... and drops the junk when they come');
 });
 
 print "\n$pass passed, $fail failed\n";

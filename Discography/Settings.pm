@@ -35,7 +35,7 @@ sub page { 'plugins/Discography/settings.html' }
 sub prefs {
     return ($prefs, qw(
         svc_priority_local svc_priority_qobuz svc_priority_tidal svc_priority_deezer svc_priority_spotify
-        sort_order layout_albums layout_singles show_types hide_unmatched show_bio show_library_extras
+        sort_order layout_albums layout_singles layout_search show_types hide_unmatched show_bio show_library_extras
         show_streaming_extras
         show_all_versions material_action mb_base_url debug_log
     ));
@@ -80,6 +80,11 @@ sub handler {
             unless (defined $v && ($v eq 'tiles' || $v eq 'list')) {
                 $params->{"pref_$lp"} = $prefs->get($lp) // ($lp eq 'layout_singles' ? 'list' : 'tiles');
             }
+        }
+        # The search page's layout (0.56.10): 'split' or 'tiles', same rule.
+        my $ls = $params->{pref_layout_search};
+        unless (defined $ls && ($ls eq 'split' || $ls eq 'tiles')) {
+            $params->{pref_layout_search} = $prefs->get('layout_search') // 'split';
         }
 
         # MusicBrainz base URL: trim; a blank field STAYS blank so _mbBase can

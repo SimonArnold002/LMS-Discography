@@ -595,8 +595,11 @@ ok(ref $out eq 'ARRAY' && !@$out, 'a row proven empty is still dropped, not atta
     ok(scalar(@$o) == 1, 'two library rows, one MB artist, joint credit -> ONE row');
     ok(($o->[0]{artist_id} // 0) == 135826,
        '... keeping the artist_id that OWNS the albums, not the first-ranked one');
-    ok(($o->[0]{name} // '') eq 'James Yorkston and friends',
-       '... wearing that library artist\'s own spelling (0.46.5)');
+    # 0.56.13 (Simon, 2026-10-01: "they all link back to James Yorkston in
+    # MB"): the other folded library entry IS MusicBrainz's name for the act,
+    # so the row reads it, still opening the id that owns the albums.
+    ok(($o->[0]{name} // '') eq 'James Yorkston',
+       "... labelled with the library entry that carries MusicBrainz's name (0.56.13)");
     ok(scalar(grep { $_ eq 'Qobuz' } @{ $o->[0]{sources} }),
        '... and still speaking for Qobuz, which only the other row carried');
 

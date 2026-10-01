@@ -70,7 +70,7 @@ done
 ln -sfn "$ROOT/Discography" "$S/Plugins/Discography"
 
 fail=0
-for f in DB Sources API Browse Settings; do
+for f in DB SingleFlight Sources API Browse Settings; do
   printf '%-10s ' "$f"
   if perl -I"$S" -I"$ROOT" -c "$S/Plugins/Discography/$f.pm" 2>&1 | grep -q 'syntax OK'; then
     echo OK

@@ -116,7 +116,8 @@ because line numbers rot on the next edit.
 | `extid` on our rows changing Material favourites | A3 | `Material's only other `extid` reader` |
 | Qobuz badge off-centre on tiles = our wrong icon | A3 | `badge off-centre on strip tiles` |
 | Anything that only happens with MAI disabled (MAI is required) | A2 | `MAI OFF IS NOT A SUPPORTED STATE` |
-| A multi-artist collaboration missing on the second-named artist's page (`artists[0]`) — accepted, not fixed | A2 | `A COLLABORATION CAN MISS ON THE SECOND-NAMED` |
+| A multi-artist collaboration missing on the second-named artist's page (`artists[0]`) — SUPERSEDED 2026-10-01 by `A RELEASE MUSICBRAINZ LISTS UNDER THE ARTIST COMES THROUGH` (fixed for a release MB lists under him) | A2 | `A COLLABORATION CAN MISS ON THE SECOND-NAMED` |
+| A release MusicBrainz lists under the artist comes through however the service credits it (pool searched under MB's name; joint service artists fetched beside him on every service; a second MAIN artist credited to him unless the first-named already is him; a duo's own entry passed over for a member still counts, 0.56.14); a separate MB artist (James Yorkston and the Athletes) stays separate; a folded search row reads the library entry called MB's name (0.56.13, Simon) | A2 | `A RELEASE MUSICBRAINZ LISTS UNDER THE ARTIST COMES THROUGH` |
 | A Spotify search with zero results is not cached as "no albums" (re-asked hourly) | A2 | `SPOTIFY: AN EMPTY ANSWER IS NEVER A VERDICT` |
 | A failed LATER Spotify page reads as the end of an exactly-50/100/150-album list | A2 | `SPOTIFY: A FAILED LATER PAGE` |
 | Spotify takes no part in artist photos (`artist_image => 0`) | A2 | `SPOTIFY IS NOT IN THE ARTIST-PHOTO WALK` |
@@ -136,6 +137,11 @@ because line numbers rot on the next edit.
 | Stage 3b's four behaviour changes (the community API judges the rows no shared search answers; a pick under another name only merges; pass 1 reads aliases; proven answers go to the page) — all deliberate | A2 | `STAGE 3b CHANGED FOUR BEHAVIOURS ON PURPOSE` |
 | Pass 1's unproven answers riding in pass 2 (0.56.6): only when pass 2 is sent anyway, never re-picking, no fallback if the extra names overflow the reply — deliberate | A2 | `PASS 1'S UNPROVEN ANSWERS RIDE IN PASS 2` |
 | The artist page drawn from ListenBrainz's list + the community API's verdicts (0.56.7): aliases, edition titles and the newest groups a visit late, groups past MB's 600 cap shown, the completed list swapped in only on a fresh entry, background MB requests yield, either source failing = the old path, no size ceiling, special artists (Various Artists) the old path, at most 200 groups checked by id before the draw and the rest after it, a Refresh keeps the groups past the cap (0.56.8) — deliberate | A2 | `THE ARTIST PAGE DRAWS FROM LISTENBRAINZ AND THE COMMUNITY API` |
+| The search shows its rows before the row check (0.56.9): junk, credit variants and zero-release same-name acts show on a FIRST search and go on the next; the check runs as background work and keeps its answers per result name — deliberate, reverses 0.44.5's awaited counts | A2 | `THE SEARCH DOES NOT WAIT FOR ITS ROW CHECK` |
+| The search's Local leg keeps every library artist LMS finds for the typed spelling (0.56.9); only the fallback spellings' hits are narrowed to the exact name | A2 | `THE SEARCH DOES NOT WAIT FOR ITS ROW CHECK` |
+| Background work is not SENT while a page has any request waiting or out on ANY host, or while a page answer runs; a background request's TIMEOUT holds background work only (a 429 still holds everything) (0.56.11, the 18.8 s tap-after-search regression) | A2 | `THE SEARCH DOES NOT WAIT FOR ITS ROW CHECK` |
+| A result row that opens a MusicBrainz act sharing its name shows that act's description LAST on line2 (owned by library tag, unowned by the resolver's cached answer; untagged owned rows get none, never a name guess; only when MB has 2+ acts of that name) (0.56.12, Simon) | A2 | `THE SEARCH PAGE IS TOP RESULT, THEN ARTISTS` |
+| The search page is "Top Result" (one row, Local trumps) then "Artists" (same-name acts FIRST, then the other rows, then other spellings); no "Other artists with this name" section; `layout_search` split / all tiles; More on the Top Result heading opens that artist (0.56.10, Simon's design) | A2 | `THE SEARCH PAGE IS TOP RESULT, THEN ARTISTS` |
 | MB's artist lookup listing only first-credited groups; omitting an empty `release-groups`; a combined `inc=` returning less; a 50-id `reid:` search being too long | A3 | `MEASURED FOR STAGE 1` |
 | A non-UUID album id tag spoiling a `reid:` batch | A3 | `LMS VALIDATES MB ID TAGS AT SCAN` |
 | Paging the `arid:` search as a complete list; the search carrying group aliases; the artist read's group list as incomplete under 25; the by-id search's URL or release lists being cut short | A3 | `MEASURED FOR STAGE 2` |
@@ -433,6 +439,9 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   Stated in three places (Simon, 2026-09-25): the `install.xml` description, README Requirements, and the home
   page's About text (`PLUGIN_DISCOGRAPHY_ABOUT_2`). No startup check.
 
+- **SUPERSEDED 2026-10-01 (Simon, on James Yorkston: "any that show under his main name should come through. Same for
+  any situation like this") by `A RELEASE MUSICBRAINZ LISTS UNDER THE ARTIST COMES THROUGH` below.** Kept for the
+  history; the "accepted, not fixed" verdict no longer holds for a release MusicBrainz lists under the artist.
 - **A COLLABORATION CAN MISS ON THE SECOND-NAMED ARTIST'S PAGE — accepted, not fixed** (`_filterForeignArtist`,
   `_albumArtistId`, `artists[0]`, the Spotify plan's reshaping step §4.2; Simon, 2026-09-25). Raised by the review of
   `docs/spotify-adapter-plan.md`: a service that credits a collaboration as several artists ([Panda Bear, Sonic Boom])
@@ -493,7 +502,7 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   alias act whose initials spell the query lifts above the name tier (ELO, PIL, NIN) — never MB score across both.** Owned rows still rank first (0.48.4). 0.37.0 had built the list from the services' artist searches
   with no recorded reason, and the likely ones no longer hold (the mirror's search index was unbuilt until
   2026-07-12; name search is fuzzy, which the exact name-or-alias gate answers). In that build the 0.43.0 "Other artists
-  with this name" section was GONE as a section (today's code still has it): those artists are the list, a repeated name carries its MB
+  with this name" section was GONE as a section (today's code lists them FIRST under Artists since 0.56.10, see `THE SEARCH PAGE IS TOP RESULT, THEN ARTISTS`): those artists are the list, a repeated name carries its MB
   description on line2. Do not propose going back to service-first rows, and do not re-add the 2+ rule
   (it dropped a lone artist: Hawkwind). `getArtistCandidates` (name field only) is deliberately unchanged:
   the bio's shared-name guard reads it, and an alias match is not "shares this name"; the plan's ranked list
@@ -726,6 +735,128 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   Pinned in `t_fastpage.pl` (96), `t_chain.pl` §8-§9, `t_netqueue.pl` §14; mutation-checked (0.56.7: 32, 31 caught, 1
   equivalent; 0.56.8: 36, all caught but one equivalent and two aimed at the removed ceiling).
 
+- **THE SEARCH DOES NOT WAIT FOR ITS ROW CHECK** (0.56.9; `API::filterRowsWithContent` `known`, `_rowKey`,
+  `_rememberRow`, `%ROWCHECK_BUSY`, `$NET_BG`, `_netPromote`, `Browse::_withMbCandidates`; Simon, 2026-10-01: *"this
+  in reality should be the quickest part it is searching Qobuz and local data. If the main delay is to clear the
+  empty junk entries then lets not do that just hide them on 2nd search"*, then *"yes go ahead"*). Measured cold:
+  Qobuz and the library answer in 0.7-0.9 s and the row check took the search to 6-13 s (Tom Petty 13.5 s, 12
+  community requests one at a time, nearly all credit strings). Each choice below is deliberate; re-raise one only
+  with a case its reason does not cover:
+  1. **A first search shows what it cannot judge yet**: junk credit strings, tribute acts with no releases,
+     credit variants not yet merged ("Tom Petty & Jeff Lynne" beside Tom Petty), a "Local" that only the MusicBrainz
+     tag supplies. The next search, for ANY term, hides and merges them. Nothing leaves a list while it is shown.
+  2. **What decides a row at once**: its own earlier answer (`dsc:rowv:1:<name>`: artist id, merge-only flag, or
+     "no artist"; found 14 d, none 7 d), else the resolver's cached answer for the name (`dsc:mbid`, which the
+     typed query's own lookup fills), else the community's cached "no artist"; then the proven-empty verdict and
+     the cached count as before. Counts and aliases are read, never fetched, before the reply; a group whose aliases
+     are not cached does not fold yet (its merge-only row shown as an ordinary one).
+  3. **The background check is the full check, unchanged**, on the rows as they came (a copy taken before the fold
+     edits them), so a merge-only answer finds the row it merges into; it writes the per-name answers. One run per
+     query at a time (`ROWCHECK_BUSY_MAX` 120 s). It re-asks rows already known, at background priority: the price
+     of folding across known and new rows.
+  4. **Background work yields** (`$NET_BG`): a request made in a background job's answer is background too; the
+     shared waiters (`_nameSearch`, `_readArtist`, `getArtistCandidates`) call each caller back under its own flag,
+     and a page joining a queued background request promotes it. Consequence: the page's own post-render work after
+     `completeArtist` (owned-album lookups, collaboration vetting) now also runs as background work.
+     **0.56.11, after a measured regression** (Springsteen opened straight after its search: 18.8 s; the row check's
+     community request went out while the page's MB request waited, the page queued behind it, it timed out, and
+     the 30 s slow backoff refused the page's request -> old MB route): a background job is not SENT while any
+     bucket has a foreground job queued or in flight, or while a foreground job's answer is running (`_netFgBusy`,
+     `$NET_SETTLING`, woken by `_netWake` once the answer has run, even if it dies); a BACKGROUND request's timeout
+     sets `bgBusyUntil` (background only), a foreground one `busyUntil` as before; a 429 from either still holds
+     everything (the community API's rule). What is left: a tap that lands while one background request is out
+     waits for that request (one at a time), never longer, never the slow route.
+  5. **"Other artists with this name" follows the same rule**: an uncounted act shows, its count is asked after;
+     reverses 0.44.5 (Simon then: *"I dont want users getting confused by stuff showing then disappearing"*), which
+     the rule above answers: a list never changes while shown.
+  6. **The Local leg keeps every library artist LMS finds for the typed spelling** (Simon: *"we never added exact
+     search it was always supposed to be fuzzy"*): 0.46.0 narrowed them to the exact name whenever one matched,
+     hiding "Elvis Costello & The Attractions" from "Elvis Costello". Only the fallback spellings' hits (the &/and
+     variant, the ASCII fold, a term probe) are still narrowed; all go through `mergeArtistHits`' relevance gate.
+- **THE SEARCH PAGE IS TOP RESULT, THEN ARTISTS** (0.56.10; `Browse::_searchSections`, `_searchHeader`, pref
+  `layout_search`; Simon, 2026-10-01: *"the top rated (which should be local if they exist plus streaming on one row
+  this is called Top Result. The others should show in rows below called Artists"*, then *"move it all under artists
+  with the other artists with same name first, then ones then the rest"* and *"configured as a split view so the Top
+  result is a tile and the others list or you can make it all tile, like we do on the discography view"*; the star
+  icon was his pick). Each choice is his design; a complaint means make the change, not argue it:
+  1. **Top Result** = the first ranked row (`rankArtistHits`: owned first, so a library match beats an exact
+     unowned name: typing "Bush" with Kate Bush owned and Bush not makes Kate Bush the top result; told to Simon
+     before building). Star icon (`dsc-top_MTL_icon_star.png`, the shared placeholder png, Material draws its own glyph).
+  2. **Artists** = the MusicBrainz same-name acts first (each with its description), then the remaining rows in
+     their ranked order (library first), then the differently spelled MusicBrainz acts. "then ones" was read as
+     "then the library's ones" and stated before building; Simon did not correct it. WHICH acts are listed is
+     unchanged (count 0 dropped, owned dropped by mbid, the act an unowned exact row reaches dropped, 2+ rule).
+  3. **No "Other artists with this name" section** (0.43.0-0.56.9). `PLUGIN_DISCOGRAPHY_SAME_NAME` removed.
+  4. **Layout** (`layout_search`, default `split`): the top result is a one-tile row either way; `split` lists the
+     artists, `tiles` makes them a tile row. Needs the strip-capable Material (`_stripsOn`) like the artist page;
+     elsewhere both headings are ordinary and the setting does nothing. A page with a strip is a LIST in Material
+     (`canUseGrid = false` in the fold, read in the fork), which is what makes `split` a list under a tile.
+  5. **More on the Top Result heading opens that artist.** LMS gives EVERY non-text item a `go` action
+     (Slim/Control/XMLBrowser.pm, the `!$isPlayable && !$touchToPlay` branch, read 2026-10-01), and Material shows
+     More on a strip heading with actions, so it cannot be suppressed; it carries the top row's own itemActions.
+     The Artists heading's More (tiles only) re-asks the search with `item:sect:ARTISTS` and gets the Artists rows
+     alone (the row past `numScrollItems`).
+  6. Nothing on the services or in the library: the "No artists found" line stays, any MusicBrainz acts follow
+     under Artists (no Top Result). The row count and order never depend on the setting (walk-stable).
+  7. **A matched row says which act it opens** (0.56.12; `_stampDisambiguation`, `API::peekArtistMbid`; Simon: *"show
+     the disambiguation when they are matched so the bees says its the 60's garage band etc"*): line2 ends with the
+     MusicBrainz description of the act the row opens, from the same-name list the search already fetches (all of
+     it, before the owned filter). Owned rows by `_ident_mbid` (their page's id); unowned rows by the resolver's
+     cached answer for the name (what a tap opens). An owned row with no tag, or an owned collaboration, gets none:
+     never a guess. Only when the list holds 2+ acts of that name. LAST on line2, after sources and album count, so
+     "Local" survives when a long description is cut (offered to Simon the other way round; he did not ask for it).
+- **A RELEASE MUSICBRAINZ LISTS UNDER THE ARTIST COMES THROUGH, HOWEVER THE SERVICE CREDITS IT** (0.56.13;
+  `Browse::_poolQuery`, `Sources::getCandidates` `query`, `_resolveWithJoints`, `_jointArtists`, `_appendJoint`,
+  `_isMainCredit`, `_mainArtistAs`, `_mainArtistNamed`, Browse's extras `_joint` skip, API fold `$libCanon`; Simon,
+  2026-10-01, on James Yorkston: *"If its in MB as a seperate artist we live with it as such but any that show under
+  his main name should come through. Same for any situation like this"*, then *"lets check this doesn't affect our speed
+  or break other artists"* and *"Should be across all the platforms we support"*). Supersedes `A COLLABORATION CAN MISS
+  ON THE SECOND-NAMED` for releases MB lists under the artist. Each part, with the reason it is safe:
+  1. **The pool is searched under MusicBrainz's name** (the canonical name, `_svcQueryName`-folded; the browsed name
+     is the first retry). MEASURED CAUSE: the pool is keyed by the MB artist but was built from the name the page was
+     opened under; "James Yorkston & The Big Eyes Family Players" resolves (0.47.0 credit head) to James Yorkston and
+     its search found Qobuz's joint artist (2 albums), stored as his pool for 3 days (log 14:36:57 on 0.56.11): every
+     James Yorkston page then matched only the user's 3 owned albums. Exception: a canonical name with no Latin letter
+     and a Latin browsed name keeps the browsed name first (Кино / Kino), as before. No canonical name cached: as
+     before. Both the list page and the detail page use `_poolQuery`, so they build one pool under one name.
+  2. **Joint service artists are fetched beside the artist, on every service** (`_resolveWithJoints`, shared by the
+     Qobuz, TIDAL, Deezer and Spotify adapters): artist-search hits whose name is a joint credit (`_creditParts`) with
+     the artist as one part (`JOINT_MAX` 3), fetched in parallel with the artist's own fetch, waited for at most
+     `JOINT_WAIT` 3 s past it, only once the artist himself is identified. Their albums are marked `_joint`, credited
+     to the artist for the gate, and only MATCH releases MB lists on the page; never "Also on streaming". NOT the
+     declined name-similarity folding (`Duplicate streaming artist entities are NOT`): no entity is merged and nothing
+     is shown that MB does not list under this artist. Field case: "Folk Songs" (Qobuz "James Yorkston & The Big Eyes
+     Family Players"). Measured on Qobuz, and on TIDAL live 2026-10-01 ("James Yorkston & Reporter" +1, "Nick Cave &
+     The Bad Seeds" +71 on Nick Cave); Deezer/Spotify from their plugins' sources (no account on the rig).
+  3. **An album naming the artist as a MAIN artist, not first, is his** (`_mainArtistAs` in the id filter,
+     `_mainArtistNamed` in the render): Qobuz `artists[].roles` "main-artist" (Qobuz's own `_isMainArtist`), TIDAL
+     `artists[].type` MAIN, Spotify every album artist; a FEATURED credit is not. Field case: "My Yoke Is Heavy"
+     (Qobuz: Adrian Crowley + James Yorkston). Deezer's artist-albums items carry no artist list (its albums already
+     take the artist's own name). **Not when the first-named artist already matches the name searched** (0.56.14,
+     `_renderAlbums` `$query`): TIDAL has no "Robert Plant & Alison Krauss", the duo's page settled on Alison Krauss,
+     and her list holds the duo's records credited Robert Plant first; 0.56.13 re-credited them to her and the page
+     matched nothing on TIDAL (measured live 2026-10-01). The first-named credit is kept; the id route (`_creditAs`)
+     only ever fired when it did not match.
+  4. **What stays as it is:** a release MusicBrainz files under a SEPARATE artist ("Moving Up Country": James Yorkston
+     and the Athletes) appears on that artist's page only, not his; that page finds no Qobuz, because Qobuz has no
+     artist of that name (Simon: "we live with it"). Releases not on a service stay hidden by `hide_unmatched`.
+  5. **The folded search row reads MusicBrainz's name when a folded LIBRARY entry carries it** (API fold `$libCanon`):
+     "James Yorkston and friends" (3 albums) + "James Yorkston" (1 VA track) -> the row reads "James Yorkston", still
+     opening the entry that owns the albums. Only a library entry's spelling is used (0.46.5's B-52s rule stands).
+  6. **A duo's own service entry, passed over for one of its members, still counts** (0.56.14; Simon, 2026-10-01,
+     on "Raising Sand": Qobuz files it "under the conjoined artist Robert Plant & Alison Krauss", "the other one is
+     listed as separate artists"; then "go ahead and fix"). Searched as the duo, Qobuz's duo entry backs up 1 MB title
+     and is HELD (0.47.0); the retry under "Robert Plant" backs up 7 and wins; the duo's list, the only one with
+     "Raising Sand", was dropped (Local only on the page since before 0.56.13). Now `_resolveArtist` hands the held
+     entry's albums back with the answer (`$beside`; already fetched to score it, no request added) and
+     `_resolveWithJoints` adds them as a joint artist's (match-only, never extras). ONLY when: not a shared name
+     (`$strict`), the held entry's name IS the name searched, that name is a joint credit (`_creditParts`), and the
+     artist settled on is one of its parts. So 0.47.0's protection stands: a same-name act's coincidental title
+     (Rossini's rapper), a tribute act, or another joint act under a different name never comes back this way.
+  Pinned in `t_rowbatch.pl` §10, `t_netqueue.pl` §15, `t_searchflow.pl` §6, `t_local.pl` §12; 24 mutants, all caught.
+  0.56.14 parts in `t_qobuzjoint.pl` §8-9 (16); 14 mutants, 12 caught, 2 equivalent (a log label; a path where
+  nothing is held yet).
+
 ### A3. DISPROVEN — a review WILL re-derive these from the code; each was measured
 
 **Why this section exists (Simon, 2026-09-19).** A finding that a review "checked and cleared"
@@ -832,8 +963,8 @@ curl -s http://plex:9000/jsonrpc.js -d '{"id":1,"method":"slim.request","params"
 ```
 Discography/
 ├── Plugin.pm       # OPMLBased entry point (tag 'discography', is_app); prefs; canonical `dbg` (API/Browse/Sources delegate); Material custom action REGISTERED once (`_registerMaterialActions`) + old actions.json entry stripped at startup (`_clearMaterialActions`); Settings under WEBUI; registers the `imageproxy/dsc/artist/<name>` artwork handler
-├── Browse.pm       # topLevel ($VAR guard, %lastCtx stash+expand flags+page counts+visibility snapshot); app-root view (_rootView: _coverCollageRow responsive random-album-cover banner, About prose, search section, "Works best with" as ONE strip of plugin tiles (badge + name + tick/cross, role as tooltip) w/ badgeSrc imageproxy normaliser); global artist search (_searchRow type=search item in the app root ONLY; the artist page's Options carries _searchButtonRow `act:search`, which opens _rootView; go action overridden w/ search:__TAGGEDINPUT__ fixedParams -> topLevel search-param dispatch GATED on item_id being absent, so a positional walk still reaches the row's own coderef; _artistSearchView w/ 10-min merged cache, only written when every source settled OK (the row check runs every time); `_distinctTitles` gives a repeated result name invisible word joiners so Material shows each (0.56.4); owned acts split by identity say how many albums they open on; the list is SERVICE-first (streaming + library rows, then the MusicBrainz same-name section; the MusicBrainz-first redo is not in the code, see `THE SEARCH LIST IS MUSICBRAINZ-FIRST`), _searchResultRow name-drills, _mbCandidateRow mbid-drills); grouped list (bio header, Options/type/library-extras sections, Albums / Singles view toggle _viewToggleItem `act:view:<to>` (Singles view = EPs + Singles, a true tab; per-player ctx `view`), sort+Refresh, release sections as tile strips on a strip-capable Material (`header-strip`, `_useStrips`/`_stripsOn`, layout_albums/layout_singles), service badge via row `extid` (`_extid`), _pageSection 30-at-a-time Show more/less, "Also a member of" band links + "Similar artists" name-drill links w/ artist-photo thumbnails, both second-load, similar deduped against bands by _dropBandDupes — Material keys app rows by TITLE, so a repeated name loses a row); artist artwork resolver (artistImageProxy handler for `imageproxy/dsc/artist/<name>`: MAI local files -> MAI online picture w/ Deezer placeholder HEAD probe -> live service photo -> person icon, verdict cached 30d); release detail (review w/ inline expand, version rows w/ Show-other-versions toggle, MB links); _proseRow avatar-column indent; bio/review prose ported from LBF (_cleanBio HTML->structure, _bioParagraphs heading/bullet/paragraph parser, _proseBlock one styled row per block, _proseSection shared collapse/expand shape, _cleanProse the one fetch-side entry point)
-├── API.pm          # Async MusicBrainz (base = mb_base_url pref, mirror-aware _mbBase; EVERY request, MusicBrainz and the community API's `hosted` bucket, through the one `_netGet` queue): artist MBID (library tag first, MB search score>=90; `_nameSearch` shares one `artist:"q"` reply between the resolver, the same-name set and the search), paginated release-group browse (the artist page skips it under 25 groups: `getReleaseGroups(read => 1)` takes the spine from the artist read), url-rels links; the artist page's first list (0.56.7: `_fastSpine` from ListenBrainz `_lbGroups` + the community `_hostedDisco`, `completeArtist` in the background, `promoteCompleted` on a fresh entry; `_pastCap` keeps a Refresh's groups past the cap (0.56.8); `_cmExtra` leaves the community's merged-away ids out; `_officialLater` the bootleg check's rest after the draw (`PREDRAW_RGID_MAX`); `_browseGroups` / `_officialById` the browse and by-id check, shared); filterRowsWithContent (the search's row check, `_rowBatch`: the typed query's reply, then one combined search that also proves pass 1's unproven answers (0.56.6), then the community API by name for the rest (`_hostedByName`, 0.56.5), the resolver only where it cannot decide; proven answers written for the page (`_rememberProven`); counts community API first (`_hostedCount`); then the dead-end/empty-verdict row filter + alias fold, then the 0.51.3 tag attach: a kept row with no artist_id is claimed by its resolved mbid — AFTER the fold, so survivor choice is unchanged; among several tagged contributors the one OWNING the most albums wins, and an id another kept row already carries is never handed to a second row); peekOfficial/warmOfficial + _isOfficial (bootleg filter: the page's groups asked BY ID from the release-group search, `rgid:A OR …`, `RGID_BATCH_MAX` 100 to a request -> {rg=>official?} + {release=>rg} + edition titles, fail-open; its callback says done / 'busy' / 'failed'); peekLocalReleaseMap/warmLocalReleases (release->rg for the owned albums the bootleg check did not place, AFTER the render: one `reid:` OR-search per 50 ids, `REL_BATCH_MAX`, then the per-id lookup for whatever it leaves out); _readArtist (ONE `artist/<id>?inc=aliases+artist-rels+release-groups` read behind warmArtistAliases, warmBandMembers AND the page's spine, fills aliases, MB name, bands, collaboration candidates and, under 25 groups (`ARTIST_RG_LIST_MAX`), the spine, sorted by group id; a caller arriving mid-flight waits on it); _rgEntry/_pruneAliases (one spine entry / the alias prune, shared by the browse and the read); peekBands/warmBandMembers (member-of-band); _vetCollabs (one `inc=artist-rels+release-groups` lookup per candidate: size test + has-releases in one reply); CAA image URLs; caching
+├── Browse.pm       # topLevel ($VAR guard, %lastCtx stash+expand flags+page counts+visibility snapshot); app-root view (_rootView: _coverCollageRow responsive random-album-cover banner, About prose, search section, "Works best with" as ONE strip of plugin tiles (badge + name + tick/cross, role as tooltip) w/ badgeSrc imageproxy normaliser); global artist search (_searchRow type=search item in the app root ONLY; the artist page's Options carries _searchButtonRow `act:search`, which opens _rootView; go action overridden w/ search:__TAGGEDINPUT__ fixedParams -> topLevel search-param dispatch GATED on item_id being absent, so a positional walk still reaches the row's own coderef; _artistSearchView w/ 10-min merged cache, only written when every source settled OK (the row check runs every time); `_distinctTitles` gives a repeated result name invisible word joiners so Material shows each (0.56.4); owned acts split by identity say how many albums they open on; the list is SERVICE-first, laid out by `_searchSections` as Top Result + Artists (MusicBrainz same-name acts first, then the other rows, then other spellings; `layout_search` split / all tiles on a strip-capable Material; the MusicBrainz-first redo is not in the code, see `THE SEARCH LIST IS MUSICBRAINZ-FIRST`), _searchResultRow name-drills, _mbCandidateRow mbid-drills); grouped list (bio header, Options/type/library-extras sections, Albums / Singles view toggle _viewToggleItem `act:view:<to>` (Singles view = EPs + Singles, a true tab; per-player ctx `view`), sort+Refresh, release sections as tile strips on a strip-capable Material (`header-strip`, `_useStrips`/`_stripsOn`, layout_albums/layout_singles), service badge via row `extid` (`_extid`), _pageSection 30-at-a-time Show more/less, "Also a member of" band links + "Similar artists" name-drill links w/ artist-photo thumbnails, both second-load, similar deduped against bands by _dropBandDupes — Material keys app rows by TITLE, so a repeated name loses a row); artist artwork resolver (artistImageProxy handler for `imageproxy/dsc/artist/<name>`: MAI local files -> MAI online picture w/ Deezer placeholder HEAD probe -> live service photo -> person icon, verdict cached 30d); release detail (review w/ inline expand, version rows w/ Show-other-versions toggle, MB links); _proseRow avatar-column indent; bio/review prose ported from LBF (_cleanBio HTML->structure, _bioParagraphs heading/bullet/paragraph parser, _proseBlock one styled row per block, _proseSection shared collapse/expand shape, _cleanProse the one fetch-side entry point)
+├── API.pm          # Async MusicBrainz (base = mb_base_url pref, mirror-aware _mbBase; EVERY request, MusicBrainz and the community API's `hosted` bucket, through the one `_netGet` queue): artist MBID (library tag first, MB search score>=90; `_nameSearch` shares one `artist:"q"` reply between the resolver, the same-name set and the search), paginated release-group browse (the artist page skips it under 25 groups: `getReleaseGroups(read => 1)` takes the spine from the artist read), url-rels links; the artist page's first list (0.56.7: `_fastSpine` from ListenBrainz `_lbGroups` + the community `_hostedDisco`, `completeArtist` in the background, `promoteCompleted` on a fresh entry; `_pastCap` keeps a Refresh's groups past the cap (0.56.8); `_cmExtra` leaves the community's merged-away ids out; `_officialLater` the bootleg check's rest after the draw (`PREDRAW_RGID_MAX`); `_browseGroups` / `_officialById` the browse and by-id check, shared); filterRowsWithContent (the search's row check; since 0.56.9 the search runs it `known`: decided from the cache, `_rowKey` / `_rememberRow`, the full check after the reply as background work, `$NET_BG` inherited through answers, `_netPromote`; `_rowBatch`: the typed query's reply, then one combined search that also proves pass 1's unproven answers (0.56.6), then the community API by name for the rest (`_hostedByName`, 0.56.5), the resolver only where it cannot decide; proven answers written for the page (`_rememberProven`); counts community API first (`_hostedCount`); then the dead-end/empty-verdict row filter + alias fold, then the 0.51.3 tag attach: a kept row with no artist_id is claimed by its resolved mbid — AFTER the fold, so survivor choice is unchanged; among several tagged contributors the one OWNING the most albums wins, and an id another kept row already carries is never handed to a second row); peekOfficial/warmOfficial + _isOfficial (bootleg filter: the page's groups asked BY ID from the release-group search, `rgid:A OR …`, `RGID_BATCH_MAX` 100 to a request -> {rg=>official?} + {release=>rg} + edition titles, fail-open; its callback says done / 'busy' / 'failed'); peekLocalReleaseMap/warmLocalReleases (release->rg for the owned albums the bootleg check did not place, AFTER the render: one `reid:` OR-search per 50 ids, `REL_BATCH_MAX`, then the per-id lookup for whatever it leaves out); _readArtist (ONE `artist/<id>?inc=aliases+artist-rels+release-groups` read behind warmArtistAliases, warmBandMembers AND the page's spine, fills aliases, MB name, bands, collaboration candidates and, under 25 groups (`ARTIST_RG_LIST_MAX`), the spine, sorted by group id; a caller arriving mid-flight waits on it); _rgEntry/_pruneAliases (one spine entry / the alias prune, shared by the browse and the read); peekBands/warmBandMembers (member-of-band); _vetCollabs (one `inc=artist-rels+release-groups` lookup per candidate: size test + has-releases in one reply); CAA image URLs; caching
 ├── Sources.pm      # Source engine: Q/T/D adapters (artist-FIRST candidate fetch, per-adapter query_enc, shared _renderAlbums + _albumArray envelope unwrap), Local pseudo-source (sync albums query, db:album.id play; localAlbums resolves IDENTITY FIRST — localArtistsByMbid/localArtistIdsByMbid read the library's own Contributor.musicbrainz_id tag, ALL matching contributors, before the name ladder; an explicit artist_id still outranks both UNLESS it performs on no album and the page builder opts in via `Browse::_idFallback` — then tag, then name, name never on a shared-name page); localTracks (the track-link pool: Various Artists compilation tracks ONLY, performance roles checked on the per-role ids from `tags:S` because `titles` ignores role_id, same empty-id fallback gated on owning no album), matcher (fleet-synced), matchesFor/peekPool+peekMatches/claimedLocalIds, LL favurl handshake; global artist search (searchArtists parallel per-service artist-type legs + Local CLI leg, cb(\%bySvc, \%failed) — the 2nd arg names services that ERRORED/TIMED OUT, since a failure settles as an empty list and callers must not persist an incomplete set; mergeArtistHits pure norm-keyed dedupe/rank + relevance gate vs the typed query, rows carry the service's own artist photo); artistImage/_svcArtistImage/isPlaceholderImage (live per-service artist photo via each plugin's OWN url builder, priority order; an exact-name photo ends the walk, a token-subset photo is only a fallback when NO service knows the exact name, and an exact entity without a photo vetoes it; Deezer placeholders in both forms, md5('') and the empty `/images/artist//` hash; 30d cache); serviceStatus takes an OPTIONAL pre-built adapters list (omitted = probe); randomAlbumCovers (app-root banner, sort:random — measured ~20ms/2900 albums, cheap); splitOwnedByIdentity (one search result per owned MusicBrainz identity, 0.50.0; a same-name identity found only on the main act's albums merges into it, 0.56.5, via `_albumsFor`)
 ├── Settings.pm     # Web settings: source priorities (detection), view options (type checkboxes->CSV), release page, integration
 ├── DB.pm           # the plugin's OWN SQLite store, <cachedir>/discography.db (takes over the file LMS kept for the old cache namespace; migration 1 drops LMS's `cache` table). store(CACHE_VERSION) answers get/set/remove like Slim::Utils::Cache, so no call site changed. Tables: kv (every cache family; emptied when CACHE_VERSION changes, as the LMS namespace was), mbid (artist name -> artist mbid `dsc:mbid:`, owned release -> release group `dsc:rel2rg:`; NOT emptied by a build), artist (one row per artist mbid: canonical name `dsc:mbname:` + aliases `dsc:alias:`, each with its own key version, time and expiry — LBF's shape; NOT emptied by a build), meta (cache_version); all routed by key prefix. expires_at is an absolute epoch computed in Perl, 0 = never. Expired rows swept at open AND every 6h on a timer (PFR's kvSweep lesson); rows of an old key version in the kept tables retired at open (keepCurrent, fed by API's own key builders). Degrade-never-die. Suite: tools/t_db.pl
@@ -1469,7 +1600,303 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
-### 0.56.8 (2026-10-01) — a Refresh keeps the groups past MusicBrainz's 600 cap; no size ceiling; the community's merged-away ids left out; the bootleg check before the draw bounded — BUILT (sha 6b4518bc; rebuilt at the same version, never installed), INSTALLED (2026-10-01), CHECKED LIVE, NOT committed; composer pages emptied (PARKED with classical, Simon 2026-10-01)
+### 0.56.16 (2026-10-01) — Browse.pm and Sources.pm log under plugin.discography — BUILT (sha 9c2dcd11), INSTALLED + CHECKED LIVE 2026-10-01
+- **Source (Simon):** *"yes fix"* (the logger finding in the 0.56.15 live check, below).
+- **What changed:** `Browse.pm` and `Sources.pm` make their logger with the FUNCTION form
+  `logger('plugin.discography')`, as API.pm and DB.pm always did, instead of `Slim::Utils::Log->logger(...)`, which
+  (LMS's `logger` being a function that shifts the category) filed both files' lines under "Slim::Utils::Log" and
+  dropped everything below WARN. No behaviour change; SingleFlight's `already in flight -- waiting on it` (info)
+  can now appear at Discography's DEBUG level, and these files' warnings are filed under Discography.
+- **Tests:** new `tools/t_logger.pl` (6: the real API/Sources/Browse ask for plugin.discography, none for
+  "Slim::Utils::Log", SingleFlight is handed a Discography logger, no module's source has the method form). Each
+  logger line put back to the method form is caught (3 mutants, scratchpad `mut5616.py`). **56 suites, 2,097
+  assertions, 0 failures**; `syntax_check.sh` clean. zip sha1 `9c2dcd110470c8c244b681c42302f5bc1033a14f`, 37
+  entries; CACHE_VERSION 0.56.16.
+- **LIVE (2026-10-01 17:27):** two opens of Talk Talk (not opened before) 0.3 s apart, both `pool is cold -
+  awaiting` -> `candidates 'dsc:cand:5:0.56.16:qobuz:mb:a74f43e4...|Talk Talk|0|51' already in flight -- waiting on
+  it (2 waiting)`, the same for TIDAL and Spotify, then ONE `candidates <svc>/'Talk Talk'` line per service; both
+  pages 3.6-3.9 s. So 0.56.15's coalescing is now confirmed in the log too, not only by its timing.
+- **Also confirmed by Simon the same day ("both parts of 2 work as planned"):** 0.56.12's MusicBrainz description on
+  matched search results, and 0.56.10's all-tiles search layout (Search layout = All tiles, in Material).
+
+### 0.56.15 (2026-10-01) — "Refresh matches" clears the pool the page reads; one fetch per pool at a time (SingleFlight adopted) — BUILT (sha ee796fdb), INSTALLED 2026-10-01 17:12 (log `store emptied for version 0.56.15`), CHECKED LIVE
+- **Source (Simon):** *"so whats the fix for thos"* (the two pre-existing gaps found in the 0.56.13 live check), then
+  *"yes fix"*.
+- **1. "Refresh matches" (release page) and `clearcache artist_id:`.** Since 0.43 a page's streaming pool is keyed by
+  the ARTIST's mbid. The release page's "Refresh matches" row passed only the name (`passthrough => [{ artist }]`),
+  so `clearCandidates` cleared the name-keyed copy nothing reads. Now it passes `mbid => $pass->{mbid}`, the same
+  mbid the page's own `getCandidates` uses. And `API::clearArtistCache` now takes the LIBRARY TAG mbid
+  (`_libraryTagMbid`) after an explicit mbid and BEFORE the name's cached one, as `getArtistMbid` resolves ("Library
+  tag wins"): measured live, `clearcache artist_id:154055` (Radiohead) cleared only name keys and the next open read
+  `tidal:mb:a74b1b7f...: HIT`. The artist page's "Refresh discography" passes its mbid and is unchanged.
+- **2. One fetch per pool at a time** (`Sources::_candFlight`, `getCandidates`). Measured live: two opens 0.7 s apart
+  both missed the TIDAL pool and both fetched (`candidates Tidal/'Madness': 76` twice, 13 ms apart). A second
+  caller for a pool being fetched now WAITS for that fetch. **Done with the fleet's `SingleFlight.pm`** (first
+  Discography use; `Discography/SingleFlight.pm` is LBF's file with only the package line and log category changed;
+  `LMS-ListenBrainz-New-Releases/tools/singleflight_sync_check.py` reports DSC IN SYNC; DSC is not in its ADOPTED
+  set, as its own hand-rolled guards remain). Details: loaded at first use (a top-level `use` of a sibling dies in
+  the suites), unloadable = no coalescing, as before; the flight key is the pool key plus the name searched,
+  strictness, spine size and aliases, so only identical fetches share; a forced fetch (Refresh) never waits on or
+  holds a flight; every caller (owner included) is answered through the registry with its OWN copy of each item;
+  the service timeout (SVC_TIMEOUT 20 s) still settles a hung fetch and the registry's watchdog (60 s) backs it. No
+  background-flag carry is needed: a service's answer runs from the event loop, where `$NET_BG` is always 0, so a
+  waiter continues exactly as from a fetch of its own. `syntax_check.sh` now compiles `SingleFlight.pm` too.
+- **Tests:** `t_extid.pl` §5 (2: the detail page's Refresh matches row clears with the artist's mbid);
+  `t_db.pl` §11c (5: tag mbid used, wins over the name's, explicit mbid still wins, untagged id falls back to the
+  name); `t_qobuzjoint.pl` §10 (13: through the real getCandidates - one fetch for two callers, both answered once,
+  same pool, own copies, claim released, a forced fetch fetches, another search name does not share, a fetch that
+  never answers answers both empty, an adapter that dies answers). 8 mutants, all caught (scratchpad `mut5615.py`).
+  **55 suites, 2,091 assertions, 0 failures**; `syntax_check.sh` clean; sync check OK. zip sha1
+  `ee796fdbe19574f209ebc6252f017fe094466c7e`, **37 entries** (+ SingleFlight.pm); CACHE_VERSION 0.56.15.
+- **LIVE (2026-10-01, `live5615.py`):** "Refresh streaming matches" on Radiohead's "A Moon Shaped Pool" -> log
+  `clearCandidates: ...qobuz:mb:a74b1b7f... [HIT->gone]` (the pool the page reads; before, only name keys).
+  `clearcache artist_id:154055` -> reply mbid `a74b1b7f...`, mb keys cleared. Coalescing: two opens of Cocteau Twins
+  (not opened before, services' own caches cold) 0.3 s apart, both `pool is cold - awaiting` (17:16:33.25, 34.17) ->
+  ONE `candidates <svc>/'Cocteau Twins'` line per service, both pages rendered within 30 ms of TIDAL landing (36.70,
+  36.73), no `rendering anyway`. The registry's own `already in flight -- waiting on it` line did NOT appear: see the
+  next item. Two earlier attempts could not overlap (Kraftwerk: the second request reached topLevel 12.3 s late,
+  after a community-API timeout; Radiohead after Refresh matches: the services answered from their plugins' caches in
+  15 ms).
+- **FOUND WHILE CHECKING, PRE-EXISTING SINCE THE FIRST IMPORT (8edc2b2, 2026-07-09): `Browse.pm` and `Sources.pm` make
+  their logger as `Slim::Utils::Log->logger('plugin.discography')`.** LMS's `logger` is a plain FUNCTION
+  (`sub logger { my $category = shift; return Slim::Utils::Log->get_logger($category) }`, slimserver 9.1
+  Slim/Utils/Log.pm:281), so the method call makes the category the CLASS NAME, "Slim::Utils::Log". Those two files'
+  warnings/errors are filed under that name and anything below WARN is dropped whatever the Discography log level -
+  which is why SingleFlight's info line (it is handed Sources' `$log`) never shows. API.pm and DB.pm use the function
+  form `logger('plugin.discography')` and are right. Neither file logs below WARN itself (all its debug goes through
+  `Plugin::dbg`), so nothing was lost before SingleFlight. FIXED in 0.56.16.
+
+### 0.56.14 (2026-10-01) — Robert Plant & Alison Krauss: the duo's own Qobuz entry, and the TIDAL re-credit regression — BUILT (sha 1abd4b4f), INSTALLED + CHECKED LIVE 2026-10-01
+- **Source (Simon, after the 0.56.13 live check):** *"I cant see a match to Qobuz fro Raising the Roof from my local
+  files which is tagged as the solo artists but in Qobuz and MB its one artist"*; *"its under the conjoined artist
+  Robert Plant & Alison Krauss for Raising Saind the other one is listed as sepereate arists"*; *"I see them under
+  Both artists on Tidal, go ahead and fix"*.
+- **Measured (live, debug log, clearcache by mbid then a rebuild):** library 155064 "Robert Plant" holds only "Raising
+  Sand" (album artists "Robert Plant, Alison Krauss", 155064 + 155065), tagged with the DUO's mbid 38eb4af8, so the
+  page is MB's duo. Qobuz: `'Robert Plant & Alison Krauss' corroborates only 1 spine title(s) - holding it`, then
+  `retrying MB alias 'Robert Plant'` -> pool = Robert Plant solo (35157), 42 albums; "Raise the Roof" + 6 singles
+  match, "Raising Sand" Local only (the same in the 0.56.12 baseline: 2 tiles, 1 Qobuz). TIDAL: no duo artist;
+  settled on Alison Krauss (6602); TIDAL's own search credits the duo's records Robert Plant first; pool lines read
+  `Alison Krauss - When the Levee Breaks`: re-credited by 0.56.13's `_mainArtistNamed`, so nothing matched.
+- **What changed:** A2 `A RELEASE MUSICBRAINZ LISTS UNDER THE ARTIST COMES THROUGH` item 3 (the first-named credit
+  is kept when it already matches the name searched; `_renderAlbums` takes `$query`, the four render wrappers and
+  adapters pass it) and new item 6 (`_resolveArtist` `$held`/`$answer`/`$beside`, `_resolveWithJoints` `@dup`). No
+  request added on any path; no change to which service artist is chosen.
+- **Tests:** `t_qobuzjoint.pl` §8 (12: the duo passed over keeps its album, joint-marked, credited to the member, no
+  extra fetch; controls: shared name, a non-joint held entry (Rossini), a member not of the duo, a tribute act under
+  another name, a strong duo entry, nothing better) and §9 (4: TIDAL first-named kept, with and without lined-up ids;
+  the settled artist's own album; the second-main-artist case unchanged). Two of my own fixtures were wrong on the
+  first run (an index past the list; `_norm` strips brackets so "Raising Sand (Live)" scored as "Raising Sand") and
+  one control passed for the wrong reason (its entry was never picked) - replaced by the tribute act, which is.
+  14 mutants (scratchpad `mut5614.py`): 12 caught, 2 equivalent (`_jointOf` only labels the log line, the credit is
+  overwritten; `$answer` on the first strong path has nothing held). **55 suites, 2,071 assertions, 0 failures**
+  (t_hitmakers.pl prints TAP, 8/8); `syntax_check.sh` clean. zip sha1 `1abd4b4f7f4c546fde8f88069f87ec7731c813d8`,
+  36 entries; CACHE_VERSION 0.56.14.
+- **LIVE (2026-10-01, Qobuz + TIDAL on):** Robert Plant page: "Raising Sand" Local/Qobuz/Tidal (was Local only),
+  "Raise the Roof" Qobuz/Tidal; log `Qobuz: 'Robert Plant & Alison Krauss' passed over for 'Robert Plant' - its own
+  albums kept beside`, `match 'Raising Sand' ...: Local=1, Qobuz=1, Tidal=1`; TIDAL's pool now reads `Robert Plant -
+  Raise The Roof`. `regress_after0.56.14.out` against `regress_after0.56.13.json`: NO tile and NO Qobuz match lost on
+  any of the 18 visits; JY 11 Qobuz / 12 TIDAL on every entry. New tiles are TIDAL-only releases and releases filled
+  in by the page's background completion, which the settled read now waits for (`regress.py` sleeps 10 s after
+  `wait_idle`); the 0.56.13 TIDAL check had the same counts (B-52s 15, Kraftwerk 10, Nick Cave 28), so none is from
+  this build. Cold opens 1.5-4.7 s, Radiohead 5.7 s (it was 6.6 s on 0.56.13 and 0.5 s re-opened: network).
+
+### 0.56.13 (2026-10-01) — James Yorkston: the pool built under the wrong name, joint artists and co-credits on every service — BUILT (sha 8ad0da28), INSTALLED + CHECKED LIVE (Qobuz and TIDAL) 2026-10-01; its one regression (Robert Plant on TIDAL, below) FIXED in 0.56.14
+- **Source (Simon):** *"James Yorkston seems to be not working as it should we are missing lots of his albums we seen
+  no Qobuz ones at all"*; then *"it also shows James Yorkston and friends and not just James Yorkston ... I only saw my
+  own 3 albums for a number of searches ... If its in MB as a seperate artist we live with it as such but any that show
+  under his main name should come through. Same for any situation like this"*; *"Yes, but lets check this doesn't
+  affect our speed ot break other artists"*; *"Should be across all the platforms we support"*.
+- **Measured (live, debug log):** his visit at 14:37:24 (0.56.11) read a Qobuz pool of 2 albums for James Yorkston
+  (`pool: Local=3, Qobuz=2` -> NO MATCH everywhere). Built at 14:36:57 by a page opened as "James Yorkston & The Big
+  Eyes Family Players" (resolved to his mbid): `candidates Qobuz/'James Yorkston & The Big Eyes Family Players': 2 ALL:
+  ... Folk Songs; ... Mary Connaught & James O'Donnell`. 0.56.12's install cleared it (version in the pool key).
+  Cold-built under his own name the pool is 45 albums, 9 of 10 shown releases with Qobuz. Of MB's 17 albums and
+  compilations: 11 are not on Qobuz at all (hidden, correct); "Folk Songs" under a Qobuz joint artist; "My Yoke Is
+  Heavy" credited Adrian Crowley first; "Moving Up Country" / "Just Beyond the River" MB files under "James Yorkston
+  and the Athletes" (a separate MB artist - left, Simon's rule), whose page finds no Qobuz.
+- **What changed:** A2 `A RELEASE MUSICBRAINZ LISTS UNDER THE ARTIST COMES THROUGH` (5 items).
+- **Baseline before install (scratchpad `regress.py`, `regress_base0.56.12.json`, `regress_base.out`):** 18 page
+  visits on 0.56.12, each cleared then opened cold and again settled. JY joint name first 4 tiles / 1 Qobuz, JY right
+  after 2 / 1 (the bug reproduced), JY cold 10 / 9; the 14 controls cold 3.1-6.3 s (Bruce Springsteen 59/59, Fleetwood
+  Mac 46/45, Madness 29/24, Radiohead 14/11, Kraftwerk 9/7, The Bees 4/4, Sonic Boom 7/5, Panda Bear 8/7, Robert Plant
+  2/1, The B-52s 12/12, Nick Cave 20/10, Nick Cave & the Bad Seeds 26/25, Air 10/10, Elvis Costello 27/24).
+- **Tests:** new `t_qobuzjoint.pl` (39: Qobuz credits, joint fetch, which names are joint, nothing joint unidentified,
+  the bounded wait, the pool's search name, and the same on TIDAL / Deezer / Spotify through the real adapters on fake
+  APIs in their sources' shapes); `t_detailshared.pl` §6 (8: `_poolQuery` cases + the detail page's handoff);
+  `t_chain.pl` §10 (2: the artist page's handoff, with a player); `t_extras.pl` C1 (4: no joint album in extras, each
+  service); `t_fold.pl` (the James Yorkston label flipped to the new rule). 19 mutants of the new code, all caught
+  (three missed the first run: a joint credit not naming the artist, the id route under another spelling, and a
+  mis-aimed pattern; tests added). **55 suites, 2,055 assertions, 0 failures**; `syntax_check.sh` clean. zip sha1
+  `8ad0da28a521ee66e34e32dd5b901de8c059e6b9`, 36 entries; CACHE_VERSION 0.56.13.
+- **LIVE, Qobuz only (TIDAL still off in DSC's own priority at the time; `regress_after0.56.13.out`):** the JY
+  sequence now 11/11 Qobuz on EVERY entry (joint name first was 4/1, right after 2/1, "and friends" 3/0), all 10 albums
+  + "Roaring the Gospel", incl. "Folk Songs" and "My Yoke Is Heavy". No page lost a tile; four GAINED real co-credit
+  releases: Sonic Boom "A Peace of Us", Nick Cave "White Lunar" + "Galleon Ship", Elvis Costello "Wise Up Ghost" (The
+  Roots) + "For the Stars" (von Otter). Cold times within noise or faster (Springsteen 6.0 -> 3.8 s, Fleetwood Mac 6.3
+  -> 5.0 s) except Radiohead 4.4 -> 6.6 s: its log shows no joint lookup, re-opened at 0.5 s - network. Search
+  "James Yorkston" reads "James Yorkston" (opens 153749, "and friends").
+- **LIVE, TIDAL (first live TIDAL check of this plugin; `tidal5613.out`):** TIDAL's lookup verified - "is ambiguous"
+  picks the right act every time (Madness 9130=55 spine titles vs 0/0, Sonic Boom 4145872=16 vs 0/0/0, The Bees
+  10616=10, Air 9101=24); joint artists fetched ("James Yorkston & Reporter" +1, "Nick Cave & The Bad Seeds" +71 on
+  Nick Cave, The Bees +5 from three joint names); the id filter engages on TIDAL (dropped lists name Various Artists
+  and other acts' records, nothing MB lists). Matched: JY 12/12 + TIDAL-only "La Magnifica", Kraftwerk 10/10, Air
+  10/10, Radiohead 11, Madness 24/24, The Bees 4/4, Nick Cave 18, NC&BS 25 (+1 TIDAL-only), Sonic Boom 7 (+ "MAPS"
+  TIDAL-only), Panda Bear 7, Springsteen 62/63, Fleetwood Mac 49 (+5 TIDAL-only), Elvis Costello 25, B-52s 11. The
+  Qobuz-only tiles checked in TIDAL's own search are albums TIDAL does not carry (The Juliet Letters, Funplex, Mondo
+  Rock & Roll, The Boston Box, Transmission Impossible); No Nukes is on TIDAL titled "Bruce Springsteen & The E Street
+  Band - The Legendary 1979 No Nukes Concerts" (artist in the TITLE - upstream data). NOT proven: whether TIDAL's
+  `type` MAIN path itself fired ("My Yoke Is Heavy" matched on TIDAL, but the log cannot say which route kept it).
+- **TEST TRAP (cost one false alarm):** `wait_idle` watches MB/CM/LB hosts only, NOT the services, so a re-open
+  "once settled" can still precede a service's background pool fetch; 7 pages read 0 TIDAL that way and all matched
+  on the next read. A page with some pools warm renders without the missing one and fetches it in the background
+  (no await), and each open with the pool still missing starts its OWN fetch (no coalescing; two opens 0.7 s apart
+  fetched TIDAL twice - pre-existing, not 0.56.13).
+- **REGRESSION (0.56.13, TIDAL) - FIXED in 0.56.14:** Robert Plant's page (library 155064 holds only "Raising Sand", tagged with
+  the DUO's mbid, so the page is MB's "Robert Plant & Alison Krauss") matches NOTHING on TIDAL: Raise the Roof, When
+  the Levee Breaks etc. are Qobuz-only. TIDAL has no duo artist; searched as "Robert Plant & Alison Krauss" (part 1)
+  it settles on Alison Krauss (6602); the duo's records come back in her list credited Robert Plant FIRST (TIDAL's
+  own search: "Raise The Roof (Deluxe Edition) / Robert Plant", "When the Levee Breaks / Robert Plant"), are kept by
+  the id filter's name rule (Robert Plant is in the query), and then `_mainArtistNamed` (part 3) RE-CREDITS them to
+  "Alison Krauss" because she is a MAIN artist on them - pool line `Alison Krauss - When the Levee Breaks`. The page
+  gates on "Robert Plant", so nothing matches. 0.56.12 searched "Robert Plant" and kept his first credit. Proposed
+  (not built, awaiting Simon): re-credit only when the album's first-named artist does not already match the name
+  the list was searched under (the `_creditAs` id route already only fires then).
+- **Also found, PRE-EXISTING (since 0.43.x) - BOTH FIXED in 0.56.15:** the release page's "Refresh matches" row passes only the artist NAME to
+  `clearCandidates`, and pools are MB-keyed whenever the page has an mbid, so it never clears the pool the page reads
+  ("Refresh discography" on the artist page does). And CLI `clearcache artist_id:` cannot recover the mbid for an
+  artist resolved from a library tag (Radiohead: only name keys cleared, next open read `tidal:mb:...: HIT`), so a
+  "cold" regress visit after the first is cold for MB-free layers only.
+
+### 0.56.12 (2026-10-01) — a matched search result says which act it is (MusicBrainz description) — BUILT (sha 44004362), INSTALLED (2026-10-01 14:45, log `store emptied for version 0.56.12`), descriptions CHECKED by Simon 2026-10-01
+- **Source (Simon, on installing 0.56.11):** *"is it possible to show the disambiguation when they are matched so the
+  bees says its the 60's garage band etc, you see this before any matches so would be good for a user to see it even
+  on a match."* Then *"yes build"*.
+- **Measured first:** MusicBrainz has 10 acts called The Bees; Simon's three owned ones are the Isle of Wight band
+  (276cfa71), the mid-1960s Covina garage band (0790a093) and the 1960s Los Angeles garage band (dd11eecd), all in
+  the search's own same-name list (limit 15), which the owned filter then drops. So no request is added.
+- **What changed:** A2 `THE SEARCH PAGE IS TOP RESULT, THEN ARTISTS` item 7. `Browse::_stampDisambiguation` (run on
+  the full candidate list as soon as it arrives), the result rows now built inside `$layout` so they carry it,
+  `_searchResultRow` appends `_disamb`; `API::peekArtistMbid` (cache only).
+- **Tests:** `t_searchflow.pl` §9 (12, Simon's Bees: each owned act's description after its sources and count, none
+  for an act MB gives none, a row whose act is not listed, a unique name, the owned acts still not re-listed, an
+  unowned one still listed, tagged rows never looked up by name, an unowned row by the resolver's answer, an
+  untagged owned row and an owned collaboration get none, a control with no list). 9 mutants, all caught (one
+  survived the first run: the collaboration; test added). **54 suites, 2,002 assertions, 0 failures**;
+  `syntax_check.sh` clean. zip sha1 `440043627b4c1c1c4d569abf02b3911bb909bfae`, 36 entries; CACHE_VERSION 0.56.12.
+- **Live check owed:** "The Bees" shows the three owned acts with their descriptions; Madness / Air top results
+  carry theirs; Radiohead (one MB act) unchanged.
+
+### 0.56.11 (2026-10-01) — a page opened straight after a search no longer waits on the search's background check — BUILT (sha ad178d22), INSTALLED + CHECKED LIVE (2026-10-01)
+- **Source:** the 0.56.10 live check's regression (Springsteen 18.8 s straight after its search, above); Simon:
+  *"lets fix it"*. A2 `THE SEARCH DOES NOT WAIT FOR ITS ROW CHECK` item 4.
+- **Two rules in the network queue (API.pm):** (1) a background job is not sent while any bucket has a foreground job
+  queued or in flight, or while a foreground job's answer runs (`_netFgBusy`, `$NET_SETTLING`; `_netAnswer` runs
+  every answer, ok / error / watchdog, under the job's flag and wakes held work after it, `_netWake`; the fail-at-once
+  path does the same). The answer test is needed because the slot is freed BEFORE the answer runs and the page's
+  next request is queued BY that answer: the first build without it still let the background request take the
+  community slot (caught by the replay test). (2) A background request's timeout holds background work only
+  (`bgBusyUntil`; `_netNoteSlow($b, $bg)`); a 429 still holds everything.
+- **Tests:** `t_netqueue.pl` §16 (24): the measured sequence replayed step by step; a background request already out
+  that times out lets the page's request go, the hold background-only, background failFast failed meanwhile and
+  the rest waiting it out; the same after the watchdog; controls (a page timeout and a background 429 still hold the
+  page); a failed-at-once page request and an answered one wake work held elsewhere; a page answer's next request on
+  the same host goes first; background work a page answer starts waits for the page's next request (both paths);
+  background work alone runs side by side. 18 mutants of the fix, all caught (three survived the first run: the
+  answer hold and the in-flight background flag; tests added). 0.56.9's 24 still caught (3 re-pointed to the moved
+  code). **54 suites, 1,990 assertions, 0 failures**; `syntax_check.sh` clean. zip sha1
+  `ad178d22cec477e9eca51fb31ac3c11f83ee796d`, 36 entries; CACHE_VERSION 0.56.11.
+- **LIVE CHECK 2026-10-01 (scratchpad `live5611.py/.out`):** search then the top result opened at once: Bruce
+  Springsteen page **3.01 s** (0.56.10: 18.8 s), the log showing "mb holding background work - a page has a request
+  waiting or out" twice and the page's community list sent with LB at +2.86; Neil Young page 4.14 s (one background
+  MB request already out cost one 1.1 s MB gap, the stated residual). Background checks settled 24-55 s later.
+
+### 0.56.10 (2026-10-01) — the search page: Top Result, then Artists; split or all-tiles layout — BUILT (sha ae87f9ac), INSTALLED (2026-10-01, Simon: "looks good"), CHECKED LIVE except one REGRESSION (tap after a search, below; FIXED in 0.56.11); carries 0.56.9 (never installed)
+- **Source (Simon, before installing 0.56.9):** *"We put the top rated (which should be local if they exist plus
+  streaming on one row this is called Top Result. The others should show in rows below called Artists."* Then *"I
+  think we can move it all under artists with the other artists with same name first, then ones then the rest. I
+  also want this to be able to be configured as a split view so the Top result is a tile and the others list or you
+  can make it all tile, like we do on the discography view."* And on the star: *"I like that idea"*.
+- **What changed:** A2 `THE SEARCH PAGE IS TOP RESULT, THEN ARTISTS`. `_withMbCandidates` collects the same-name and
+  other-spelling acts and every exit lays out through `_searchSections`; `_searchHeader` makes a heading a
+  `header-strip` with a param-addressed action; `topLevel`'s search dispatch passes `item` through
+  (`_artistSearchView`'s `$part`). New pref `layout_search` (`split` | `tiles`, Settings radio, validated like the
+  other layouts); strings `TOP_RESULT`, `ARTISTS_HDR`, `LAYOUT_SEARCH(_DESC)`, `LAYOUT_SPLIT`, `LAYOUT_ALL_TILES`;
+  `SAME_NAME` removed; new placeholder icon `dsc-top_MTL_icon_star.png` (zip now 36 entries).
+- **Verified before building (read, not seen on screen):** the rig serves Material 6.4.10.8 (strip-capable, from
+  `material.min.js?r=`); the fork's fold makes a page with a strip a list (`canUseGrid = false`); LMS's XMLBrowser
+  gives every non-text item a `go` action, so a strip heading always shows More (hence Top Result's opens the artist).
+- **Tests:** `t_searchflow.pl` §8 (19: the order, no old heading, the star, no strips -> no tile rows and the setting
+  inert, split, all tiles, both Mores, the same rows in every layout, the More's rows, one result, nothing found,
+  the covered act, the dispatch and its control); `t_settings.pl` §7 (+5: saved, unknown and missing keep the value,
+  both radios on the page). 21 mutants of the new code, all caught. **54 suites, 1,966 assertions, 0 failures**;
+  `syntax_check.sh` clean. zip sha1 `ae87f9ac279450495dce83bbb20fdfddda40b993`, 36 entries; CACHE_VERSION 0.56.10.
+- **LIVE CHECK 2026-10-01 (rig over HTTP, debug on for the run and restored; scratchpad `live5610.py/.out`,
+  `tap5610.txt`):** first searches 0.91-1.13 s (Elvis Costello 0.97, Tom Petty 0.91, Fleetwood Mac 0.95, Pearl Jam
+  1.13; were 6.0-13.5 s), background check settled 10.9-13.3 s later; the same searches again 0.12-0.15 s with the
+  junk gone (Tom Petty 11 artists -> 1, Fleetwood Mac 9 -> 1, Pearl Jam 5 -> 1). "Elvis Costello" lists The
+  Attractions as Local. British Sea Power top result Local · Qobuz. Layout as built: Top Result `header-strip` with
+  the top row's go params, Artists `header-basic`; Madness / Air / The Bees list the MB same-name acts first (The
+  Bees: Simon's two other owned 1-album acts now follow SEVEN MB-only acts, as the order he gave puts them). The
+  Artists More route (`search:Madness item:sect:ARTISTS`) answers the 14 artists alone in 0.18 s. NOT checked: the
+  All tiles view, because the rig now refuses EVERY `pref` command over JSON-RPC (connection closed with no reply,
+  `plugin.state:` too; not this build) - left to Simon in Material.
+- **REGRESSION (0.56.9's background check), measured:** Bruce Springsteen opened straight after its search took
+  **18.8 s** (0.56.8: ~3-6 s). The background row check sent a community request at +1.91 s ("Bruce Springsteen,
+  Patti Smith"); the page (tap at +1.82) needed the community list at +3.06 and queued behind it (one at a time);
+  that request timed out at +7.71 and started `NET_SLOW_BACKOFF` (30 s for the whole bucket), so the page's
+  failFast community request was refused and the page took the old MB route (6 browse pages + 6 bootleg checks at
+  1.1 s). The background check itself then got no answers ("unchecked"), so it re-asks on the next search. FIXED
+  in 0.56.11 (Simon: "lets fix it").
+
+### 0.56.9 (2026-10-01) — the search shows its results without waiting for the row check; the library's own hits are kept whole — BUILT (sha d68ab6ba), never installed; ships inside 0.56.10
+- **Source (Simon, after the 0.56.8 live check):** *"We cant have two passes to get search right and this in reality
+  should be the quickest part it is searching Qobuz and local data. If the main delay is to clear the empty junk
+  entreis then lets not do that just hide them on 2nd search"*, then *"yes go ahead"*. And on the side finding:
+  *"the search should find that, we never added exact search it was always supposed to be fuzzy"*.
+- **MEASURED first (rig, public APIs, cold; scratchpad `srch.py`, `srch_*.txt`; the server clock runs 1.13 s ahead
+  of the Mac, corrected here):** Qobuz and the library have answered at 0.7-0.9 s; the rest was the row check asking
+  the community API about the leftover results one at a time. Elvis Costello 6.0 s (4 asked), Fleetwood Mac 9.6 s
+  (9), Pearl Jam 12.4 s (5, one HTTP 500, replies of 3-4 s), Tom Petty 13.5 s (12, nearly all credit strings like
+  "Jeff Lynne;Tom Petty", dropped or merged).
+- **1. The search does not wait for its row check:** A2 `THE SEARCH DOES NOT WAIT FOR ITS ROW CHECK`.
+  - `filterRowsWithContent` `known => 1` (the search's mode): each row decided at once from the cache (its own earlier
+    answer `dsc:rowv:1:`, the resolver's `dsc:mbid`, the community's "no artist", then the proven-empty verdict and
+    the count); a row nothing is known about is kept, unchecked; counts and aliases read, never fetched; a group
+    whose aliases are not cached does not fold yet. Then, after the reply, the full check (unchanged) on a copy of
+    the rows as they came, plus the missing counts and alias lists, as background work; one run per query at a time.
+  - The full check keeps every answer it reaches per result name (`_rememberRow`: found 14 d, "no artist" 7 d; never
+    a row whose check got no answer, nor a tagged library row).
+  - "Other artists with this name": uncounted acts shown, their counts asked after as background work (reverses
+    0.44.5's awaited counts; a list never changes while shown).
+  - **Background inherited** (`$NET_BG`): a request made in a background job's answer is background; `_nameSearch`,
+    `_readArtist` and `getArtistCandidates` call each waiter back under its own flag; a foreground caller joining a
+    queued background name search or artist read promotes it (`_netPromote`; `_netGet` now returns the job).
+    Consequence: the page's post-render work after `completeArtist` (owned-album lookups, vetting) is now background
+    work too.
+- **2. The Local leg keeps every library artist LMS finds for the typed spelling.** "Elvis Costello" listed only
+  Elvis Costello, not the owned "Elvis Costello & The Attractions" (151881 / 157600, tags 8a338e06 / 0ffb6573, so the
+  fold keeps them apart); the typo "Elvis Costelllo" found it (no exact hit to narrow to). 0.46.0's `searchArtists`
+  narrowed every Local hit to the exact name when one existed, while its comment said only the recovery steps'
+  hits needed it. `_localArtistRows` now reports the step that answered (`$opt->{how}`: typed / variant / probe);
+  only recovery hits are narrowed. The Attractions exist in the library only as the track artist on two VA
+  compilations; their page was already right (Appearances 2; Oliver's Army and You Little Fool play the
+  compilation tracks).
+- **Tests:** `t_rowbatch.pl` §10 (20: answered before any request, background flags, one run per query, answers kept,
+  next search hides and merges, every known-mode branch, a control without `known`); `t_netqueue.pl` §15 (14:
+  inheritance on ok / error / fail-at-once, promotion, waiters under their own flags for a read and a name search);
+  `t_searchflow.pl` §6 rewritten (6: the section no longer waits); `t_local.pl` §12 (6). 24 mutants of the new code,
+  all caught (four survived the first run and the tests were tightened: name-search promotion, its answered path,
+  the one-run guard counted before the shared reply came, the 7-day "no artist" hidden behind the community's
+  1-day one). **54 suites, 1,942 assertions, 0 failures**; `syntax_check.sh` clean. zip sha1
+  `d68ab6ba93376015ed8a4fa7c483f3060ae8dc69`, 35 entries, the same files as 0.56.8's; CACHE_VERSION 0.56.9.
+- **Expected:** a first search about 1 s (Tom Petty 13.5 s); junk shown on it, gone on the next search.
+- **Live check owed (rig):** cold searches for the four names (time, rows shown); the same searches again after the
+  background check (junk gone, credit variants merged, about 1 s); "Elvis Costello" lists The Attractions as Local;
+  a result tapped straight after a search opens at its usual speed (the background check yields); British Sea Power
+  still gets its Qobuz row (the canonical second pass).
+
+### 0.56.8 (2026-10-01) — a Refresh keeps the groups past MusicBrainz's 600 cap; no size ceiling; the community's merged-away ids left out; the bootleg check before the draw bounded — BUILT (sha 6b4518bc; rebuilt at the same version, never installed), INSTALLED (2026-10-01), CHECKED LIVE, COMMITTED on dev with 0.56.3-0.56.7 (6f699ba, unpushed); composer pages emptied (PARKED with classical, Simon 2026-10-01)
 - **CHECKED LIVE (2026-10-01, rig, public APIs; scratchpad `live568.py`, `live568.out`, `live567_v568_*.txt`; debug on
   for the run, restored to WARN / ERROR; User-Agent 0.56.8 confirmed in the log).** Community replies were mostly
   Cloudflare hits (these artists were measured earlier the same day): add about 3 s for an artist nobody asked lately.

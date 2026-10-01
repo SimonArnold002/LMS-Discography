@@ -177,5 +177,31 @@ sub detail {
     ok(scalar(!grep { exists $_->{extid} } $cl, $cq, $ct), '4: all-versions detail leaves every cached node alone');
 }
 
+# 5. "Refresh matches" clears the pool THIS page reads (0.56.15). Since 0.43 the
+#    detail page's pool is keyed by the ARTIST's mbid (getCandidates `mbid =>
+#    $pass->{mbid}`); the row passed only the name, so it cleared the name-keyed
+#    copy nothing reads and changed nothing.
+{
+    my $AM = 'a74b1b7f-71a5-4011-9441-d0b5e4122711';
+    our @CLR;
+    no warnings 'redefine'; no strict 'refs';
+    local *{'Plugins::Discography::Sources::clearCandidates'} = sub { shift; push @CLR, [@_] };
+    # With an mbid the page asks MusicBrainz's name for its pool (_poolQuery).
+    local *{'Plugins::Discography::API::peekArtistName'} = sub { undef };
+    # ... and the artist's groups, as t_detailshared stubs them.
+    local *{'Plugins::Discography::API::getReleaseGroups'} = sub { my ($c, %a) = @_; $a{onError}->() };
+    local *{'Plugins::Discography::API::peekOfficial'}     = sub { {} };
+    local $SECTIONS = [];
+    my @items;
+    $B->can('_releaseDetail')->(undef, sub { @items = @{ $_[0]{items} || [] } },
+        { artist => 'Radiohead', rg => $rg, shared_name => 0, mbid => $AM });
+    my ($row) = grep { ($_->{id} // '') eq 'act:refresh' } @items;
+    ok(scalar($row && ref $row->{url} eq 'CODE'), '5: the detail page has its Refresh matches row');
+    @CLR = ();
+    $row->{url}->(undef, sub { }, {}, @{ $row->{passthrough} || [] }) if $row;
+    ok(scalar(@CLR == 1 && ($CLR[0][0] // '') eq 'Radiohead' && ($CLR[0][1] // '') eq $AM),
+       "5: ... it clears with the artist's mbid as well as the name (the key the page's pool is under)");
+}
+
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

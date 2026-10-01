@@ -227,5 +227,16 @@ ok(scalar(@$r == 2), 'B5: Qobuz twins + one Tidal copy -> two rows');
 ok(scalar(svcsOf(rowFor($r, 'str:Qobuz:q1')) eq 'Qobuz/Tidal' && svcsOf(rowFor($r, 'str:Qobuz:q2')) eq 'Qobuz'),
    'B5: the Tidal copy joins the first twin only');
 
+# C1. A JOINT artist's album (0.56.13, Sources::_resolveWithJoints) is in the pool
+#     only to match a release MusicBrainz lists on the page: one it does not list
+#     belongs to the joint act, and must never show here, on any service.
+for my $svc (@ALL) {
+    my $j = copy($svc, 'Folk Songs', 2009, 'j1');
+    $j->{_joint} = 1;
+    $r = extras({ $svc => [ $j, copy($svc, 'Kid A', 2000, 'k1') ] }, $svc);
+    ok(scalar(@$r == 1 && $r->[0]{id} eq "str:$svc:k1"),
+       "C1: $svc - a joint artist's unclaimed album is not shown; the artist's own still is");
+}
+
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

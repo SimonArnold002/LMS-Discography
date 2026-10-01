@@ -26,12 +26,15 @@ use Slim::Utils::PluginManager;
 use Slim::Utils::Timers;
 use Slim::Control::Request;
 
-my $log   = Slim::Utils::Log->logger('plugin.discography');
+# The FUNCTION form (0.56.16): LMS's logger() takes the category as its first
+# argument, so `Slim::Utils::Log->logger(...)` filed this file's lines under
+# "Slim::Utils::Log" and dropped everything below WARN (Slim/Utils/Log.pm).
+my $log   = logger('plugin.discography');
 my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.8';
+use constant CACHE_VERSION => '0.56.16';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
@@ -301,11 +304,17 @@ sub _localArtistRows {
                @{ $req->getResult('artists_loop') || [] };
     };
 
+    # $opt->{how} (a scalar ref) is told which step answered: 'typed' for the
+    # spelling as given, 'variant' for the &/and or ASCII-fold spelling, 'probe'
+    # for a term probe. The search keeps every hit of the typed spelling and
+    # narrows only the recovery steps' (searchArtists).
+    my $how = sub { ${ $opt->{how} } = $_[0] if ref $opt->{how} eq 'SCALAR' };
     for my $try (@tries) {
         my @hits = $run->($try);
         if (@hits) {
             _dbg("Local lookup '$text': matched " . scalar(@hits)
                  . ($try eq $enc ? '' : " via variant '$try'"));
+            $how->($try eq $enc ? 'typed' : 'variant');
             return \@hits;
         }
     }
@@ -331,6 +340,7 @@ sub _localArtistRows {
         my @hits = $run->(_cliChars($term));
         if (@hits) {
             _dbg("Local lookup '$text': matched " . scalar(@hits) . " via term probe '$term'");
+            $how->('probe');
             return \@hits;
         }
     }
@@ -854,6 +864,32 @@ sub _cacheCands {
         or $log->warn("candidate cache set failed: $@");
 }
 
+# ONE FETCH PER POOL AT A TIME (0.56.15). Field, 2026-10-01: TIDAL newly on,
+# two opens of the same page 0.7 s apart each found no pool and each fetched
+# TIDAL (`candidates Tidal/'Madness': 76` logged twice, 13 ms apart). A second
+# caller for a pool already being fetched now waits for that fetch's answer.
+# The fleet's shared registry (SingleFlight.pm, a byte-identical copy of LBF's,
+# kept so by tools/singleflight_sync_check.py there): released on every exit,
+# its own watchdog, each waiter answered separately.
+#
+# Loaded at FIRST USE, not with `use`: a checkout has no Plugins/ parent, so a
+# top-level `use` of a sibling dies at BEGIN in every suite. Not loadable means
+# no coalescing - each caller fetches for itself, exactly as before 0.56.15 -
+# and says so once.
+my $candFlight;
+sub _candFlight {
+    return $candFlight if defined $candFlight;
+    $candFlight = eval {
+        require Plugins::Discography::SingleFlight;
+        Plugins::Discography::SingleFlight->new(
+            name => 'candidates', max => SVC_TIMEOUT * 3, log => $log);
+    } || do {
+        $log->warn("candidate fetches not coalesced (SingleFlight unavailable): $@");
+        0;
+    };
+    return $candFlight;
+}
+
 # getCandidates($client, $artist, $force, $cb) -> $cb->({ <svc> => [items] })
 # One artist-level search per enabled service, in parallel, each behind its own
 # watchdog. Cache hits skip the search entirely. $cb fires exactly once, after
@@ -867,6 +903,15 @@ sub getCandidates {
     # _resolveArtist) and may legitimately be EMPTY. The mbid scopes the cache
     # so two acts sharing a name cannot share a pool, and is independent of the
     # spine — see the write-key note below.
+    #
+    # query => the name to SEARCH the services under, when it is not $artist
+    # (0.56.13). The pool is keyed by the MusicBrainz artist, so it must be
+    # built from that artist's name, never from whatever name the page was
+    # opened under: field (Simon, 2026-10-01), "James Yorkston & The Big Eyes
+    # Family Players" resolved to James Yorkston, found Qobuz's joint artist of
+    # that name (2 albums) and stored it as James Yorkston's pool for 3 days, so
+    # every James Yorkston page matched nothing but the user's own 3 albums. The
+    # caller passes MusicBrainz's name here and $artist among the aliases.
     my $spine   = $opt->{spine};
     my $aliases = $opt->{aliases};
     # The NAME is shared by several MB artists: a lone same-name hit on a
@@ -898,9 +943,10 @@ sub getCandidates {
     # "P!nk" -> "p nk"), in BOTH spellings: character string for adapters whose
     # URL layer escapes/transliterates itself (Qobuz, Tidal), octets for
     # byte-level escapers (Deezer). See the query_enc notes in adapters().
-    my $qChars = $artist;
+    my $svcName = (defined $opt->{query} && length $opt->{query}) ? $opt->{query} : $artist;
+    my $qChars = $svcName;
     utf8::decode($qChars) unless utf8::is_utf8($qChars);   # no-op if not valid UTF-8
-    my $qBytes = $artist;
+    my $qBytes = $svcName;
     utf8::encode($qBytes) if utf8::is_utf8($qBytes);
 
     my %out;
@@ -914,6 +960,26 @@ sub getCandidates {
             $out{$svc} = _reattach($a, $c->{items});
             $cb->(\%out) unless --$pending;
             next;
+        }
+
+        # This caller's answer for $svc: its own copy of each item, so two pages
+        # answered from one fetch never share (and never mutate) one hash.
+        my $land = sub {
+            $out{$svc} = [ map { ref $_ eq 'HASH' ? { %$_ } : $_ } @{ $_[0] || [] } ];
+            $cb->(\%out) unless --$pending;
+        };
+        # Coalesced on the pool key PLUS everything that shapes the fetch (the
+        # name searched, shared-name strictness, the spine's size, the aliases),
+        # so two callers share a fetch only when each would have made the same
+        # one. A forced fetch (Refresh) neither waits on nor holds a flight.
+        # No background flag to carry: a service's answer arrives from the event
+        # loop, where it is always off, so a waiter continues exactly as it
+        # would have from a fetch of its own.
+        my $flight = $force ? 0 : _candFlight();
+        my $fkey = join("\x1f", $key, $svcName, $strict,
+                        (ref $spine eq 'HASH' ? scalar(keys %$spine) : 0), @{ $aliases || [] });
+        if ($flight) {
+            next unless $flight->join($fkey, onDone => $land, onError => sub { $land->([]) });
         }
 
         my $settled = 0;
@@ -931,6 +997,7 @@ sub getCandidates {
             }
             $settled = 1;
             Slim::Utils::Timers::killSpecific($timer) if $timer;
+            my $answer;
             if (!defined $items) {
                 # Couldn't query (no handler / timeout / renderer died): cache
                 # empty briefly so the next open retries soon, not in 3 days.
@@ -941,11 +1008,11 @@ sub getCandidates {
                 # (field, 2026-07-19: an unresolvable artist's page still read
                 # "No releases found").
                 _cacheCands($key, [], CAND_ERR_TTL, 1);
-                $out{$svc} = [];
+                $answer = [];
             }
             else {
                 _cacheCands($key, $items, @$items ? CAND_FOUND_TTL : CAND_EMPTY_TTL);
-                $out{$svc} = $items;
+                $answer = $items;
             }
             # Sample the pool head in the log: a healthy count full of the
             # WRONG artist (mangled query, wrong-artist adoption) is otherwise
@@ -969,10 +1036,13 @@ sub getCandidates {
             # "error (handler/timeout/renderer)" and sent a field diagnosis
             # after a Qobuz timeout that was really "this artist could not be
             # identified under that name".
-            _dbg("candidates $svc/'$artist': "
+            _dbg("candidates $svc/'$artist'"
+                . ($svcName ne $artist ? " (searched as '$svcName')" : '') . ': '
                 . (defined $n ? $n . $sample
                               : 'no pool (artist unresolved, or handler/timeout/renderer error)'));
-            $cb->(\%out) unless --$pending;
+            # Everyone waiting on this pool, this caller included, answered once.
+            if ($flight) { $flight->resolve($fkey, $answer) }
+            else         { $land->($answer) }
         };
 
         $timer = Slim::Utils::Timers::setTimer(undef, time() + SVC_TIMEOUT, sub {
@@ -1060,12 +1130,19 @@ sub searchArtists {
         # SHARED with localAlbums' name fallback -- one ladder, so the &/and
         # retry, the ASCII fold and the term probes can never again exist on
         # one entry path and not the other (Simon, 2026-07-22).
-        my @hits = @{ _localArtistRows($query) };
+        my $how = '';
+        my @hits = @{ _localArtistRows($query, { how => \$how }) };
 
         # Recovery steps widen the net, so anything they returned is
         # norm-verified against what the user typed before it is offered as a
-        # Local row. An exact-spelling match needs no gate.
-        if (@hits) {
+        # Local row. An exact-spelling match needs no gate: LMS's own search of
+        # what was typed is the fuzzy search the user asked for, and every hit
+        # faces mergeArtistHits' relevance gate like any service's. 0.46.0
+        # narrowed THOSE hits too, so an exact name pushed out every other
+        # library artist containing it (Simon, 2026-10-01: "Elvis Costello" lost
+        # the owned "Elvis Costello & The Attractions", which the typo
+        # "Elvis Costelllo" found, having no exact hit to narrow to).
+        if (@hits && $how ne 'typed') {
             my $qn = _normKey($query);
             my @exact = grep { _normKey($_->{name}) eq $qn } @hits;
             @hits = @exact if @exact;
@@ -1755,7 +1832,7 @@ sub _contribMbid {
 # and safe later — until then, honest "Local" beats a guessed service label.
 #
 # `_ident_mbid` is stamped on EVERY owned row (single-identity too), for the
-# disambiguation section to exclude owned acts by mbid rather than by the older
+# search's same-name acts to exclude owned acts by mbid rather than by the older
 # name-match heuristic. It is in-memory only — never rendered, never cached (the
 # cache holds the pre-split merged list, same shape as before).
 #
@@ -2557,6 +2634,58 @@ sub _albumArtistName {
          : (!ref $a && defined $a) ? $a : '';
 }
 
+# AN ARTIST NAMED AS A MAIN ARTIST, NOT FIRST (0.56.13; Simon: anything
+# MusicBrainz lists under his own name "should come through", "across all the
+# platforms we support"). Each service lists an album's artists its own way,
+# read in its plugin's source:
+#   Qobuz   `artists` [{id,name,roles}], "main-artist" in roles (Qobuz's own
+#           Plugin.pm, _isMainArtist, makes exactly this test)
+#   TIDAL   `artists` [{id,name,type}], type MAIN or FEATURED
+#   Spotify `artists` [{id,name}] - every album artist is a main one
+#   Deezer  an artist-albums item has no artist list at all (nothing to read;
+#           its albums take the artist's own name, _renderAlbums' fallback)
+# Only Qobuz is measured live (James Yorkston's "My Yoke Is Heavy", credited
+# Adrian Crowley + James Yorkston); the other shapes are the sources' word.
+sub _isMainCredit {
+    my ($x) = @_;
+    return 0 unless ref $x eq 'HASH';
+    return scalar grep { ($_ // '') eq 'main-artist' } @{ $x->{roles} } if ref $x->{roles} eq 'ARRAY';
+    return lc($x->{type}) eq 'main' ? 1 : 0 if defined $x->{type} && !ref $x->{type};
+    return 1;
+}
+
+# The name an album credits $wantId under, when its artist list names that id as
+# a main artist; else undef.
+sub _mainArtistAs {
+    my ($al, $wantId) = @_;
+    return undef unless ref $al eq 'HASH' && ref $al->{artists} eq 'ARRAY' && defined $wantId;
+    for my $x (@{ $al->{artists} }) {
+        next unless ref $x eq 'HASH' && defined $x->{id} && $x->{id} eq $wantId && _isMainCredit($x);
+        return (defined $x->{name} && length $x->{name}) ? $x->{name} : undef;
+    }
+    return undef;
+}
+
+# The same test BY NAME, for the render: when an album's artist list names the
+# artist (the name the pool was fetched for) as a main artist, the album is
+# credited to him rather than to whoever is listed first, so the matcher's
+# artist gate sees his name. Covers a service whose album ids do not line up
+# with its artist ids, which the id filter cannot judge (TIDAL, see
+# _filterForeignArtist's self-guard). Not asked when the album's first-named
+# artist already matches the name searched (_renderAlbums, 0.56.14).
+sub _mainArtistNamed {
+    my ($al, $want) = @_;
+    return undef unless ref $al eq 'HASH' && ref $al->{artists} eq 'ARRAY';
+    my $wn = _norm($want // '');
+    return undef unless length $wn;
+    for my $x (@{ $al->{artists} }) {
+        next unless ref $x eq 'HASH' && defined $x->{name} && !ref $x->{name};
+        next unless _norm($x->{name}) eq $wn && _isMainCredit($x);
+        return $x->{name};
+    }
+    return undef;
+}
+
 sub _filterForeignArtist {
     my ($albums, $svc, $wantId, $wantName) = @_;
     return $albums unless defined $wantId && ref $albums eq 'ARRAY';
@@ -2590,6 +2719,17 @@ sub _filterForeignArtist {
         if (!defined $a || $a eq $wantId
             || ($wn ne '' && $cn ne '' && $cn ne $wn && _artistMatch($wn, $cn))) {
             push @keep, $al;
+        }
+        elsif (defined(my $as = _mainArtistAs($al, $wantId))) {
+            # NAMED AS A MAIN ARTIST, NOT FIRST (0.56.13; Simon, 2026-10-01:
+            # anything MusicBrainz lists under his own name "should come
+            # through"). Qobuz credits "My Yoke Is Heavy" to Adrian Crowley
+            # AND James Yorkston, both main artists, and lists it on Yorkston's
+            # own artist page; reading the first one alone dropped it here. A
+            # copy credited to him (`_creditAs`, read by _renderAlbums), so the
+            # matcher's artist gate sees his name; Qobuz's own test, read in
+            # its Plugin.pm (_isMainArtist): the id AND the main-artist role.
+            push @keep, { %$al, _creditAs => $as };
         }
         else { push @lost, $al }
     }
@@ -2636,19 +2776,50 @@ sub _resolveArtist {
     # is returned unchanged when none does. That fallback is the whole safety
     # argument: every artist that resolves today still resolves, to the same
     # service entity, unless something demonstrably corroborates better.
-    my $best;
+    my ($best, $held);
     my $keep = sub {
         my ($artist, $albums, $score) = @_;
         return unless $artist;
         $best = { artist => $artist, albums => $albums, score => $score }
             if !$best || ($score // 0) > ($best->{score} // 0);
     };
+    # THE DUO'S OWN ENTRY, PASSED OVER FOR ONE OF ITS MEMBERS (0.56.14; Simon,
+    # 2026-10-01, on Robert Plant & Alison Krauss: Qobuz files "Raising Sand"
+    # under the duo, "the other one is listed as separate artists"). Searched
+    # under the duo's name, Qobuz's duo entry backs up one title, so it is held
+    # and the retry under "Robert Plant" wins with seven - and the duo's list,
+    # the only one holding "Raising Sand", was dropped. Its albums (already
+    # fetched to score it - no request added) now go back with the answer, for
+    # _resolveWithJoints to add like a joint artist's: only ever matching a
+    # release MusicBrainz lists on the page. Only when all of these hold, so the
+    # held-pick rule's protection is untouched (a same-name act's one
+    # coincidental title, 0.47.0's Rossini rapper, never comes back this way):
+    #   - not a shared name ($strict: Madness, The Bees);
+    #   - the held entry's name IS the name searched (MB's own name for the act);
+    #   - that name is a joint credit (_creditParts gives its 2+ parts), and
+    #   - the artist settled on is one of its parts.
+    my $answer = sub {
+        my ($artist, $albums) = @_;
+        my $beside;
+        if ($held && $artist && !$strict
+            && ($held->{artist}{id} // '') ne ($artist->{id} // '')
+            && _norm($held->{artist}{name} // '') eq _norm($query // '')) {
+            my $an = _norm($artist->{name} // '');
+            my @parts = _creditParts($held->{artist}{name});
+            if (length $an && grep { _norm($_) eq $an } @parts) {
+                $beside = [ $held->{artist}, $held->{albums} ];
+                _dbg("$svc: '$held->{artist}{name}' passed over for '$artist->{name}'"
+                    . ' - its own albums kept beside');
+            }
+        }
+        $cb->($artist, $albums, $beside);
+    };
     my $settle = sub {
         return $cb->(undef, undef) unless $best;
         _dbg("$svc: settling on '" . ($best->{artist}{name} // '?')
             . "' (" . ($best->{artist}{id} // '?') . ') with '
             . ($best->{score} // 0) . ' spine title(s) - nothing corroborated better');
-        $cb->($best->{artist}, $best->{albums});
+        $answer->($best->{artist}, $best->{albums});
     };
 
     _resolveOne($svc, $query, $artists, $spine, $fetch, sub {
@@ -2660,6 +2831,7 @@ sub _resolveArtist {
         if ($artist) {
             _dbg("$svc: '" . ($artist->{name} // '?') . "' corroborates only "
                 . ($score // 0) . ' spine title(s) - holding it and looking further');
+            $held = { artist => $artist, albums => $albums };
         }
         $keep->($artist, $albums, $score);
 
@@ -2683,7 +2855,7 @@ sub _resolveArtist {
             $search->($alias, sub {
                 _resolveOne($svc, $alias, shift, $spine, $fetch, sub {
                     my ($a, $al, $sc) = @_;
-                    return $cb->($a, $al) if $a && (!defined $sc || $sc >= SPINE_STRONG);
+                    return $answer->($a, $al) if $a && (!defined $sc || $sc >= SPINE_STRONG);
                     $keep->($a, $al, $sc);
                     $self->($self);
                 }, $strict);
@@ -2913,15 +3085,30 @@ sub _albumArray {
 # Returns undef — meaning ERROR, cache briefly and retry — only when the
 # renderer failed for EVERY album. An empty arrayref means the list really was
 # empty, which the callers distinguish.
+#
+# $query: the name the services were searched under. An album whose FIRST-named
+# artist already matches it keeps that credit, and is not re-credited by
+# _mainArtistNamed to the service artist the lookup settled on (0.56.14). Field,
+# 2026-10-01: TIDAL has no "Robert Plant & Alison Krauss", so the duo's page
+# settled on Alison Krauss, whose list holds the duo's records credited Robert
+# Plant first; re-credited to her, none passed the page's "Robert Plant" gate,
+# and the whole page matched nothing on TIDAL. The second-main-artist case
+# (James Yorkston's "My Yoke Is Heavy", Adrian Crowley first) is unchanged: its
+# first-named artist is not the one searched.
 sub _renderAlbums {
-    my ($albums, $svc, $artistName, $render, $skip) = @_;
+    my ($albums, $svc, $artistName, $render, $skip, $query) = @_;
     my @out;
     my $rendererFailed = 0;
+    my $qn = _norm($query // '');
     for my $album (@{ $albums || [] }) {
         next unless ref $album eq 'HASH' && defined $album->{id};
         next if $skip && $skip->($album);
         my $ref = $album->{artist} || ($album->{artists} && $album->{artists}[0]) || {};
-        my $candArtist = (ref $ref eq 'HASH' && $ref->{name}) || $artistName || '';
+        my $first = (ref $ref eq 'HASH' && $ref->{name}) ? $ref->{name} : '';
+        my $firstIsHim = length $qn && $first ne '' && !ref $first && _artistMatch($qn, _norm($first));
+        my $candArtist = $album->{_creditAs}
+                      || ($firstIsHim ? undef : _mainArtistNamed($album, $artistName))
+                      || $first || $artistName || '';
         my $item = eval { $render->($album) };
         if ($@ || ref $item ne 'HASH') {
             $log->warn("$svc renderer failed: $@") if $@;
@@ -2934,6 +3121,12 @@ sub _renderAlbums {
     return undef if !@out && $rendererFailed;
     return \@out;
 }
+
+# Joint artists fetched beside an artist on Qobuz (_jointArtists), and how long
+# the artist's own answer waits for them. Declared before first use (a
+# `use constant` below its caller is a strict-subs error).
+use constant JOINT_MAX  => 3;
+use constant JOINT_WAIT => 3;    # seconds past the artist's own answer
 
 sub _searchQobuz {
     my ($client, $query, $svc, $collect, $spine, $aliases, $strict) = @_;
@@ -2963,10 +3156,9 @@ sub _searchQobuz {
 
     $api->search(sub {
         my $res = shift;
-        _resolveArtist('Qobuz', $query,
-            $res && $res->{artists} && $res->{artists}{items}, $spine, $fetch,
-            sub {
-                my ($artist, $albums) = @_;
+        _resolveWithJoints('Qobuz', $query, $res && $res->{artists} && $res->{artists}{items},
+            $spine, $fetch, $aliases, $search, $strict, sub {
+                my ($artist, $albums, $extra) = @_;
                 unless ($artist) {
                     # With a spine, an unresolved artist is DELIBERATE (nothing
                     # corroborated) and the album-search fallback would pull the
@@ -2979,9 +3171,117 @@ sub _searchQobuz {
                 # far more often than a zero-album artist — settle as error (short
                 # retry), never a 1-day empty pin.
                 return $collect->(undef) unless $albums && @$albums;
-                $collect->(_renderQobuzAlbums($client, $albums, $svc, $artist->{name}));
-            }, $aliases, $search, $strict);
+                $collect->(_appendJoint('Qobuz', $query, $artist->{name},
+                    _renderQobuzAlbums($client, $albums, $svc, $artist->{name}, $query), $extra,
+                    sub { _renderQobuzAlbums($client, $_[0], $svc, $_[1]) }));
+            });
     }, lc($query), 'artists');
+}
+
+# The joint artists a service's artist search returned for $name: entries whose
+# name is a joint credit (_creditParts, the one definition of one) naming $name
+# as one of its acts. At most JOINT_MAX, in the service's order.
+sub _jointArtists {
+    my ($items, $name) = @_;
+    my $want = _norm($name // '');
+    return () unless length $want && ref $items eq 'ARRAY';
+    my @out;
+    for my $a (@$items) {
+        next unless ref $a eq 'HASH' && defined $a->{id} && defined $a->{name};
+        my @parts = _creditParts($a->{name});
+        next unless @parts >= 2 && grep { _norm($_) eq $want } @parts;
+        push @out, $a;
+        last if @out >= JOINT_MAX;
+    }
+    return @out;
+}
+
+# JOINT ARTISTS, EVERY SERVICE (0.56.13; Simon, 2026-10-01: albums MusicBrainz
+# lists under the artist's own name "should come through", and if it lists them
+# under a separate artist "we live with it"; then "should be across all the
+# platforms we support"). A service files some of an artist's records under a
+# JOINT artist entity of its own - Qobuz's "James Yorkston & The Big Eyes Family
+# Players" holds his "Folk Songs" - and the artist's own entry does not list
+# them. The search that finds the artist returns those joint entries too
+# (_jointArtists), so their albums are fetched beside it, at the same time, with
+# the adapter's own $fetch, and handed back for the adapter to render
+# (_appendJoint). They only ever MATCH a release MusicBrainz lists on the page
+# and never show as "Also on streaming" extras (Browse skips `_joint`).
+#
+# Same contract as _resolveArtist, whose arguments it takes, plus $done gets the
+# joint albums as a third argument (each a copy tagged `_jointOf`, its joint
+# artist's name; already on the artist's own list -> left out). A duo's own
+# entry that _resolveArtist passed over for one of its members joins them
+# (0.56.14), with no request of its own. Nothing joint is
+# handed back when the artist itself was not identified. The artist's own answer
+# waits at most JOINT_WAIT for joint lookups still out: they are an addition,
+# and one that never answered would otherwise hold the whole pool until the
+# service watchdog marked it failed. Measured on Qobuz (James Yorkston: one
+# joint artist, one extra request); the other three services' shapes are read
+# in their plugins' sources, not yet measured live.
+sub _resolveWithJoints {
+    my ($svc, $query, $items, $spine, $fetch, $aliases, $search, $strict, $done) = @_;
+    my @joint = _jointArtists($items, $query);
+    my ($main, @got, $finished, $waitTimer);
+    my $left = scalar @joint;
+    my $finish = sub {
+        my ($force) = @_;
+        return if $finished || !$main || ($left && !$force);
+        $finished = 1;
+        Slim::Utils::Timers::killSpecific($waitTimer) if $waitTimer;
+        _dbg("$svc: '$query' - $left joint artist(s) not back after "
+            . JOINT_WAIT . 's, going without them') if $left;
+        my ($artist, $albums, $beside) = @$main;
+        my %have = map { (($_->{id} // '') => 1) } grep { ref $_ eq 'HASH' } @{ $albums || [] };
+        # The passed-over duo's own albums (_resolveArtist), added as a joint
+        # artist's are.
+        my @dup = $beside
+            ? (map { +{ %$_, _jointOf => $beside->[0]{name} } }
+               grep { ref $_ eq 'HASH' && defined $_->{id} } @{ $beside->[1] || [] })
+            : ();
+        my @extra = $artist ? (grep { !$have{ $_->{id} // '' }++ } @got, @dup) : ();
+        $done->($artist, $albums, \@extra);
+    };
+    for my $ja (@joint) {
+        $fetch->($ja->{id}, sub {
+            return if $finished;
+            push @got, map { +{ %$_, _jointOf => $ja->{name} } }
+                       grep { ref $_ eq 'HASH' && defined $_->{id} } @{ $_[0] || [] };
+            $left--;
+            $finish->();
+        });
+    }
+    _resolveArtist($svc, $query, $items, $spine, $fetch, sub {
+        $main = [ @_ ];
+        $finish->();
+        $waitTimer = Slim::Utils::Timers::setTimer(undef, time() + JOINT_WAIT,
+            sub { $waitTimer = undef; $finish->(1) }) unless $finished;
+    }, $aliases, $search, $strict);
+}
+
+# The joint albums rendered with the adapter's own renderer ($render->(\@albums,
+# $creditName)), one joint artist at a time, marked `_joint` and appended to the
+# artist's own rendered list. Credited to the ARTIST for the matcher's gate: the
+# joint name already proves he is on the record, and the page's own name may be
+# a variant the joint credit does not contain ("James Yorkston and friends").
+sub _appendJoint {
+    my ($svc, $query, $artistName, $out, $extra, $render) = @_;
+    return $out unless $out && $extra && @$extra;
+    my (%by, @order);
+    for my $al (@$extra) {
+        my $n = $al->{_jointOf} // '';
+        push @order, $n unless $by{$n};
+        push @{ $by{$n} }, $al;
+    }
+    my @j;
+    push @j, @{ $render->($by{$_}, $_) || [] } for @order;
+    for my $it (@j) {
+        $it->{_joint} = 1;
+        $it->{_candArtist} = $artistName if defined $artistName && length $artistName;
+    }
+    _dbg("$svc: '$query' + " . scalar(@j) . ' album(s) from joint artist(s) '
+        . join(', ', map { "'$_'" } @order)) if @j;
+    return [ @$out, @j ];
 }
 
 sub _qobuzAlbumSearch {
@@ -2995,10 +3295,10 @@ sub _qobuzAlbumSearch {
 }
 
 sub _renderQobuzAlbums {
-    my ($client, $albums, $svc, $artistName) = @_;
+    my ($client, $albums, $svc, $artistName, $query) = @_;
     return _renderAlbums($albums, $svc, $artistName,
         sub { Plugins::Qobuz::Plugin::_albumItem($client, $_[0]) },
-        sub { defined $_[0]->{streamable} && !$_[0]->{streamable} });
+        sub { defined $_[0]->{streamable} && !$_[0]->{streamable} }, $query);
 }
 
 sub _searchTidal {
@@ -3032,18 +3332,19 @@ sub _searchTidal {
 
     $api->search(sub {
         my $artists = shift;
-        _resolveArtist('Tidal', $query, ref $artists eq 'ARRAY' ? $artists : [],
-            $spine, $fetch,
-            sub {
-                my ($artist, $albums) = @_;
+        _resolveWithJoints('Tidal', $query, ref $artists eq 'ARRAY' ? $artists : [],
+            $spine, $fetch, $aliases, $search, $strict, sub {
+                my ($artist, $albums, $extra) = @_;
                 unless ($artist) {
                     if ($spine && %$spine) { return $collect->(undef) }
                     _dbg("Tidal: no artist hit for '$query' - album-search fallback");
                     return _tidalAlbumSearch($api, $query, $svc, $collect);
                 }
                 return $collect->(undef) unless $albums && @$albums;   # all-empty = failed fetch
-                $collect->(_renderTidalAlbums($albums, $svc, $artist->{name}));
-            }, $aliases, $search, $strict);
+                $collect->(_appendJoint('Tidal', $query, $artist->{name},
+                    _renderTidalAlbums($albums, $svc, $artist->{name}, $query), $extra,
+                    sub { _renderTidalAlbums($_[0], $svc, $_[1]) }));
+            });
     }, { type => 'artists', search => $query, limit => 25 });
 }
 
@@ -3057,9 +3358,9 @@ sub _tidalAlbumSearch {
 }
 
 sub _renderTidalAlbums {
-    my ($albums, $svc, $artistName) = @_;
+    my ($albums, $svc, $artistName, $query) = @_;
     return _renderAlbums($albums, $svc, $artistName,
-        sub { Plugins::TIDAL::Plugin::_renderAlbum($_[0]) });
+        sub { Plugins::TIDAL::Plugin::_renderAlbum($_[0]) }, undef, $query);
 }
 
 sub _searchDeezer {
@@ -3081,10 +3382,9 @@ sub _searchDeezer {
 
     $api->search(sub {
         my $artists = shift;
-        _resolveArtist('Deezer', $query, ref $artists eq 'ARRAY' ? $artists : [],
-            $spine, $fetch,
-            sub {
-                my ($artist, $albums) = @_;
+        _resolveWithJoints('Deezer', $query, ref $artists eq 'ARRAY' ? $artists : [],
+            $spine, $fetch, $aliases, $search, $strict, sub {
+                my ($artist, $albums, $extra) = @_;
                 unless ($artist) {
                     if ($spine && %$spine) { return $collect->(undef) }
                     _dbg("Deezer: no artist hit for '$query' - album-search fallback");
@@ -3095,8 +3395,10 @@ sub _searchDeezer {
                 # _renderAlbum reads $item->{artist}{name} and would leave it undef,
                 # which is exactly why it takes the artist name as a 3rd arg. Pass
                 # the resolved name (verified: sub _renderAlbum($item,$addArtistToTitle,$artist)).
-                $collect->(_renderDeezerAlbums($albums, $svc, $artist->{name}));
-            }, $aliases, $search, $strict);
+                $collect->(_appendJoint('Deezer', $query, $artist->{name},
+                    _renderDeezerAlbums($albums, $svc, $artist->{name}, $query), $extra,
+                    sub { _renderDeezerAlbums($_[0], $svc, $_[1]) }));
+            });
     }, { search => $query, type => 'artist', strict => 'off', limit => 25 });
 }
 
@@ -3110,11 +3412,11 @@ sub _deezerAlbumSearch {
 }
 
 sub _renderDeezerAlbums {
-    my ($albums, $svc, $artistName) = @_;
+    my ($albums, $svc, $artistName, $query) = @_;
     # 3rd arg backfills favorites_title when the payload has no artist object
     # (the artist-albums endpoint) — mirrors the plugin's own use.
     return _renderAlbums($albums, $svc, $artistName,
-        sub { Plugins::Deezer::Plugin::_renderAlbum($_[0], 0, $artistName) });
+        sub { Plugins::Deezer::Plugin::_renderAlbum($_[0], 0, $artistName) }, undef, $query);
 }
 
 # ---------------------------------------------------------------------------
@@ -3256,17 +3558,19 @@ sub _searchSpotify {
         my $artists = shift;
         return $collect->(_spotifyEmpty("artist search '$query'"))
             unless ref $artists eq 'ARRAY' && @$artists;
-        _resolveArtist('Spotify', $query, $artists, $spine, $fetch,
-            sub {
-                my ($artist, $albums) = @_;
+        _resolveWithJoints('Spotify', $query, $artists, $spine, $fetch,
+            $aliases, $search, $strict, sub {
+                my ($artist, $albums, $extra) = @_;
                 unless ($artist) {
                     if ($spine && %$spine) { return $collect->(undef) }
                     _dbg("Spotify: no artist hit for '$query' - album-search fallback");
                     return _spotifyAlbumSearch($api, $client, $query, $svc, $collect);
                 }
                 return $collect->(undef) unless $albums && @$albums;
-                $collect->(_renderSpotifyAlbums($client, $albums, $svc, $artist->{name}));
-            }, $aliases, $search, $strict);
+                $collect->(_appendJoint('Spotify', $query, $artist->{name},
+                    _renderSpotifyAlbums($client, $albums, $svc, $artist->{name}, $query), $extra,
+                    sub { _renderSpotifyAlbums($client, $_[0], $svc, $_[1]) }));
+            });
     }, { query => $query, type => 'artist', limit => SPOTIFY_ARTIST_LIMIT });
 }
 
@@ -3287,9 +3591,9 @@ sub _spotifyAlbumSearch {
 # _cover; the row itself keeps the placeholder as its icon. Done here, not in
 # the shared _decorate: no other service sends a placeholder that way.
 sub _renderSpotifyAlbums {
-    my ($client, $albums, $svc, $artistName) = @_;
+    my ($client, $albums, $svc, $artistName, $query) = @_;
     my $out = _renderAlbums($albums, $svc, $artistName,
-        sub { Plugins::Spotty::OPML::_albumItem($client, $_[0]) });
+        sub { Plugins::Spotty::OPML::_albumItem($client, $_[0]) }, undef, $query);
     for my $it (@{ $out || [] }) {
         delete $it->{_cover} unless defined $it->{_cover} && $it->{_cover} =~ m{^https?://}i;
     }

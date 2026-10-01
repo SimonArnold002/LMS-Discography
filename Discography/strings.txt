@@ -16,8 +16,11 @@ PLUGIN_DISCOGRAPHY_SEARCH_NONE
 PLUGIN_DISCOGRAPHY_SEARCH_HDR
 	EN	Find an artist
 
-PLUGIN_DISCOGRAPHY_SAME_NAME
-	EN	Other artists with this name
+PLUGIN_DISCOGRAPHY_TOP_RESULT
+	EN	Top Result
+
+PLUGIN_DISCOGRAPHY_ARTISTS_HDR
+	EN	Artists
 
 PLUGIN_DISCOGRAPHY_SAME_NAME_NOINFO
 	EN	MusicBrainz artist
@@ -201,6 +204,18 @@ PLUGIN_DISCOGRAPHY_LAYOUT_SINGLES
 
 PLUGIN_DISCOGRAPHY_LAYOUT_SINGLES_DESC
 	EN	How singles show on an artist's page. As a list under tiles, singles move below the other release types. Tiles need a version of Material Skin that supports them.
+
+PLUGIN_DISCOGRAPHY_LAYOUT_SEARCH
+	EN	Search results
+
+PLUGIN_DISCOGRAPHY_LAYOUT_SEARCH_DESC
+	EN	How the artists found by a search show. The top result is always a tile; the other artists can be a list under it, or a row of tiles you scroll sideways. Tiles need a version of Material Skin that supports them; without one, this setting has no effect.
+
+PLUGIN_DISCOGRAPHY_LAYOUT_SPLIT
+	EN	Top result as a tile, other artists as a list
+
+PLUGIN_DISCOGRAPHY_LAYOUT_ALL_TILES
+	EN	All tiles
 
 PLUGIN_DISCOGRAPHY_LAYOUT_TILES
 	EN	Tiles

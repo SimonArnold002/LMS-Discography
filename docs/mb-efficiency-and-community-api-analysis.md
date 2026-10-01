@@ -1,13 +1,13 @@
 # MusicBrainz call efficiency, public/mirror parity, and the Community API — full analysis
 
-> **STATUS 2026-09-30 (night) — WHERE THE PLAN STANDS. The dated notes after this one are history.**
+> **STATUS 2026-10-01 — WHERE THE PLAN STANDS. The dated notes after this one are history.**
 > - **Stages 1 and 2** (§F.1-2): committed on `dev`, unpushed.
 > - **Stage 3** (§F.3, §A12), the public-API gates removed: built as 0.56.3, fixed as 0.56.4 and checked live
 >   (§A12.9).
 > - **Stage 3b** (§A13), the search's leftover results asked of the community API, and what the search proves handed
 >   to the page: 0.56.5, checked live (the 16 searches' MusicBrainz requests 319 -> 51 on a first search).
 > - **0.56.6** (§A14), more of those answers proven in the same requests: checked live.
-> - 0.56.3-0.56.6 are installed on the rig and uncommitted. 53 suites, 1,775 assertions, 0 failures.
+> - 0.56.3-0.56.6 are installed on the rig; committed with 0.56.7-0.56.8 (below).
 > - **2026-10-01: §A16 route A, BUILT as 0.56.7, INSTALLED and CHECKED LIVE:** the artist page draws from
 >   ListenBrainz's list and the community's verdicts, MusicBrainz completing it in the background for the next
 >   visit. Big pages 6.8-16 s -> 2.4-3.2 s; 22 albums over 7 artists a visit late (edition titles). The check found
@@ -15,9 +15,18 @@
 >   owed)**, which also removes the 1,500-group ceiling (the Stones and Springsteen took the 15 s path), leaves out
 >   the community's merged-away ids (Nirvana showed 3 such tiles) and bounds the bootleg check before the draw at
 >   two requests (the composers). Then D2 for the search.
-> - **Open:** D2 and D3 (§A12.6, Simon's to decide). D2 still matters: 0.56.5 took the near-minute searches down (Hall
->   and Oates 58.6 -> 5.4 s), but a big name's first search still takes 9-13 s (§A15); §A7 #4, held for the resolver (Part C of `docs/community-api-and-resolver-plan.md`); §F.4,
->   the community API for the page's spine and status map, not started; Parts C and D of that plan, not started.
+> - **2026-10-01, 0.56.7 and 0.56.8 INSTALLED and CHECKED LIVE, committed on `dev` with 0.56.3-0.56.6 (6f699ba,
+>   unpushed).** Composer pages emptied on 0.56.8: PARKED with classical (Simon).
+> - **2026-10-01, D2 DECIDED and BUILT as 0.56.9 (not installed):** the search does not wait for its row check
+>   (Simon: *"this in reality should be the quickest part ... just hide them on 2nd search"*). Measured: Qobuz and the
+>   library answer in 0.7-0.9 s, the check took a first search to 6-13 s. Rows are decided from what earlier checks
+>   kept; the rest are shown and checked after the reply, as background work, and hidden on the next search. The
+>   same-name section's counts likewise (D3's waiting is gone with it). Ledger A2 `THE SEARCH DOES NOT WAIT FOR ITS
+>   ROW CHECK`; dev log 0.56.9.
+> - **Open:** D3's remaining idea (MusicBrainz taking a waiting count when free) is moot for the search now that
+>   nothing there waits on a count. §A7 #4, held for the resolver (Part C of
+>   `docs/community-api-and-resolver-plan.md`); Parts C and D of that plan, not started. §F.4 (the community API for
+>   the page's spine and status map) was built by §A16's route A (0.56.7).
 > - **Not taken:** §A12.10, no MusicBrainz at search (Simon: "a step backwards"); §A13 was built instead.
 > - **Also open, outside this plan:** finding 7 of the stage-1 review, DB.pm `get()`'s fall-through from the mbid
 >   table to kv (recommended KEEP, undecided; CLAUDE.md dev log, stage 1).

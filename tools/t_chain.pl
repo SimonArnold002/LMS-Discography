@@ -472,5 +472,41 @@ ok(!defined $CACHE{"dsc:rgfull:1:$RH"} && !defined $CACHE{"dsc:rgfast:1:$RH"} &&
        "9: the page's Refresh row asks clearArtistCache for MusicBrainz's own list next (refresh => 1)");
 }
 
+# ---------------------------------------------------------------------------
+# 10. THE PAGE ASKS THE SERVICES UNDER MUSICBRAINZ'S NAME (0.56.13). Field: the
+#     page opened as "James Yorkston & The Big Eyes Family Players" resolved to
+#     James Yorkston and searched the services under its own name, storing a
+#     joint artist's 2 albums as his pool. With a player (the warm runs only
+#     then) the pool is asked for under the artist read's canonical name, the
+#     browsed name kept as the first retry.
+# ---------------------------------------------------------------------------
+{
+    no strict 'refs'; no warnings 'redefine';
+    my @asked;
+    local *{'Plugins::Discography::Sources::getCandidates'} = sub {
+        my ($class, $cl, $artist, $force, $cb, $opt) = @_;
+        push @asked, [ $artist, $opt ];
+        $cb->({});
+    };
+    local *{"${API}::getArtistCandidates"} = sub { $_[-1]->([]) };
+    my $cl = bless {}, 'T::Client';
+    fresh();
+    $B->can('_discographyView')->($cl, sub {}, { mbid => $LH, artist => 'Ladyhawke & Pip Brown', artist_id => 7 });
+    flush();
+    my ($name, $o) = @{ $asked[-1] || [] };
+    ok(scalar(@asked && ($o->{query} // '') eq 'Ladyhawke' && ($o->{aliases}[0] // '') eq 'Ladyhawke & Pip Brown'
+              && ($o->{mbid} // '') eq $LH),
+       "10: a page opened under another name asks the services under MusicBrainz's, the browsed name retried");
+    @asked = ();
+    fresh();
+    $B->can('_discographyView')->($cl, sub {}, { mbid => $LH, artist => 'Ladyhawke', artist_id => 7 });
+    flush();
+    ($name, $o) = @{ $asked[-1] || [] };
+    ok(scalar(@asked && ref $o eq 'HASH' && !exists $o->{query}),
+       '10: control: a page opened under its own name asks as before');
+}
+package T::Client; sub id { 'c1' }
+package main;
+
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

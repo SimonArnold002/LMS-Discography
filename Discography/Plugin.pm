@@ -73,6 +73,11 @@ $prefs->init({
     layout_albums  => 'tiles',
     layout_singles => 'list',
 
+    # The search page (0.56.10): the top result is a tile either way; 'split'
+    # lists the other artists under it, 'tiles' shows them as a tile row too.
+    # Same Material requirement as the two above.
+    layout_search  => 'split',
+
     # Source priority (ascending; 0 = never use). Local = the library.
     # Same convention as the ListenBrainz / Pitchfork plugins.
     svc_priority_local  => 1,

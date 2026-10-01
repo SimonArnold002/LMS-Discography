@@ -56,7 +56,7 @@ my $prefs = preferences('plugin.discography');
 # first module to call DB->store() sets it and later calls are ignored.
 # tools/syntax_check.sh asserts all three agree and match install.xml.
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.8';
+use constant CACHE_VERSION => '0.56.16';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 # The families DB.pm keeps across builds, by their CURRENT key prefix, so rows
 # written under an older key version are retired at open. Taken from the key
@@ -239,6 +239,37 @@ sub _mbThrottled {
 # without the flag and never goes ahead of one, so a tap made meanwhile waits
 # for at most the one request already out. A shed retry goes back to the front
 # of its own kind, never ahead of a foreground job.
+#
+# BACKGROUND WORK WAITS FOR EVERY PAGE, NOT JUST ITS OWN BUCKET'S (0.56.11).
+# Measured live on 0.56.10: Bruce Springsteen opened straight after its search
+# took 18.8 s (3-6 s before). The search's background row check sent a community
+# request while the page's first MusicBrainz request was still queued; the page
+# then needed the community API, which takes one request at a time, and waited
+# behind it; that request timed out, and the 30 s slow backoff that followed
+# refused the page's own request, so the page took the slow MusicBrainz route.
+# So, two rules on top of the yield above:
+#   * a background job is not SENT while any foreground job is queued or in
+#     flight in ANY bucket, or while a foreground job's answer is running
+#     (_netFgBusy, $NET_SETTLING): the slot is freed BEFORE the answer runs, and
+#     the page's next request is only queued BY that answer, so without the
+#     second test the background work took the free slot first. Woken when the
+#     answer has run (_netWake). A tap therefore finds every host free, except
+#     for a background request already out when it came, which it waits for;
+#   * a background request's TIMEOUT backs off background work only
+#     (`bgBusyUntil`); foreground jobs still go out. A 429 still backs off
+#     everything (`busyUntil`): that is the community API's own rule.
+#
+# BACKGROUND IS INHERITED (0.56.9). A job's callbacks run with $NET_BG set to its
+# own flag, so every request a background job's answer leads to is background
+# too, however many subs deep, without each one being told: the search's row
+# check (filterRowsWithContent, run after the list is shown) reaches eight
+# request paths. The shared in-flight waiters (_nameSearch, _readArtist,
+# getArtistCandidates) call each caller back under ITS OWN flag, so a page that
+# joins a background request is not demoted by it; and a foreground caller that
+# joins a background request still waiting in the queue moves it forward
+# (_netPromote). No request in this module is launched from a timer, which is
+# what would lose the flag.
+our $NET_BG = 0;
 use constant NET_GAP_MB        => 1.1;   # public musicbrainz.org only
 use constant NET_BACKOFF_START => 5;
 use constant NET_BACKOFF_MAX   => 30;
@@ -254,14 +285,56 @@ use constant NET_SLOW_BACKOFF  => 30;    # the community API after a timeout
 # needs every constant re-declared beside it; one word here avoids all of that.
 our %NET = (
     mb     => { gap => NET_GAP_MB, queue => [], inflight => 0, nextAt => 0,
-                timer => undef, busyUntil => 0, delay => 0, pumping => 0, repump => 0 },
+                timer => undef, busyUntil => 0, delay => 0, pumping => 0, repump => 0,
+                inflightBg => 0, bgBusyUntil => 0 },
     hosted => { gap => 0, queue => [], inflight => 0, nextAt => 0,
                 timer => undef, busyUntil => 0, delay => 0, pumping => 0, repump => 0,
-                slow => NET_SLOW_BACKOFF },
+                inflightBg => 0, bgBusyUntil => 0, slow => NET_SLOW_BACKOFF },
     lb     => { gap => 0, queue => [], inflight => 0, nextAt => 0,
                 timer => undef, busyUntil => 0, delay => 0, pumping => 0, repump => 0,
-                slow => NET_SLOW_BACKOFF },
+                inflightBg => 0, bgBusyUntil => 0, slow => NET_SLOW_BACKOFF },
 );
+
+# True while any bucket has a foreground job waiting or out, or a foreground
+# job's answer is running. Foreground jobs always queue ahead of background
+# ones, so a queue's first job tells.
+our $NET_SETTLING = 0;
+sub _netFgBusy {
+    return 1 if $NET_SETTLING;
+    for my $s (values %NET) {
+        return 1 if $s->{inflight} && !$s->{inflightBg};
+        my $head = ($s->{queue} || [])->[0];
+        return 1 if $head && !$head->{background};
+    }
+    return 0;
+}
+
+# A foreground job has gone and its answer has run: background jobs held in the
+# other buckets (every bucket when $except is undef) may go.
+sub _netWake {
+    my ($except) = @_;
+    _netPump($_) for grep { $_ ne ($except // '') && @{ $NET{$_}{queue} || [] } } sort keys %NET;
+    return;
+}
+
+# Runs a job's answer: under its own background flag, and, for a foreground
+# job, with background work held until the answer has queued what it needs next.
+# The wake runs even when the answer dies, or held background work would wait
+# for the next page to wake it.
+sub _netAnswer {
+    my ($b, $job, $code) = @_;
+    my $fg = $b && !$job->{background};
+    my $ok = eval {
+        local $NET_SETTLING = $NET_SETTLING + ($fg ? 1 : 0);
+        local $NET_BG = $job->{background};
+        $code->();
+        1;
+    };
+    my $e = $@;
+    _netWake() if $fg && !$NET_SETTLING;
+    die $e unless $ok;
+    return;
+}
 
 sub _netBucket {
     my ($url) = @_;
@@ -418,27 +491,50 @@ sub _netIsTimeout {
 # A bucket with a `slow` setting (the community API) is not asked again for that
 # many seconds after a timeout, so a slow service cannot add its whole timeout to
 # every job behind it. The deadline only ever moves outward, as _netNoteLimit's
-# does; the MusicBrainz bucket has no `slow` and is untouched.
+# does; the MusicBrainz bucket has no `slow` and is untouched. A BACKGROUND
+# request's timeout ($bg) holds background work only (0.56.11): a page must not
+# lose its own request to the after-work of the page before it.
 sub _netNoteSlow {
-    my ($b) = @_;
+    my ($b, $bg) = @_;
     my $s = $NET{ $b // '' } or return;
     return unless $s->{slow};
+    my $key   = $bg ? 'bgBusyUntil' : 'busyUntil';
     my $until = Time::HiRes::time() + $s->{slow};
-    $s->{busyUntil} = $until if $until > $s->{busyUntil};
-    $log->warn("$b timed out - not asking it for $s->{slow}s");
+    $s->{$key} = $until if $until > ($s->{$key} // 0);
+    $log->warn("$b timed out" . ($bg ? ' on background work - background work not asking it'
+                                     : ' - not asking it') . " for $s->{slow}s");
     return;
 }
 
+# Returns the job, so a shared in-flight registry can promote it (_netPromote).
 sub _netGet {
     my ($url, $onOk, $onErr, %opt) = @_;
     my $job = { url => $url, ok => ($onOk || sub {}), err => ($onErr || sub {}),
                 timeout => ($opt{timeout} || 15), tries => 0,
                 failFast => ($opt{failFast} ? 1 : 0),
-                background => ($opt{background} ? 1 : 0) };
+                background => (($opt{background} || $NET_BG) ? 1 : 0) };
     my $b = _netBucket($url);
-    unless ($b) { _netSend(undef, $job); return }
+    $job->{bucket} = $b;
+    unless ($b) { _netSend(undef, $job); return $job }
     _netEnqueue($NET{$b}{queue}, $job);
     _netPump($b);
+    return $job;
+}
+
+# A foreground caller has joined a BACKGROUND request: if it is still waiting in
+# its queue, it becomes foreground and moves ahead of the background jobs (a
+# request already sent cannot be recalled, and is answered soon anyway).
+sub _netPromote {
+    my ($job) = @_;
+    return unless ref $job eq 'HASH' && $job->{background} && $job->{bucket};
+    my $q = $NET{ $job->{bucket} }{queue} or return;
+    my ($at) = grep { $q->[$_] == $job } 0 .. $#$q;
+    return unless defined $at;
+    splice @$q, $at, 1;
+    $job->{background} = 0;
+    _netEnqueue($q, $job);
+    _dbg("promoted $job->{url} to the foreground (a tap is waiting on it)");
+    _netPump($job->{bucket});
     return;
 }
 
@@ -461,19 +557,40 @@ sub _netPump {
             # they sit in the queue and whether or not a request is in flight:
             # their callers have another source (see the community API note
             # above) and must not wait out 5-30 s for this. Jobs without the flag
-            # keep their place and wait for the deadline as before.
-            if ($s->{busyUntil} > $now && grep { $_->{failFast} } @{ $s->{queue} }) {
-                my @ff = grep { $_->{failFast} } @{ $s->{queue} };
-                @{ $s->{queue} } = grep { !$_->{failFast} } @{ $s->{queue} };
+            # keep their place and wait for the deadline as before. A background
+            # job also backs off for a background timeout (`bgBusyUntil`).
+            my $bgUntil = $s->{bgBusyUntil} // 0;
+            my @ff = grep { $_->{failFast}
+                            && ($s->{busyUntil} > $now || ($_->{background} && $bgUntil > $now)) }
+                     @{ $s->{queue} };
+            if (@ff) {
+                my %out = map { ($_ => 1) } @ff;
+                @{ $s->{queue} } = grep { !$out{$_} } @{ $s->{queue} };
                 for my $job (@ff) {
                     _dbg("$b backing off - not sending $job->{url}");
+                    local $NET_SETTLING = $NET_SETTLING + ($job->{background} ? 0 : 1);
+                    local $NET_BG = $job->{background};
                     $job->{err}->(Plugins::Discography::API::BackingOff->new, 'backing off',
                                   Plugins::Discography::API::BackingOff->new);
                 }
+                # This bucket is pumped again by the loop; the others are woken.
+                _netWake($b) if !$NET_SETTLING && grep { !$_->{background} } @ff;
                 next;
             }
             last if $s->{inflight};
-            my $at  = $s->{nextAt} > $s->{busyUntil} ? $s->{nextAt} : $s->{busyUntil};
+            # A background job waits while any page has a request waiting or out,
+            # on any host (0.56.11; see BACKGROUND WORK WAITS above). Woken by
+            # the foreground job that leaves last (_netWakeOthers).
+            my $head = $s->{queue}[0];
+            if ($head->{background} && _netFgBusy()) {
+                _dbg("$b holding background work - a page has a request waiting or out")
+                    unless $s->{held}++;
+                last;
+            }
+            $s->{held} = 0;
+            my $until = $s->{busyUntil};
+            $until = $bgUntil if $head->{background} && $bgUntil > $until;
+            my $at  = $s->{nextAt} > $until ? $s->{nextAt} : $until;
             if ($at > $now) {
                 # CLAIM THE SLOT BEFORE SCHEDULING, and keep a boolean rather
                 # than the handle (nothing ever kills this timer). `$s->{timer}
@@ -490,8 +607,9 @@ sub _netPump {
                 last;
             }
             my $job = shift @{ $s->{queue} };
-            $s->{inflight} = 1;
-            $s->{nextAt}   = $now + $s->{gap};
+            $s->{inflight}   = 1;
+            $s->{inflightBg} = $job->{background} ? 1 : 0;
+            $s->{nextAt}     = $now + $s->{gap};
             _netSend($b, $job);
         }
     } while ($s->{repump});
@@ -508,15 +626,19 @@ sub _netSend {
         return if $settled++;
         return unless $b;
         Slim::Utils::Timers::killSpecific($watchdog) if $watchdog;
-        $NET{$b}{inflight} = 0;
+        $NET{$b}{inflight}   = 0;
+        $NET{$b}{inflightBg} = 0;
         _netPump($b);
     };
     my $http = Slim::Networking::SimpleAsyncHTTP->new(
         sub {
             my $already = $settled;
+            my @a = @_;
             _netNoteOk($b) if $b;
-            $release->();
-            $job->{ok}->(@_) unless $already;
+            _netAnswer($b, $job, sub {
+                $release->();
+                $job->{ok}->(@a) unless $already;
+            });
         },
         sub {
             my $already = $settled;
@@ -544,9 +666,12 @@ sub _netSend {
             # carries the code and the headers, the async object carries
             # ->error, and handing over only one of them blinds the shed guard.
             if ($b && _netIsRateLimited(@_)) { _netNoteLimit($b) }
-            elsif ($b && !$already && _netIsTimeout(@_)) { _netNoteSlow($b) }
-            $release->();
-            $job->{err}->(@_) unless $already;
+            elsif ($b && !$already && _netIsTimeout(@_)) { _netNoteSlow($b, $job->{background}) }
+            my @a = @_;
+            _netAnswer($b, $job, sub {
+                $release->();
+                $job->{err}->(@a) unless $already;
+            });
         },
         { timeout => $job->{timeout} },
     );
@@ -565,11 +690,13 @@ sub _netSend {
                 return if $settled;
                 $log->warn("no callback for $job->{url} - freeing the queue");
                 $watchdog = undef;
-                _netNoteSlow($b);
-                $release->();
+                _netNoteSlow($b, $job->{background});
                 # A response-shaped object: error handlers call ->error and
                 # ->code on their first argument.
-                $job->{err}->(Plugins::Discography::API::LostResponse->new, 'timed out');
+                _netAnswer($b, $job, sub {
+                    $release->();
+                    $job->{err}->(Plugins::Discography::API::LostResponse->new, 'timed out');
+                });
             });
     }
     return;
@@ -891,6 +1018,8 @@ use constant NAME_MEMO_MAX   => 64;    # kept replies, across queries and limits
 
 # `our`, like %NET, so the suite can reset and inspect them: {key}{limit}.
 our (%NAME_MEMO, %NAME_WAIT);
+# The request each {key}{limit} in %NAME_WAIT is waiting on, for _netPromote.
+our %NAME_JOB;
 
 # The name-search request without its limit, byte for byte what both callers
 # built before: UTF-8 octets, every non-alphanumeric byte percent-encoded.
@@ -991,18 +1120,20 @@ sub _nameSearch {
     # A request in flight that may serve it: an exact caller waits only on its
     # own limit; the rest on the largest in flight (a smaller one may still turn
     # out to be the whole result).
-    my $entry = [ $want, $fetch, $onOk, $onErr, $label, $exact ];
+    # Each waiter keeps its own background flag (see $NET_BG).
+    my $entry = [ $want, $fetch, $onOk, $onErr, $label, $exact, $NET_BG ];
     if (my $waits = $NAME_WAIT{$key}) {
         my ($l) = $exact ? grep { $_ == $fetch } keys %$waits
                          : sort { $b <=> $a } keys %$waits;
         if (defined $l) {
             push @{ $waits->{$l} }, $entry;
+            _netPromote($NAME_JOB{$key}{$l}) unless $NET_BG;
             return;
         }
     }
     $NAME_WAIT{$key}{$fetch} = [ $entry ];
 
-    _netGet($base . $q . '&limit=' . $fetch,
+    my $job = _netGet($base . $q . '&limit=' . $fetch,
         sub {
             my $resp     = shift;
             my $content  = $resp->content;
@@ -1016,6 +1147,8 @@ sub _nameSearch {
             # wedge the query with nothing in flight to release it.
             my $cbs = delete $NAME_WAIT{$key}{$fetch};
             delete $NAME_WAIT{$key} unless %{ $NAME_WAIT{$key} || {} };
+            delete $NAME_JOB{$key}{$fetch};
+            delete $NAME_JOB{$key} unless %{ $NAME_JOB{$key} || {} };
             my $r;
             if ($arts) {
                 $r = { arts => $arts, limit => $fetch, count => $data->{count},
@@ -1023,7 +1156,8 @@ sub _nameSearch {
                 _nameMemoPut($key, $fetch, $r);
             }
             for my $c (@{ $cbs || [] }) {
-                my ($cw, $cf, $ok, $err, $lbl, $ex) = @$c;
+                my ($cw, $cf, $ok, $err, $lbl, $ex, $bg) = @$c;
+                local $NET_BG = $bg;
                 # A waiter this reply does not serve after all asks again itself.
                 if ($r && !$serves->($fetch, $r, $cw, $cf, $ex)) {
                     _nameSearch($base, $q, $cw, $cf, $ok, $err, $lbl, $ex);
@@ -1037,9 +1171,17 @@ sub _nameSearch {
             my @e = @_;
             my $cbs = delete $NAME_WAIT{$key}{$fetch};
             delete $NAME_WAIT{$key} unless %{ $NAME_WAIT{$key} || {} };
-            $_->[3]->(@e) for @{ $cbs || [] };
+            delete $NAME_JOB{$key}{$fetch};
+            delete $NAME_JOB{$key} unless %{ $NAME_JOB{$key} || {} };
+            for my $c (@{ $cbs || [] }) {
+                local $NET_BG = $c->[6];
+                $c->[3]->(@e);
+            }
         },
         timeout => 12);
+    # Kept only while the request is still waited on: a transport that answers
+    # at once has already settled it.
+    $NAME_JOB{$key}{$fetch} = $job if $NAME_WAIT{$key} && $NAME_WAIT{$key}{$fetch};
     return;
 }
 
@@ -2112,6 +2254,35 @@ sub warmCandidateCounts {
 }
 
 # ---------------------------------------------------------------------------
+# THE ROW CHECK'S ANSWER PER RESULT NAME (0.56.9), for the search's known mode
+# (filterRowsWithContent): { m => mbid, o => 1 when kept only to merge }, or
+# { m => '' } when the community API knows no artist of that name. Written by the
+# full check as each row settles, never for a row whose check got no answer, nor
+# for a library row (its tag decides). Found kept 14 days, as the community's
+# names are; "no artist" 7 days, as a proven-empty page is (_emptyKey): long
+# enough that a junk credit stays hidden, short enough to notice one becoming an
+# artist. The count and the proven-empty verdict are read afresh each search.
+use constant ROWV_FOUND_TTL    => 14 * 86400;
+use constant ROWV_NONE_TTL     =>  7 * 86400;
+# A query's background check is not started twice in this long (a repeat search
+# while the first is still asking); cleared when it finishes.
+use constant ROWCHECK_BUSY_MAX => 120;
+our %ROWCHECK_BUSY;
+sub _rowKey {
+    my $k = 'dsc:rowv:1:' . lc($_[0] // '');
+    utf8::encode($k) if utf8::is_utf8($k);
+    return $k;
+}
+sub _rememberRow {
+    my ($name, $mbid, $merge) = @_;
+    return unless defined $name && length $name && defined $mbid;
+    my $none = $mbid eq '';
+    eval { $cache->set(_rowKey($name), { m => lc $mbid, o => ($merge ? 1 : 0) },
+                       $none ? ROWV_NONE_TTL : ROWV_FOUND_TTL); 1 };
+    return;
+}
+
+# ---------------------------------------------------------------------------
 # "DOES THIS SEARCH ROW LEAD ANYWHERE?"
 #
 # Simon: "It either has contents or it doesnt and its hidden from view if it
@@ -2162,14 +2333,37 @@ sub warmCandidateCounts {
 #
 # $opt: query => the typed query (pass 1); asked => a hash the caller shares,
 # which collects every mbid whose count this check asked for and saw SETTLE, so
-# the search's same-name section does not ask again for one that failed.
+# the search's same-name acts do not ask again for one that failed;
+# known => 1, the search's mode (below).
+#
+# THE SEARCH DOES NOT WAIT FOR THIS CHECK (0.56.9; Simon, 2026-10-01: "this in
+# reality should be the quickest part it is searching Qobuz and local data. If
+# the main delay is to clear the empty junk entries then lets not do that just
+# hide them on 2nd search"). Measured cold: Qobuz and the library answer in
+# 0.7-0.9 s, and the check then took the search to 6-13 s, asking the community
+# API about each leftover result one at a time (Tom Petty: 12 asked, 13.5 s).
+# With `known`, each row is decided from what earlier checks left behind - its
+# own answer (_rememberRow), the resolver's cached answer for the name, the
+# community API's "no artist" - and a row nothing is known about is SHOWN,
+# unchecked, as a row whose check failed always was. Counts and aliases are
+# read from the cache, never fetched. The reply goes out at once; THEN this same
+# check, unchanged, runs on the original rows as background work ($NET_BG), and
+# every answer it reaches is kept per result name, so the next search, for any
+# term, hides the junk and merges the duplicates. Nothing leaves a list while it
+# is shown. Ledger A2 `THE SEARCH DOES NOT WAIT FOR ITS ROW CHECK`.
 sub filterRowsWithContent {
     my ($class, $rows, $cb, $opt) = @_;
     $cb ||= sub {};
     $rows ||= [];
     $opt  ||= {};
     my $asked = $opt->{asked} || {};
+    my $known = $opt->{known} ? 1 : 0;
     return $cb->($rows, 0) unless @$rows;
+    # The background check must see the rows as they CAME, and the fold below
+    # edits them in place (sources merged, a name relabelled, Local attached).
+    my @orig = $known ? map { { %$_, sources => [ @{ $_->{sources} || [] } ] } } @$rows : ();
+    my (@later, %needCount, %aliasLater);   # known: what the background check is for
+    my %tagged;                             # library rows settled by their own tag
 
     # Rows are resolved concurrently and their requests share the queues, so
     # order is preserved by writing into a slot per row rather than pushing on
@@ -2391,7 +2585,35 @@ sub filterRowsWithContent {
                 # it is the one spelling known to resolve. MB canonical remains
                 # the right answer for a row the library does not know, which is
                 # the case 0.44.20 was written for.
+                # ...BUT A LIBRARY ENTRY CALLED BY MUSICBRAINZ'S NAME LABELS THE
+                # ROW (0.56.13; Simon, 2026-10-01: the search showed "James
+                # Yorkston and friends", not James Yorkston, though "they all
+                # link back to James Yorkston in MB"). The survivor is the entry
+                # owning the most albums (above), which can be a variant name;
+                # when another folded library entry is literally MusicBrainz's
+                # name for the act, that is both a library spelling and the
+                # act's own name, so the row reads it. It still opens on the
+                # survivor's id, the one holding the albums.
+                my $libCanon;
                 if ($didFold && $slot[$keepIdx]{artist_id}) {
+                    my $canon = $class->peekArtistName($mbid);
+                    my $cn = (defined $canon && length $canon)
+                           ? Plugins::Discography::Sources::_norm($canon) : '';
+                    ($libCanon) = grep {
+                        $folded{$_} && $slot[$_]{artist_id} && length $cn
+                        && Plugins::Discography::Sources::_norm($slot[$_]{name} // '') eq $cn
+                    } @idx;
+                    $libCanon = undef if defined $libCanon && length $cn
+                        && Plugins::Discography::Sources::_norm($slot[$keepIdx]{name} // '') eq $cn;
+                }
+                if (defined $libCanon) {
+                    _dbg("search rows: labelling '" . ($slot[$keepIdx]{name} // '?')
+                        . "' as the library's '" . ($slot[$libCanon]{name} // '?')
+                        . "' (MB's name for $mbid), still opening artist_id "
+                        . $slot[$keepIdx]{artist_id});
+                    $slot[$keepIdx]{name} = $slot[$libCanon]{name};
+                }
+                elsif ($didFold && $slot[$keepIdx]{artist_id}) {
                     _dbg("search rows: keeping the LIBRARY spelling '"
                         . ($slot[$keepIdx]{name} // '?')
                         . "' (artist_id " . $slot[$keepIdx]{artist_id}
@@ -2528,6 +2750,22 @@ sub filterRowsWithContent {
             $cb->(\@out, scalar(@$rows) - scalar(@out));
         };
 
+        # Known: only the groups whose aliases are cached fold now. The rest stay
+        # apart, a merge-only row in them shown as an ordinary one, and their
+        # aliases are fetched after the reply, for the next search.
+        if ($known) {
+            my @cold = grep { !$class->peekArtistAliases($_) } @dup;
+            if (@cold) {
+                my %cold = map { $_ => 1 } @cold;
+                @dup = grep { !$cold{$_} } @dup;
+                for my $m (@cold) {
+                    $aliasLater{$m} = 1;
+                    delete $mergeOnly{$_} for @{ $group{$m} };
+                }
+            }
+            return $emit->();
+        }
+
         # Alias lists only for the ambiguous groups (usually none), then decide.
         # Cached, so at most one MB request per duplicated artist.
         my $pend = scalar @dup;
@@ -2539,10 +2777,14 @@ sub filterRowsWithContent {
 
     # Every row settles exactly once: kept (with its mbid, for the fold) or
     # dropped. The last one to settle runs $finish.
+    # A full check keeps every answer it reaches for a non-library row (kept or
+    # dropped, with its artist) for the next search's known mode.
     my $settle = sub {
         my ($i, $keep, $mbid) = @_;
         $slot[$i] = $rows->[$i] if $keep;
         $mbof[$i] = $mbid       if $keep;
+        _rememberRow($rows->[$i]{name}, $mbid, $mergeOnly{$i})
+            if !$known && $mbid && !$tagged{$i};
         $finish->() unless --$left;
     };
 
@@ -2570,7 +2812,7 @@ sub filterRowsWithContent {
         if ($class->peekArtistEmpty($mbid)) {
             _dbg("search row DROP '$name': proven empty on a previous "
                 . "render (mbid=$mbid)");
-            return $settle->($i, 0);
+            return $settle->($i, 0, $mbid);
         }
         my $decide = sub {
             my $n = $class->peekReleaseGroupCount($mbid);
@@ -2594,6 +2836,58 @@ sub filterRowsWithContent {
         });
     };
 
+    # KNOWN MODE: a row decided by what is in the cache, as the full check would
+    # decide it with the same answers; anything else shown and checked later.
+    my $judgeKnown = sub {
+        my ($i, $mbid, $how) = @_;
+        my $name = $rows->[$i]{name};
+        if ($class->peekArtistEmpty($mbid)) {
+            _dbg("search row DROP '$name': proven empty on a previous render (mbid=$mbid)");
+            return $settle->($i, 0);
+        }
+        my $n = $class->peekReleaseGroupCount($mbid);
+        $needCount{ lc $mbid } = 1 unless defined $n;
+        my $keep = (!defined $n || $n > 0) ? 1 : 0;
+        _dbg("search row " . ($keep ? 'keep' : 'DROP') . " '$name': mbid=$mbid rgcount="
+            . (defined $n ? $n : 'not counted yet') . " ($how)");
+        $settle->($i, $keep, $mbid);
+    };
+    my $decideKnown = sub {
+        my ($i, $name) = @_;
+        my $lib = $rows->[$i]{artist_id};
+        my $v = $cache->get(_rowKey($name));
+        if (ref $v eq 'HASH' && defined $v->{m} && $v->{m} eq '' && !$lib) {
+            _dbg("search row DROP '$name': no MB artist (checked before)");
+            return $settle->($i, 0);
+        }
+        if (ref $v eq 'HASH' && $v->{m}) {
+            if ($v->{o} && !$lib) {
+                _dbg("search row '$name': checked before, answered as $v->{m} - kept only to merge");
+                $mergeOnly{$i} = 1;
+                return $settle->($i, 1, $v->{m});
+            }
+            return $settle->($i, 1, $v->{m}) if $lib;
+            return $judgeKnown->($i, $v->{m}, 'checked before');
+        }
+        # The resolver's own answer for the name (a page's, the typed query's).
+        my $m = $cache->get(_mbidKey($name));
+        if (defined $m && length $m) {
+            return $settle->($i, 1, $m) if $lib;
+            return $judgeKnown->($i, $m, 'resolver, cached');
+        }
+        unless ($lib) {
+            my $cm = $cache->get(_cmNameKey($name));
+            if ((defined $m && $m eq '')
+                || (ref $cm eq 'HASH' && defined $cm->{mbid} && $cm->{mbid} eq '')) {
+                _dbg("search row DROP '$name': no MB artist (checked before)");
+                return $settle->($i, 0);
+            }
+        }
+        _dbg("search row keep '$name': not checked yet - shown, checked after the list");
+        push @later, $i;
+        $settle->($i, 1, undef);
+    };
+
     my @pend;   # [index, name] of the rows to resolve by name
     for my $i (0 .. $#$rows) {
         my $row  = $rows->[$i];
@@ -2605,10 +2899,40 @@ sub filterRowsWithContent {
         # so it can take part in folding and carry its artist_id across. Its
         # own tag first, as getArtistMbid always has.
         if ($row->{artist_id} && (my $tag = _libraryTagMbid($row->{artist_id}))) {
+            $tagged{$i} = 1;
             $settle->($i, 1, $tag);
             next;
         }
+        if ($known) { $decideKnown->($i, $name); next }
         push @pend, [ $i, $name ];
+    }
+
+    # Known: the reply has gone (every row settled above, at once). What it could
+    # not decide is now asked as background work, for the next search: the full
+    # check on the rows as they came (it sees every row, so a merge-only answer
+    # finds the row it merges into), the counts not yet known, the aliases of the
+    # groups that could not fold. One run per query at a time.
+    if ($known) {
+        my $qk = lc($opt->{query} // '');
+        my $now = Time::HiRes::time();
+        if ((@later || %needCount || %aliasLater) && ($ROWCHECK_BUSY{$qk} // 0) <= $now) {
+            $ROWCHECK_BUSY{$qk} = $now + ROWCHECK_BUSY_MAX;
+            _dbg('search rows: ' . scalar(@later) . ' not checked yet, '
+                . scalar(keys %needCount) . ' count(s), ' . scalar(keys %aliasLater)
+                . ' alias list(s) - checking after the list');
+            local $NET_BG = 1;
+            $class->warmCandidateCounts([ map { { mbid => $_ } } keys %needCount ])
+                if %needCount;
+            $class->warmArtistAliases($_) for keys %aliasLater;
+            if (@later) {
+                $class->filterRowsWithContent(\@orig, sub {
+                    delete $ROWCHECK_BUSY{$qk};
+                    _dbg("search rows for '$qk': checked after the list, for the next search");
+                }, { query => $opt->{query} });
+            }
+            else { delete $ROWCHECK_BUSY{$qk} }
+        }
+        return;
     }
     return unless @pend;
 
@@ -2687,7 +3011,10 @@ sub filterRowsWithContent {
                     _dbg("search row keep '$name': the community API gave no answer - unchecked");
                     return $settle->($i, 1, undef);
                 }
-                return $judge->($i, undef, 'community API') unless $a->{mbid};
+                unless ($a->{mbid}) {
+                    _rememberRow($name, '');
+                    return $judge->($i, undef, 'community API');
+                }
                 my $n = Plugins::Discography::Sources::_norm(_stripAnnotation($name));
                 my $same = length($n)
                     && $n eq Plugins::Discography::Sources::_norm(_stripAnnotation($a->{name} // ''));
@@ -2990,6 +3317,15 @@ sub _setMbName {
 # the name is remembered in %mbNameMem as well (declared at the top of the
 # file, because the resolver writes it and compiles first), and
 # `warmArtistAliases` refetches when the cache has aliases but no name.
+# What the name resolver answered for a name, from the cache only: the act a
+# result row entered by name opens. undef when it was not asked, or found none.
+sub peekArtistMbid {
+    my ($class, $name) = @_;
+    return undef unless defined $name && length $name;
+    my $m = $cache->get(_mbidKey($name));
+    return (defined $m && length $m) ? $m : undef;
+}
+
 sub peekArtistName {
     my ($class, $mbid) = @_;
     return undef unless $mbid;
@@ -3117,18 +3453,23 @@ sub getArtistCandidates {
     # under a secondary act's name.
     my $key = _candKey($name);
     if ($candWaiting{$key}) {
-        push @{ $candWaiting{$key} }, $cb;
+        push @{ $candWaiting{$key} }, [ $cb, $NET_BG ];
         return;
     }
     $candWaiting{$key} = [];
+    my $bg0 = $NET_BG;
     my $settle = sub {
         my ($cands) = @_;
         # Released BEFORE the callbacks run: one of them may ask again (a
         # Refresh path clears the cache), and a marker still held would wedge
         # the name with no fetch in flight to release it.
         my $queued = delete $candWaiting{$key};
-        $cb->($cands);
-        $_->($cands) for @{ $queued || [] };
+        # Each caller under its own background flag (see $NET_BG).
+        { local $NET_BG = $bg0; $cb->($cands); }
+        for my $w (@{ $queued || [] }) {
+            local $NET_BG = $w->[1];
+            $w->[0]->($cands);
+        }
     };
 
     # Quoted primary, unquoted retry — the same rule as _artistMbidByName, and
@@ -3500,6 +3841,13 @@ sub clearArtistCache {
     my $name = $a{name};
     $name =~ s/^\s+|\s+$//g if defined $name;
     my $mbid = $a{mbid};
+
+    # THE LIBRARY TAG BEFORE THE NAME, as the page resolves it (getArtistMbid:
+    # "Library tag wins"). Field, 2026-10-01: `clearcache artist_id:154055`
+    # (Radiohead, tagged) found no mbid under the name, cleared only the
+    # name-keyed streaming pools, and the next open read the MB-keyed one the
+    # page actually uses (`peekPool ...:tidal:mb:a74b1b7f...: HIT`).
+    $mbid = _libraryTagMbid($a{artist_id}) if !$mbid && $a{artist_id};
 
     if (!$mbid && defined $name && length $name) {
         my $ck = _mbidKey($name);
@@ -4061,25 +4409,32 @@ sub warmCollaborations {
 # The in-flight key is the mbid exactly as passed, because the band keys are
 # built from it as passed (every caller hands over a lowercased id).
 # ---------------------------------------------------------------------------
-my %artistReadWaiting;
+my (%artistReadWaiting, %artistReadJob);
 
 sub _readArtist {
     my ($mbid, $cb) = @_;
+    # Each waiter keeps its own background flag; a page joining a background read
+    # (the search's row check folding two results) moves it forward (see $NET_BG).
     if ($artistReadWaiting{$mbid}) {
-        push @{ $artistReadWaiting{$mbid} }, $cb;
+        push @{ $artistReadWaiting{$mbid} }, [ $cb, $NET_BG ];
+        _netPromote($artistReadJob{$mbid}) unless $NET_BG;
         return;
     }
-    $artistReadWaiting{$mbid} = [ $cb ];
+    $artistReadWaiting{$mbid} = [ [ $cb, $NET_BG ] ];
     my $settle = sub {
         my ($r) = @_;
         # Released BEFORE the callbacks run (getArtistCandidates' reason): one
         # may ask again at once, and a marker still held would wedge the artist
         # with no request in flight to release it.
         my $queued = delete $artistReadWaiting{$mbid};
-        $_->($r) for @{ $queued || [] };
+        delete $artistReadJob{$mbid};
+        for my $w (@{ $queued || [] }) {
+            local $NET_BG = $w->[1];
+            $w->[0]->($r);
+        }
     };
 
-    _netGet(_mbBase() . "artist/$mbid?inc=aliases+artist-rels+release-groups&fmt=json",
+    my $job = _netGet(_mbBase() . "artist/$mbid?inc=aliases+artist-rels+release-groups&fmt=json",
         sub {
             my $d = eval { from_json(shift->content) };
             if ($@ || ref $d ne 'HASH') {
@@ -4175,6 +4530,9 @@ sub _readArtist {
             $settle->(undef);
         },
         timeout => 15);
+    # Kept only while the read is still waited on (a transport that answers at
+    # once has already settled it).
+    $artistReadJob{$mbid} = $job if $artistReadWaiting{$mbid};
     return;
 }
 

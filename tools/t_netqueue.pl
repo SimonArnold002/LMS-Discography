@@ -636,5 +636,283 @@ ok(scalar(@SENT == 2), '... and releases it once it has passed');
     ok(scalar("@q" eq 'fgshed fg2'), '14: a shed foreground job still retries at the very front');
 }
 
+# ---------------------------------------------------------------------------
+# 15. BACKGROUND IS INHERITED (0.56.9). The search's row check runs after the
+#     list is shown, through eight request paths, so the flag rides the answers
+#     instead of being passed to each: a request made while a background job's
+#     answer runs is background too. Shared in-flight waiters call each caller
+#     back under its OWN flag, and a page joining a background request still in
+#     the queue moves it forward.
+# ---------------------------------------------------------------------------
+{
+    no warnings 'once';
+    my $NBG = sub { $Plugins::Discography::API::NET_BG };
+    my $promote = $A->can('_netPromote');
+    reset_all();
+    my ($child, $seen);
+    $get->($PUBLIC . 'bgjob', sub { $seen = $NBG->(); $child = $get->($PUBLIC . 'child', sub {}, sub {}) },
+           sub {}, background => 1);
+    finish($SENT[0]);
+    ok(scalar($seen && ref $child eq 'HASH' && $child->{background}),
+       "15: a request made in a background job's answer is background too");
+    ok(scalar(!$NBG->()), '15: ... and the flag is clear again once that answer has run');
+
+    reset_all(); $child = undef;
+    $get->($PUBLIC . 'fgjob', sub { $child = $get->($PUBLIC . 'child', sub {}, sub {}) }, sub {});
+    finish($SENT[0]);
+    ok(scalar(ref $child eq 'HASH' && !$child->{background}), "15: one made in a foreground job's answer is not");
+
+    reset_all(); $child = undef;
+    $get->($PUBLIC . 'bgerr', sub {}, sub { $child = $get->($PUBLIC . 'child', sub {}, sub {}) },
+           background => 1);
+    failWith($SENT[0], 500);
+    ok(scalar(ref $child eq 'HASH' && $child->{background}), '15: ... the error path inherits it too');
+
+    reset_all(); $child = undef;
+    my $H = 'https://api.lms-community.org/music/';
+    $get->($H . 'a', sub {}, sub {});
+    failWith($SENT[0], 429);
+    $get->($H . 'ff', sub {}, sub { $child = $get->($PUBLIC . 'child', sub {}, sub {}) },
+           failFast => 1, background => 1);
+    ok(scalar(ref $child eq 'HASH' && $child->{background}),
+       '15: ... and so does a background job failed at once while its bucket backs off');
+
+    reset_all();
+    $get->($PUBLIC . 'out', sub {}, sub {});
+    my $bgX = $get->($PUBLIC . 'bgX', sub {}, sub {}, background => 1);
+    $get->($PUBLIC . 'bgY', sub {}, sub {}, background => 1);
+    $promote->($bgX);
+    $get->($PUBLIC . 'tap', sub {}, sub {});
+    my @q = map { $_->{url} =~ m{/(\w+)$} } @{ bucket()->{queue} };
+    ok(scalar("@q" eq 'bgX tap bgY' && !$bgX->{background}),
+       '15: a promoted job leaves the background jobs, and keeps its place among the foreground');
+    $promote->($SENT[0]);
+    ok(scalar(@SENT == 1 && "@{[ map { $_->{url} =~ m{/(\w+)$} } @{ bucket()->{queue} } ]}" eq 'bgX tap bgY'),
+       '15: ... a request already out is left alone');
+
+    # A page joins an artist read the background work started.
+    reset_all();
+    my $M = 'aaaaaaaa-0000-0000-0000-000000000001';
+    my (%flag, %kid);
+    $get->($PUBLIC . 'out', sub {}, sub {});
+    {
+        local $Plugins::Discography::API::NET_BG = 1;
+        Plugins::Discography::API::_readArtist($M, sub {
+            $flag{bg} = $NBG->(); $kid{bg} = $get->($PUBLIC . 'kidbg', sub {}, sub {}) });
+    }
+    $get->($PUBLIC . 'bgZ', sub {}, sub {}, background => 1);
+    my ($read) = grep { $_->{url} =~ m{artist/$M} } @{ bucket()->{queue} };
+    ok(scalar($read && $read->{background}), '15: an artist read the background work starts waits as background');
+    Plugins::Discography::API::_readArtist($M, sub {
+        $flag{fg} = $NBG->(); $kid{fg} = $get->($PUBLIC . 'kidfg', sub {}, sub {}) });
+    @q = map { $_->{url} =~ m{artist/} ? 'read' : ($_->{url} =~ m{/(\w+)$})[0] } @{ bucket()->{queue} };
+    ok(scalar("@q" eq 'read bgZ' && $read && !$read->{background}),
+       '15: a page joining it moves it ahead of the background work');
+    finish($SENT[0]);
+    advance($now + $GAP + 0.01);
+    my ($sentRead) = grep { $_->{url} =~ m{artist/$M} } @SENT;
+    failWith($sentRead, 500);
+    ok(scalar($flag{bg} && defined $flag{fg} && !$flag{fg}), '15: each caller hears back under its own flag');
+    ok(scalar(ref $kid{bg} eq 'HASH' && $kid{bg}{background} && ref $kid{fg} eq 'HASH' && !$kid{fg}{background}),
+       "15: ... so the page's next request is not demoted");
+
+    # The same for a name search: a page joins the background work's request.
+    reset_all();
+    %Plugins::Discography::API::NAME_WAIT = (); %Plugins::Discography::API::NAME_MEMO = ();
+    %Plugins::Discography::API::NAME_JOB = ();
+    %flag = (); %kid = ();
+    my $nq = Plugins::Discography::API::_nameQuery('artist', 'Joined Name', 0);
+    $get->($PUBLIC . 'out', sub {}, sub {});
+    {
+        local $Plugins::Discography::API::NET_BG = 1;
+        Plugins::Discography::API::_nameSearch($PUBLIC, $nq, 8, 8, sub {}, sub {
+            $flag{bg} = $NBG->(); $kid{bg} = $get->($PUBLIC . 'kidbg', sub {}, sub {}) }, 'bg', 0);
+    }
+    $get->($PUBLIC . 'bgZ', sub {}, sub {}, background => 1);
+    Plugins::Discography::API::_nameSearch($PUBLIC, $nq, 8, 15, sub {}, sub {
+        $flag{fg} = $NBG->(); $kid{fg} = $get->($PUBLIC . 'kidfg', sub {}, sub {}) }, 'fg', 0);
+    my ($nj) = grep { $_->{url} =~ m{artist\?query} } @{ bucket()->{queue} };
+    $get->($PUBLIC . 'tap', sub {}, sub {});
+    @q = map { $_->{url} =~ m{artist\?query} ? 'name' : ($_->{url} =~ m{/(\w+)$})[0] } @{ bucket()->{queue} };
+    ok(scalar("@q" eq 'name tap bgZ' && $nj && !$nj->{background}),
+       '15: a page joining a background name search moves it forward too');
+    finish($SENT[0]);
+    advance($now + $GAP + 0.01);
+    my ($sentName) = grep { $_->{url} =~ m{artist\?query} } @SENT;
+    failWith($sentName, 500);
+    ok(scalar($flag{bg} && defined $flag{fg} && !$flag{fg}
+              && ref $kid{fg} eq 'HASH' && !$kid{fg}{background}),
+       '15: ... and its callers hear back under their own flags (a failed search)');
+
+    # The same on an ANSWERED search: each caller's onOk under its own flag.
+    reset_all();
+    %Plugins::Discography::API::NAME_WAIT = (); %Plugins::Discography::API::NAME_MEMO = ();
+    %Plugins::Discography::API::NAME_JOB = ();
+    %flag = (); %kid = ();
+    $nq = Plugins::Discography::API::_nameQuery('artist', 'Answered Name', 0);
+    {
+        local $Plugins::Discography::API::NET_BG = 1;
+        Plugins::Discography::API::_nameSearch($PUBLIC, $nq, 8, 8, sub {
+            $flag{bg} = $NBG->(); $kid{bg} = $get->($PUBLIC . 'kidbg', sub {}, sub {}) }, sub {}, 'bg', 0);
+    }
+    Plugins::Discography::API::_nameSearch($PUBLIC, $nq, 8, 15, sub {
+        $flag{fg} = $NBG->(); $kid{fg} = $get->($PUBLIC . 'kidfg', sub {}, sub {}) }, sub {}, 'fg', 0);
+    ($sentName) = grep { $_->{url} =~ m{artist\?query} } @SENT;
+    $sentName->{body} = '{"count":0,"artists":[]}' if $sentName;
+    finish($sentName);
+    ok(scalar($flag{bg} && defined $flag{fg} && !$flag{fg}
+              && ref $kid{bg} eq 'HASH' && $kid{bg}{background}
+              && ref $kid{fg} eq 'HASH' && !$kid{fg}{background}),
+       '15: ... and on an answered one');
+}
+
+# ---------------------------------------------------------------------------
+# 16. BACKGROUND WORK WAITS FOR EVERY PAGE (0.56.11). Measured live on 0.56.10:
+#     Bruce Springsteen opened straight after its search took 18.8 s. The row
+#     check's community request went out while the page's first MusicBrainz
+#     request waited; the page then queued behind it on the community API, it
+#     timed out, and the 30 s backoff refused the page's own request. Now a
+#     background job is not sent while any page request waits or is out, on
+#     any host, and a background timeout holds background work only.
+# ---------------------------------------------------------------------------
+{
+    my $H    = 'https://api.lms-community.org/music/';
+    my $LB   = 'https://api.listenbrainz.org/1/';
+    my $SLOW = $A->can('NET_SLOW_BACKOFF')->();
+    my $hb   = sub { $Plugins::Discography::API::NET{hosted} };
+    my $sent = sub { join ' ', map { $_->{url} =~ m{/([\w.]+)$} } @SENT };
+    my $find = sub { my ($n) = @_; (grep { $_->{url} =~ m{/\Q$n\E$} } @SENT)[0] };
+    my $timeoutWith = sub {
+        my ($r) = @_;
+        return ok(0, 'expected a request to time out, but none was sent') unless ref $r;
+        $r->{error} = 'Timed out waiting for data';
+        $r->{err}->($r, 'Timed out waiting for data', T::RESP->new(code => 500, hdr => {}));
+    };
+
+    # The measured sequence, replayed.
+    reset_all();
+    my %page;
+    $get->($PUBLIC . 'combined', sub {}, sub {}, background => 1);
+    ok(scalar($sent->() eq 'combined'), '16: background work with no page about goes out at once');
+    $get->($PUBLIC . 'artist', sub {
+        $get->($LB . 'lblist', sub { $page{lb} = 1 }, sub { $page{lb} = 'err' }, failFast => 1);
+        $get->($H . 'pagelist', sub { $page{cm} = 1 }, sub { $page{cm} = $_[1] }, failFast => 1);
+    }, sub {});
+    $get->($H . 'bgname', sub {}, sub {}, background => 1, failFast => 1);
+    ok(scalar($sent->() eq 'combined'),
+       "16: the row check's community request waits while the page's MusicBrainz request is queued");
+    finish($find->('combined'));
+    advance($now + $GAP + 0.01);
+    ok(scalar($sent->() eq 'combined artist'), '16: ... and while it is out');
+    finish($find->('artist'));
+    ok(scalar($sent->() eq 'combined artist lblist pagelist'),
+       '16: the page asks the community API at once, ahead of the waiting background request');
+    finish($find->('pagelist'));
+    ok(scalar($sent->() eq 'combined artist lblist pagelist'),
+       '16: ... the background request still waits while the page has ListenBrainz out');
+    finish($find->('lblist'));
+    ok(scalar($sent->() eq 'combined artist lblist pagelist bgname' && $page{cm} && $page{lb}),
+       '16: ... and goes out when the page has nothing left waiting or out');
+
+    # A background request already out when the page comes, and it times out.
+    reset_all(); %page = ();
+    $get->($H . 'bgout', sub {}, sub {}, background => 1);
+    $get->($H . 'pagelist', sub { $page{cm} = 1 }, sub { $page{cm} = $_[1] }, failFast => 1);
+    ok(scalar($sent->() eq 'bgout'), '16: a page request waits for a background request already out (one at a time)');
+    $timeoutWith->($find->('bgout'));
+    ok(scalar($sent->() eq 'bgout pagelist' && !defined $page{cm}),
+       '16: that request timing out does not refuse the page: its request goes out');
+    ok(scalar($hb->()->{busyUntil} == 0 && abs($hb->()->{bgBusyUntil} - ($now + $SLOW)) < 0.001),
+       "16: ... the ${SLOW}s hold is on background work only");
+    my $bgff;
+    $get->($H . 'bgff', sub {}, sub { $bgff = $_[1] }, background => 1, failFast => 1);
+    ok(scalar(($bgff // '') eq 'backing off'), '16: ... a background failFast request is failed at once meanwhile');
+    $get->($H . 'bgwait', sub {}, sub {}, background => 1);
+    finish($find->('pagelist'));
+    ok(scalar($sent->() eq 'bgout pagelist' && $page{cm}),
+       '16: ... and a background request that can wait, waits out the hold');
+    advance($now + $SLOW + 0.01);
+    ok(scalar($sent->() eq 'bgout pagelist bgwait'), '16: ... then goes');
+
+    # The same after the watchdog (no callback at all).
+    reset_all(); %page = ();
+    $get->($H . 'bglost', sub {}, sub {}, background => 1);
+    $get->($H . 'pagelist', sub { $page{cm} = 1 }, sub { $page{cm} = $_[1] }, failFast => 1);
+    advance($now + 15 + $PAD + 0.01);
+    ok(scalar($sent->() eq 'bglost pagelist' && !defined $page{cm} && $hb->()->{busyUntil} == 0),
+       '16: a lost background callback (the watchdog) does not refuse the page either');
+
+    # CONTROLS: a page request's own timeout still holds every request; a 429
+    # on a background request still holds the page (the API's own rule).
+    reset_all(); %page = ();
+    $get->($H . 'fgout', sub {}, sub {});
+    $get->($H . 'pagelist', sub { $page{cm} = 1 }, sub { $page{cm} = $_[1] }, failFast => 1);
+    $timeoutWith->($find->('fgout'));
+    ok(scalar(($page{cm} // '') eq 'backing off' && abs($hb->()->{busyUntil} - ($now + $SLOW)) < 0.001),
+       "16: control: a page request's timeout still holds everything ${SLOW}s");
+    reset_all(); %page = ();
+    $get->($H . 'bg429', sub {}, sub {}, background => 1);
+    $get->($H . 'pagelist', sub { $page{cm} = 1 }, sub { $page{cm} = $_[1] }, failFast => 1);
+    failWith($find->('bg429'), 429);
+    ok(scalar(($page{cm} // '') eq 'backing off'),
+       '16: control: a 429 on a background request still holds the page (the community API rule)');
+
+    # A page request that is failed at once frees the background work it held.
+    reset_all();
+    $get->($H . 'bgout', sub {}, sub {}, background => 1);
+    $get->($H . 'pageff', sub {}, sub {}, failFast => 1);
+    $get->($PUBLIC . 'bgmb', sub {}, sub {}, background => 1);
+    ok(scalar($sent->() eq 'bgout'), '16: background MusicBrainz work waits while a page request is queued elsewhere');
+    failWith($find->('bgout'), 429);
+    ok(scalar($sent->() eq 'bgout bgmb'),
+       '16: ... and goes once that page request is failed at once (nothing of the page left)');
+
+    # The page's answer asks the SAME host again: the slot is freed before that
+    # answer runs, and the background request waiting there must not take it.
+    reset_all();
+    $get->($H . 'pageA', sub { $get->($H . 'pageB', sub {}, sub {}) }, sub {});
+    $get->($H . 'bgname', sub {}, sub {}, background => 1);
+    finish($find->('pageA'));
+    ok(scalar($sent->() eq 'pageA pageB'),
+       "16: a page answer's next request on the same host goes before the background request waiting there");
+    finish($find->('pageB'));
+    ok(scalar($sent->() eq 'pageA pageB bgname'), '16: ... which goes once that answer has run and nothing waits');
+
+    # A page answer that starts background work BEFORE asking its own next
+    # request: the page's request still goes first, on the answer path and on
+    # the failed-at-once path (the page falling back to MusicBrainz).
+    reset_all();
+    $get->($H . 'pageA', sub {
+        $get->($PUBLIC . 'bgafter', sub {}, sub {}, background => 1);
+        $get->($PUBLIC . 'fallback', sub {}, sub {});
+    }, sub {});
+    finish($find->('pageA'));
+    ok(scalar($sent->() eq 'pageA fallback'),
+       "16: background work a page answer starts waits for the page's next request");
+    reset_all();
+    $get->($H . 'bg429', sub {}, sub {}, background => 1);
+    $get->($H . 'pageff', sub {}, sub {
+        $get->($PUBLIC . 'bgafter', sub {}, sub {}, background => 1);
+        $get->($PUBLIC . 'fallback', sub {}, sub {});
+    }, failFast => 1);
+    failWith($find->('bg429'), 429);
+    ok(scalar($sent->() eq 'bg429 fallback'),
+       "16: ... and so does background work started by a page request failed at once");
+
+    # Background work alone is never held by other background work.
+    reset_all();
+    $get->($H . 'bgcm', sub {}, sub {}, background => 1);
+    $get->($PUBLIC . 'bgmb', sub {}, sub {}, background => 1);
+    ok(scalar($sent->() eq 'bgcm bgmb'), '16: background requests to two hosts go side by side when no page is about');
+
+    # A page request answering wakes background work held in another bucket.
+    reset_all();
+    $get->($H . 'pageout', sub {}, sub {});
+    $get->($PUBLIC . 'bgmb', sub {}, sub {}, background => 1);
+    ok(scalar($sent->() eq 'pageout'), '16: background MusicBrainz work waits while a page request is out elsewhere');
+    finish($find->('pageout'));
+    ok(scalar($sent->() eq 'pageout bgmb'), '16: ... and goes the moment it answers');
+}
+
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

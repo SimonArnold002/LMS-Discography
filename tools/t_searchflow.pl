@@ -6,10 +6,14 @@
 #    and the list waits for both (review finding 1). It needs only the query;
 #    started after the services had answered, it added its whole time to every
 #    new search.
-# 2. The same-name section does not ask again for a count the row check asked
-#    for and saw settle (review finding 4): if that count failed, the section
-#    shows the act (undef), exactly as a second failure would, without a second
-#    wait.
+# 2. The search waits for no check (0.56.9): the row check runs in its `known`
+#    mode, and the same-name section shows an uncounted act and asks its count
+#    as background work, for the next search.
+# 4. A result row that opens a MusicBrainz act sharing its name says which act
+#    (0.56.12, Simon: "so the bees says its the 60's garage band").
+# 3. The page's two sections (0.56.10, Simon): Top Result, then Artists (the
+#    same-name acts, the other rows, the differently spelled acts), as tile rows
+#    or a list by the `layout_search` setting on a strip-capable Material only.
 #
 # Drives the REAL Browse::_artistSearchView and _withMbCandidates. The services
 # and MusicBrainz are stubbed to answer only when told to, so what is asserted
@@ -23,8 +27,10 @@ use FindBin;
 
 our (@MB_CALLS, @MB_PENDING, @SVC_CALLS, @SVC_PENDING, @MERGED, %CANON);
 our ($MB_SYNC, $SVC_ANSWERED);
-our (@WARMED, %COUNT, $MARK, $OPT);
+our (@WARMED, %COUNT, $OPT, @WARM_BG);
 our $CANDS;      # section 7: the same-name set to answer with (undef = three Genesis)
+our ($LAYOUT, $STRIPS);   # section 8: the layout_search pref, a strip-capable Material
+our (%RESOLVED, @PEEKED); # section 9: the name resolver's cached answers, and who asked
 
 BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
@@ -69,8 +75,6 @@ BEGIN {
     *{"${A}::filterRowsWithContent"} = sub {
         my ($class, $rows, $cb, $opt) = @_;
         $main::OPT = $opt;
-        # A count the row check asked for and saw settle (here: failed).
-        $opt->{asked}{ $main::MARK } = 1 if $main::MARK && ref $opt eq 'HASH' && $opt->{asked};
         return $cb->($rows);
     };
     *{"${A}::getArtistCandidates"} = sub {
@@ -81,12 +85,16 @@ BEGIN {
     *{"${A}::warmCandidateCounts"} = sub {
         my ($class, $cands, $cb) = @_;
         push @main::WARMED, map { $_->{mbid} } @{ $cands || [] };
-        return $cb->();
+        push @main::WARM_BG, $Plugins::Discography::API::NET_BG ? 1 : 0;
+        return $cb ? $cb->() : undef;
     };
     *{"${A}::peekReleaseGroupCount"} = sub { $main::COUNT{ $_[1] // '' } };
+    *{"${A}::peekArtistMbid"} = sub { push @main::PEEKED, $_[1]; $main::RESOLVED{ lc($_[1] // '') } };
 }
 
 package T::Null; our $AUTOLOAD; sub AUTOLOAD { return } sub DESTROY {}
+# Prefs and cache share this stub: only the search layout answers.
+sub get { return ($_[1] // '') eq 'layout_search' ? $main::LAYOUT : undef }
 
 package main;
 
@@ -102,6 +110,7 @@ my $B = 'Plugins::Discography::Browse';
 my $realWith  = \&Plugins::Discography::Browse::_withMbCandidates;
 my $realItems = \&Plugins::Discography::Browse::_searchResultItems;
 my $realMbRow = \&Plugins::Discography::Browse::_mbCandidateRow;
+my $realHdr   = \&Plugins::Discography::Browse::_sectionHeader;
 {
     no warnings 'redefine'; no strict 'refs';
     # The services answer only when the test says so.
@@ -118,7 +127,7 @@ my $realMbRow = \&Plugins::Discography::Browse::_mbCandidateRow;
     # Section 1 captures the finished list here instead of building rows.
     *{"${B}::_withMbCandidates"} = sub {
         my ($client, $callback, $features, $q, $merged) = @_;
-        push @main::MERGED, [ $q, [ map { $_->{name} } @{ $merged || [] } ] ];
+        push @main::MERGED, [ $q, [ map { $_->{name} } @{ $merged || [] } ], $_[5] ];
     };
     *{'Plugins::Discography::Sources::attachLibraryArtists'} = sub { $_[1] };
     *{'Plugins::Discography::Sources::splitOwnedByIdentity'} = sub { $_[1] };
@@ -252,33 +261,36 @@ section('5', sub {
 
 section('6', sub {
     # -----------------------------------------------------------------------
-    # 6. THE SAME-NAME SECTION ASKS ONCE PER SEARCH. The row check has asked for
-    #    the second act's count and seen it fail; the section does not ask
-    #    again, and still lists the act (an unknown count shows, never hides).
+    # 6. THE SEARCH WAITS FOR NO CHECK (0.56.9; Simon: the search "should be the
+    #    quickest part ... just hide them on 2nd search"). The row check runs in
+    #    its known mode; the same-name section lists an act whose count is not
+    #    known yet and asks it AFTER, as background work; a count known to be 0
+    #    still drops its act.
     # -----------------------------------------------------------------------
     my $out;
     my $run = sub {
-        @WARMED = (); $OPT = undef; $out = undef;
+        @WARMED = (); @WARM_BG = (); $OPT = undef; $out = undef;
         $realWith->('client', sub { $out = $_[0] }, '', 'Genesis',
                     [ { name => 'Genesis', sources => ['Qobuz'] } ]);
     };
-    %COUNT = (id(1) => 40, id(3) => 7);    # id(2)'s count failed: never cached
+    my $names = sub { [ map { $_->{name} } @{ ($out || {})->{items} || [] } ] };
+    %COUNT = (id(1) => 40, id(3) => 0);    # id(2) not counted yet
 
-    $MARK = id(2);
     $run->();
-    ok(scalar(ref $OPT eq 'HASH' && ($OPT->{query} // '') eq 'Genesis' && ref $OPT->{asked} eq 'HASH'),
-       '6: the search hands the row check the query and a set to collect its counts in');
-    ok(scalar(join(',', @WARMED) eq join(',', id(1), id(3))),
-       '6: the section does not ask again for a count the row check tried');
-    my @names = map { $_->{name} } @{ ($out || {})->{items} || [] };
-    ok(scalar(grep { $_ eq id(2) } @names),
-       '6: ... and still lists that act (a failed count shows it, as before)');
+    ok(scalar(ref $OPT eq 'HASH' && ($OPT->{query} // '') eq 'Genesis' && $OPT->{known}),
+       '6: the search runs the row check in its known mode, with the query');
+    ok(scalar(defined $out), '6: the list is answered without waiting for any count');
+    ok(scalar(grep { $_ eq id(2) } @{ $names->() }),
+       '6: an act whose count is not known yet is listed');
+    ok(scalar(!grep { $_ eq id(3) } @{ $names->() }),
+       '6: ... and one whose count is known to be 0 is not');
+    ok(scalar(join(',', @WARMED) eq id(2) && "@WARM_BG" eq '1'),
+       '6: only the uncounted act is asked, as background work');
 
-    # CONTROL: nothing asked by the row check -> the section asks for all three.
-    $MARK = undef;
+    # CONTROL: every count known -> nothing is asked.
+    %COUNT = (id(1) => 40, id(2) => 3, id(3) => 0);
     $run->();
-    ok(scalar(join(',', @WARMED) eq join(',', id(1), id(2), id(3))),
-       '6: control: with nothing asked before, the section counts every act');
+    ok(scalar(!@WARMED), '6: control: every count known, nothing is asked');
 });
 
 section('7', sub {
@@ -348,6 +360,226 @@ section('7', sub {
     ok(scalar(join('|', map { $_->{name} } @$rows) eq 'Radiohead|Radiohead Tribute'),
        '7: control: no repeated name -> every title exactly as built');
     $CANDS = undef;
+});
+
+section('8', sub {
+    # -----------------------------------------------------------------------
+    # 8. TOP RESULT, THEN ARTISTS (0.56.10; Simon, 2026-10-01). The best-ranked
+    #    row alone under "Top Result"; under "Artists" the other acts with the
+    #    same name first, then the other rows in their order, then the
+    #    differently spelled MusicBrainz acts. No "Other artists with this name"
+    #    heading. On a strip-capable Material the top result is a one-tile row
+    #    and the artists a list ('split') or a tile row ('tiles'); elsewhere the
+    #    setting changes nothing. The rows are the same in every layout.
+    # -----------------------------------------------------------------------
+    no warnings 'redefine'; no strict 'refs';
+    local *{"${B}::_searchResultItems"} = $realItems;
+    local *{"${B}::_mbCandidateRow"}    = $realMbRow;
+    local *{"${B}::_sectionHeader"}     = $realHdr;
+    local *{"${B}::_useStrips"}         = sub { $STRIPS };
+    my $WJ = "\x{2060}";
+    my $label = sub {
+        my ($r) = @_;
+        return 'H:' . ($r->{name} =~ s/^PLUGIN_DISCOGRAPHY_//r) if ($r->{type} // '') =~ /^header|^text$/
+            && ($r->{name} // '') =~ /^PLUGIN_DISCOGRAPHY_(?:TOP_RESULT|ARTISTS_HDR|SAME_NAME)$/;
+        my $pt = ($r->{passthrough} || [])->[0] || {};
+        return 'MB:' . ($pt->{c_mbid} =~ s/^0*(\d+)-.*/$1/r) if $pt->{c_mbid};
+        return ($r->{name} // '') =~ s/$WJ//gr;
+    };
+    my $out;
+    my $run = sub {
+        my ($q, $merged, $part) = @_;
+        $out = undef;
+        $realWith->('client', sub { $out = $_[0] }, '', $q, $merged, $part);
+        return $out->{items} || [];
+    };
+    my $labels = sub { join('|', map { $label->($_) } @{ $_[0] }) };
+    my $hdr = sub { my ($rows, $key) = @_;
+        (grep { ($_->{name} // '') eq "PLUGIN_DISCOGRAPHY_$key" } @$rows)[0] || {} };
+    my $merged = sub { [
+        { name => 'Madness',           artist_id => 1, sources => ['Local', 'Qobuz'], _seq => 0 },
+        { name => 'Madness & Friends', artist_id => 2, sources => ['Local'],          _seq => 1 },
+        { name => 'Madness Tribute',   sources => ['Qobuz'],                          _seq => 2 },
+    ] };
+    $CANDS = [ { mbid => id(81), name => 'Madness', disambiguation => 'English ska band' },
+               { mbid => id(82), name => 'Madness', disambiguation => 'Horrorcore rapper' },
+               { mbid => id(83), name => 'Madness', disambiguation => 'US funk rock group' },
+               { mbid => id(84), name => "M\x{00E4}dness" } ];
+    %COUNT = map { (id($_) => 5) } 81 .. 84;
+    my $want = "H:TOP_RESULT|Madness|H:ARTISTS_HDR|MB:81|MB:82|MB:83"
+             . "|Madness & Friends|Madness Tribute|MB:84";
+
+    # Headers, no strip-capable Material.
+    ($STRIPS, $LAYOUT) = (0, undef);
+    my $rows = $run->('Madness', $merged->());
+    ok(scalar($labels->($rows) eq $want),
+       '8: Top Result over the best row; Artists = same-name acts, the other rows, the other spellings');
+    ok(scalar(!grep { ($_->{name} // '') eq 'PLUGIN_DISCOGRAPHY_SAME_NAME' } @$rows),
+       '8: no "Other artists with this name" heading');
+    ok(scalar(($hdr->($rows, 'TOP_RESULT')->{image} // '') =~ /_MTL_icon_star\.png$/),
+       '8: Top Result carries the star icon');
+    ok(scalar(!grep { ($_->{type} // '') eq 'header-strip' } @$rows),
+       '8: no strip-capable Material -> no tile rows');
+    $LAYOUT = 'tiles';
+    $rows = $run->('Madness', $merged->());
+    ok(scalar(!grep { ($_->{type} // '') eq 'header-strip' } @$rows),
+       "8: ... and 'All tiles' changes nothing there");
+
+    # Strip-capable Material, split (the default).
+    ($STRIPS, $LAYOUT) = (1, undef);
+    $rows = $run->('Madness', $merged->());
+    my $top = $hdr->($rows, 'TOP_RESULT');
+    ok(scalar(($top->{type} // '') eq 'header-strip'), '8: split: the top result is a tile row');
+    my $tp = (($top->{itemActions} || {})->{items} || {})->{fixedParams} || {};
+    ok(scalar(($tp->{artist} // '') eq 'Madness' && ($tp->{artist_id} // 0) == 1 && !exists $tp->{item}),
+       "8: ... its heading's More opens the top artist itself");
+    ok(scalar(($hdr->($rows, 'ARTISTS_HDR')->{type} // '') ne 'header-strip'),
+       '8: ... and the artists are a list');
+    ok(scalar($labels->($rows) eq $want), '8: ... the same rows in the same order');
+
+    # Strip-capable Material, all tiles.
+    $LAYOUT = 'tiles';
+    $rows = $run->('Madness', $merged->());
+    my $art = $hdr->($rows, 'ARTISTS_HDR');
+    ok(scalar(($hdr->($rows, 'TOP_RESULT')->{type} // '') eq 'header-strip'
+              && ($art->{type} // '') eq 'header-strip'),
+       "8: 'All tiles': the top result and the artists are both tile rows");
+    my $ap = (($art->{itemActions} || {})->{items} || {})->{fixedParams} || {};
+    ok(scalar(($ap->{search} // '') eq 'Madness' && ($ap->{item} // '') eq 'sect:ARTISTS'),
+       "8: ... the Artists heading's More re-asks the search for that section");
+    ok(scalar($labels->($rows) eq $want), '8: ... the same rows in the same order');
+
+    # The More: the Artists rows alone, in the page's order.
+    $rows = $run->('Madness', $merged->(), 'sect:ARTISTS');
+    ok(scalar($labels->($rows) eq "MB:81|MB:82|MB:83|Madness & Friends|Madness Tribute|MB:84"),
+       '8: the More answers every artist and nothing else');
+
+    # One result: Top Result alone.
+    ($STRIPS, $LAYOUT) = (0, undef);
+    $CANDS = [];
+    $rows = $run->('Madness', [ $merged->()->[0] ]);
+    ok(scalar($labels->($rows) eq 'H:TOP_RESULT|Madness'),
+       '8: one result -> Top Result, no Artists heading');
+
+    # Nothing on the services or in the library: the line stays, the
+    # MusicBrainz acts go under Artists, no Top Result.
+    $CANDS = [ map { { mbid => id($_), name => 'Madness', disambiguation => "act $_" } } 81 .. 82 ];
+    $rows = $run->('Madness', []);
+    ok(scalar($labels->($rows) eq 'PLUGIN_DISCOGRAPHY_SEARCH_NONE|H:ARTISTS_HDR|MB:81|MB:82'),
+       '8: nothing found -> "No artists found", then the MusicBrainz acts under Artists');
+
+    # An unowned row named as typed already reaches MB's top act: dropped from
+    # the same-name acts (0.43.2's rule, unchanged).
+    $CANDS = [ map { { mbid => id($_), name => 'Madness', disambiguation => "act $_" } } 81 .. 83 ];
+    $rows = $run->('Madness', [ { name => 'Madness', sources => ['Qobuz'], _seq => 0 } ]);
+    ok(scalar($labels->($rows) eq 'H:TOP_RESULT|Madness|H:ARTISTS_HDR|MB:82|MB:83'),
+       '8: the act the top result reaches is not listed again');
+
+    # The tap that asks for the section reaches the view with it.
+    fresh();
+    $B->can('_artistSearchView')->('client', sub {}, '', 'Madness', 'sect:ARTISTS');
+    answer_svc(0, { Qobuz => [ { name => 'Madness' } ] });
+    answer_mb(0, undef);
+    ok(scalar(@MERGED == 1 && ($MERGED[0][2] // '') eq 'sect:ARTISTS'),
+       '8: the section param reaches the layout');
+    fresh();
+    my @args;
+    local *{"${B}::_artistSearchView"} = sub { @args = @_ };
+    $B->can('topLevel')->('client', sub {}, { params => {
+        search => 'Madness', item => 'sect:ARTISTS', features => 'hi' } });
+    ok(scalar(($args[3] // '') eq 'Madness' && ($args[4] // '') eq 'sect:ARTISTS'),
+       "8: the Artists heading's More (search + item) is dispatched as that section");
+    @args = ();
+    $B->can('topLevel')->('client', sub {}, { params => { search => 'Madness', features => 'hi' } });
+    ok(scalar(($args[3] // '') eq 'Madness' && !defined $args[4]),
+       '8: control: a plain search asks for the whole page');
+    ($CANDS, $LAYOUT, $STRIPS) = (undef, undef, 0);
+});
+
+section('9', sub {
+    # -----------------------------------------------------------------------
+    # 9. THE DESCRIPTION OF THE ACT A RESULT OPENS (0.56.12; Simon, 2026-10-01:
+    #    "show the disambiguation when they are matched so the bees says its the
+    #    60's garage band"). His three owned The Bees, measured on MusicBrainz:
+    #    the Isle of Wight band and two 1960s garage bands. An owned row by its
+    #    library tag, an unowned row by the name resolver's answer; only for a
+    #    name MusicBrainz has more than once; never a guess for an untagged row.
+    # -----------------------------------------------------------------------
+    no warnings 'redefine'; no strict 'refs';
+    local *{"${B}::_searchResultItems"} = $realItems;
+    local *{"${B}::_mbCandidateRow"}    = $realMbRow;
+    local *{"${B}::_sectionHeader"}     = $realHdr;
+    my $WJ = "\x{2060}";
+    my $out;
+    my $run = sub {
+        my ($q, $merged) = @_;
+        $out = undef; @PEEKED = ();
+        $realWith->('client', sub { $out = $_[0] }, '', $q, $merged);
+        return [ grep { ($_->{type} // '') eq 'link' } @{ ($out || {})->{items} || [] } ];
+    };
+    # line2 of the result row that opens library id $aid (or the named row).
+    my $l2 = sub { my ($rows, $aid, $name) = @_;
+        my ($r) = grep { my $p = ($_->{passthrough} || [])->[0] || {};
+                         defined $aid ? (($p->{q_aid} // 0) == $aid)
+                                      : (!$p->{q_aid} && !$p->{c_mbid} && ($p->{q_name} // '') eq $name) } @$rows;
+        return $r ? ($r->{line2} // '') : 'NO ROW' };
+    my $IOW = 'Isle of Wight, UK band, known as "A Band of Bees" in the US';
+    my $COV = "mid\x{2010}1960s garage rock band from Covina, CA";
+    my $LA  = '1960s garage band from Los Angeles, CA';
+    $CANDS = [ { mbid => id(901), name => 'The Bees', disambiguation => $IOW },
+               { mbid => id(902), name => 'The Bees', disambiguation => $COV },
+               { mbid => id(903), name => 'The Bees', disambiguation => $LA },
+               { mbid => id(904), name => 'The Bees', disambiguation => '1980s South African' },
+               { mbid => id(905), name => 'The Bees', disambiguation => '' },
+               { mbid => id(907), name => 'The Bees', disambiguation => '1960s Singapore guitar band' },
+               { mbid => id(906), name => 'Honey & the Bees', disambiguation => 'girl group from Philadelphia' } ];
+    %COUNT = map { (id($_) => 3) } 901 .. 907;
+    %RESOLVED = ('honey & the bees' => id(906));
+    my $bees = sub { [
+        { name => 'The Bees', artist_id => 155528, sources => ['Local'], _owned => 4, _ident_mbid => id(901), _seq => 0 },
+        { name => 'The Bees', artist_id => 155529, sources => ['Local'], _owned => 1, _ident_mbid => id(902), _seq => 1 },
+        { name => 'The Bees', artist_id => 155530, sources => ['Local'], _owned => 1, _ident_mbid => id(903), _seq => 2 },
+        { name => 'The Bees', artist_id => 155531, sources => ['Local'], _ident_mbid => id(905), _seq => 3 },
+        { name => 'The King Bees', artist_id => 155600, sources => ['Local'], _seq => 4 },
+        { name => 'Honey & The Bees', sources => ['Qobuz'], _seq => 5 },
+    ] };
+    my $rows = $run->('The Bees', $bees->());
+    ok(scalar($l2->($rows, 155528) eq "Local \x{00B7} 4 albums \x{00B7} $IOW"),
+       '9: the owned Isle of Wight band says which act it is, after its sources and count');
+    ok(scalar($l2->($rows, 155529) eq "Local \x{00B7} 1 album \x{00B7} $COV"
+              && $l2->($rows, 155530) eq "Local \x{00B7} 1 album \x{00B7} $LA"),
+       '9: ... and the two owned 1960s garage bands are told apart by theirs');
+    ok(scalar($l2->($rows, 155531) eq 'Local'),
+       '9: an act MusicBrainz gives no description adds nothing (no trailing dot)');
+    ok(scalar($l2->($rows, 155600) eq 'Local'), '9: a row whose act is not in the list is unchanged');
+    ok(scalar($l2->($rows, undef, 'Honey & The Bees') eq 'Qobuz'),
+       '9: a name MusicBrainz has once gets no description, even matched');
+    ok(scalar(!grep { ($_->{line2} // '') =~ /\Q$COV\E|\Q$LA\E|Wight/ && (($_->{passthrough} || [])->[0] || {})->{c_mbid} } @$rows),
+       '9: the owned acts are still not listed again as MusicBrainz entries');
+    ok(scalar(grep { ($_->{line2} // '') =~ /^1980s South African/ } @$rows),
+       '9: ... and an unowned one still is, with its own description');
+    ok(scalar(!grep { lc($_ // '') eq 'the bees' } @PEEKED),
+       "9: a tagged owned row is never matched by name");
+
+    # An unowned row is matched by the resolver's answer for its name.
+    %RESOLVED = ('the bees' => id(902));
+    $rows = $run->('The Bees', [ { name => 'The Bees', sources => ['Qobuz'], _seq => 0 } ]);
+    ok(scalar($l2->($rows, undef, 'The Bees') eq "Qobuz \x{00B7} $COV"),
+       "9: an unowned row says which act a tap opens (the resolver's answer for its name)");
+    # An owned row with no tag is not guessed from its name.
+    $rows = $run->('The Bees', [ { name => 'The Bees', artist_id => 155540, sources => ['Local'], _seq => 0 } ]);
+    ok(scalar($l2->($rows, 155540) eq 'Local' && !@PEEKED),
+       '9: an owned row with no tag gets nothing, and its name is not looked up');
+    # An owned collaboration (Local, no single library artist, no tag): the same.
+    $rows = $run->('The Bees', [ { name => 'The Bees', sources => ['Local', 'Qobuz'], _seq => 0 } ]);
+    ok(scalar($l2->($rows, undef, 'The Bees') eq "Local \x{00B7} Qobuz" && !@PEEKED),
+       '9: ... nor does an owned row with no library artist (a collaboration)');
+    # CONTROL: no MusicBrainz list -> every line as before, nothing looked up.
+    $CANDS = [];
+    $rows = $run->('The Bees', $bees->());
+    ok(scalar($l2->($rows, 155528) eq "Local \x{00B7} 4 albums" && !@PEEKED),
+       '9: control: no MusicBrainz list -> lines as before, nothing looked up');
+    ($CANDS, %RESOLVED) = (undef);
 });
 
 print "\n$pass passed, $fail failed\n";

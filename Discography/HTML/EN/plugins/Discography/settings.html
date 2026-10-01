@@ -40,6 +40,11 @@
 		<div style="margin:4px 0;"><label><input type="radio" name="pref_layout_singles" value="list" [% IF prefs.layout_singles == 'list' %]checked="checked"[% END %] /> [% 'PLUGIN_DISCOGRAPHY_LAYOUT_LIST' | string %]</label></div>
 	[% END %]
 
+	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_LAYOUT_SEARCH" desc="PLUGIN_DISCOGRAPHY_LAYOUT_SEARCH_DESC" %]
+		<div style="margin:4px 0;"><label><input type="radio" name="pref_layout_search" value="split" [% IF prefs.layout_search == 'split' %]checked="checked"[% END %] /> [% 'PLUGIN_DISCOGRAPHY_LAYOUT_SPLIT' | string %]</label></div>
+		<div style="margin:4px 0;"><label><input type="radio" name="pref_layout_search" value="tiles" [% IF prefs.layout_search == 'tiles' %]checked="checked"[% END %] /> [% 'PLUGIN_DISCOGRAPHY_LAYOUT_ALL_TILES' | string %]</label></div>
+	[% END %]
+
 	[% WRAPPER setting title="PLUGIN_DISCOGRAPHY_SHOW_TYPES" desc="PLUGIN_DISCOGRAPHY_SHOW_TYPES_DESC" %]
 	<div>
 		<input type="hidden" name="dsc_types_form" value="1" />
