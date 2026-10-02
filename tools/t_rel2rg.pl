@@ -197,6 +197,7 @@ sub reset_all {
     $SEARCH = ''; %OMIT = (); %NOGROUP = (); @EXTRA = (); %KNOWN = %TRUTH;
 }
 sub key { 'dsc:rel2rg:v1:' . $_[0] }
+sub tkey { 'dsc:reltype:v1:' . $_[0] }
 my $searches = sub { scalar grep { m{/release\?query=} } @URLS };
 my $lookups  = sub { [ map { m{/release/([0-9a-f-]{36})\?} ? $1 : () } @URLS ] };
 my $allTruth = sub { !grep { ($CACHE{ key($_) } // '') ne $TRUTH{$_} } @_ };
@@ -331,6 +332,9 @@ ok(scalar(!grep { ($CACHE{ key($_) } // '') ne "rg-$_" } @FIFTY1) && $cbs == 1,
 reset_all();
 $CACHE{ key($TEN[0]) } = $TRUTH{ $TEN[0] };
 $CACHE{ key($TEN[1]) } = '';
+# ... with their group types known too (0.56.39; without one, §12).
+$CACHE{ tkey($TEN[0]) } = { type => 'EP', secondary => [] };
+$CACHE{ tkey($TEN[1]) } = '';
 $API->warmLocalReleases([ @TEN[0 .. 2] ], sub {});
 ok(scalar(@URLS) == 1 && $searches->() == 0 && ($lookups->()->[0] // '') eq $TEN[2],
    '10: cached ids (a group, or the empty verdict) are skipped: one lookup for the one left');
@@ -354,6 +358,40 @@ $cbs = 0;
 $API->warmLocalReleases([], sub { $cbs++ });
 $API->warmLocalReleases(undef, sub { $cbs++ });
 ok(scalar(@URLS) == 0 && $cbs == 2, '11: no ids: no request, and the callback still fires');
+
+# ---------------------------------------------------------------------------
+# 12. THE GROUP'S TYPE, FROM THE SAME REPLY (0.56.39; Simon, on a soundtrack
+#     LMS reads as ALBUM: "this is Soundtrack not a compilation not sure if LMS
+#     has that but MB does"). Kept beside the group, no extra request; a release
+#     whose group was cached before it is asked once more, for the type.
+# ---------------------------------------------------------------------------
+my $LIVE   = 'ef561e76-4e77-4950-b8fb-05b3085938db';   # Album + Live in the captured reply
+my $SINGLE = 'c24fd4e7-d513-4b59-a492-48fe0fff2738';   # Single, no secondary
+reset_all();
+$API->warmLocalReleases([ @TWELVE ], sub {});
+my $tp = $API->peekLocalReleaseTypes([ $LIVE, $SINGLE, $GROUPID, $NEVER ]);
+ok(scalar(($tp->{$LIVE}{type} // '') eq 'Album' && "@{ $tp->{$LIVE}{secondary} || [] }" eq 'Live'),
+   '12: the search keeps each group type (Album + Live)');
+ok(scalar(($tp->{$SINGLE}{type} // '') eq 'Single' && !@{ $tp->{$SINGLE}{secondary} || [] }),
+   '12: ... a reply with no secondary types keeps none');
+ok(scalar(!exists $tp->{$GROUPID} && !exists $tp->{$NEVER}
+          && defined $CACHE{ tkey($GROUPID) } && $CACHE{ tkey($GROUPID) } eq ''),
+   '12: a 404 keeps an empty type, which reads as none');
+reset_all();
+$API->warmLocalReleases([ $TEN[0] ], sub {});
+$tp = $API->peekLocalReleaseTypes([ $TEN[0] ]);
+ok(scalar(($tp->{ $TEN[0] }{type} // '') eq 'EP' && $lookups->()->[0] eq $TEN[0]),
+   '12: the one-by-one lookup keeps it too');
+reset_all();
+$CACHE{ key($TEN[0]) } = $TRUTH{ $TEN[0] };
+$API->warmLocalReleases([ $TEN[0] ], sub {});
+ok(scalar(@URLS == 1 && ($lookups->()->[0] // '') eq $TEN[0] && ref $CACHE{ tkey($TEN[0]) } eq 'HASH'),
+   '12: a group cached before (no type) is asked once more, and the type kept');
+@URLS = ();
+$API->warmLocalReleases([ $TEN[0] ], sub {});
+ok(scalar(!@URLS), '12: ... then never again');
+ok(scalar(!keys %{ $API->peekLocalReleaseTypes([ 'nope', undef, '' ]) }),
+   '12: an unknown id reads as no type');
 
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

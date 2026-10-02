@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.37';
+use constant CACHE_VERSION => '0.56.41';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
@@ -2431,7 +2431,22 @@ sub matchesFor {
     # itself stays under "Appearances" — this only makes the spine tile playable.
     # localTracks is a lazy coderef so an artist owned as ALBUMS never fetches
     # it; resolved here only because we reached an unmatched release.
-    if (!@sections && $opt->{localTracks}) {
+    #
+    # A SINGLE, ONCE (0.56.39; Simon 2026-10-02, on Ella Fitzgerald with only
+    # what he owns: "the same track is showing multiple times under compilations
+    # and not one gives the album name"). One owned "A-Tisket, A-Tasket" (on the
+    # soundtrack The Last Time I Committed Suicide) made THREE compilation
+    # ALBUMS named after the song read Local: a song links the release that IS
+    # the song, a single, never an album or compilation that only shares its
+    # name. And of several same-titled singles only the first (rivals' order,
+    # the earliest) gets it; an album sharing the title never takes it from
+    # the single (the album is not the song).
+    my $trackLinkable = $rgSingle && !$opt->{rgComp};
+    if ($trackLinkable && $rivals && @$rivals > 1 && $rgMbid) {
+        my ($first) = grep { ($_->{type} // '') eq 'Single' && !$_->{comp} } @$rivals;
+        $trackLinkable = 0 if $first && $first->{mbid} ne $rgMbid;
+    }
+    if (!@sections && $trackLinkable && $opt->{localTracks}) {
         my $lt = ref $opt->{localTracks} eq 'CODE'
                ? $opt->{localTracks}->() : $opt->{localTracks};
         if ($lt && @$lt) {

@@ -37,7 +37,7 @@ my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.37';
+use constant CACHE_VERSION => '0.56.41';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -212,6 +212,7 @@ sub _rivalsByTitle {
             # is what an untyped studio release usually is, and demoting it
             # would recreate this bug for artists MB has typed loosely.
             rank => ($RIVAL_TYPE_RANK{ $rg->{type} // '' } // 0),
+            type => $rg->{type},    # the track link's "first single" (Sources::matchesFor)
             date => (length $rg->{date} ? $rg->{date} : '9999'),
         };
     }
@@ -1229,9 +1230,22 @@ sub _discographyView {
 
     my $artist = $opts->{artist} // '';
 
+    # Various Artists / Various Composers is never one artist (0.56.41,
+    # API::isVarious; Simon: "A short message"): the line saying so and the way
+    # back to search, before anything is asked. By name here; by the mbid below
+    # (a link's, or the library tag once read: the library's Various Composers
+    # carries MB's Various Artists).
+    my $notOne = sub {
+        _dbg("artist page '$artist': not one artist - nothing asked");
+        $callback->({ items => [ _notOneArtistRow($client, $artist),
+                                 _searchButtonRow($client, $opts) ], cachetime => 0 });
+    };
+    return $notOne->() if Plugins::Discography::API->isVarious($artist);
+
     # The post-resolution body, run with whatever mbid we end up with.
     my $withMbid = sub {
             my $mbid = shift;
+            return $notOne->() if $mbid && Plugins::Discography::API->isVarious(undef, $mbid);
 
             unless ($mbid) {
                 my @items = ({
@@ -1617,6 +1631,10 @@ sub _resolveArtistMbid {
         onDone    => sub {
             my ($mbid, $fromTag) = @_;
             return $cb->($mbid) unless $mbid && $fromTag && defined $name && length $name;
+            # A tag on one of MB's special entities (the library's Various
+            # Composers carries 89ad4ac3): the page shows it is not one artist,
+            # so its list is never read (0.56.41).
+            return $cb->($mbid) if Plugins::Discography::API->isVarious(undef, $mbid);
 
             # This is the page's own spine (the page then finds it cached), so
             # it is asked for the page's way: the artist read first (stage 2).
@@ -2425,7 +2443,7 @@ sub _buildList {
             $rivals->{$rgNorm},
             { artistNorm => $artistNorm, albumNorm => $rgNorm, sources => $sources,
               index => $pool->{index}, aliases => $rg->{aliases},
-              rgType => $rg->{type}, editions => $editions->{ $rg->{mbid} },
+              rgType => $rg->{type}, rgComp => _isComp($rg), editions => $editions->{ $rg->{mbid} },
               idGroups => $idGroups, localTracks => $localTracks,
               otherNames => $otherNames, creditMemo => \%creditMemo });
         # Which streaming candidates a release group CLAIMED. Collected here
@@ -2759,9 +2777,16 @@ sub _buildList {
         push @items, _extraSection($client, $opts, $useH, $sort,
             'PLUGIN_DISCOGRAPHY_LIBRARY_EXTRAS',
             IMG_BASE . 'dsc-lib_MTL_icon_library_music.png', 'EXTRAS', \@own);
+        # MusicBrainz's type for each (0.56.39; Simon: "this is Soundtrack not
+        # a compilation not sure if LMS has that but MB does"): LMS reads a
+        # soundtrack as ALBUM; the group's type comes with the release lookup
+        # made after the page (API::warmLocalReleases), so a row shows it from
+        # the next visit. Cache only.
+        my $types = Plugins::Discography::API->peekLocalReleaseTypes(
+            [ map { $_->{_mbid} } grep { $_->{_mbid} } @appear ]);
         push @items, _extraSection($client, $opts, $useH, $sort,
             'PLUGIN_DISCOGRAPHY_APPEARANCES',
-            IMG_BASE . 'dsc-bio_MTL_icon_person.png', 'APPEAR', \@appear);
+            IMG_BASE . 'dsc-bio_MTL_icon_person.png', 'APPEAR', \@appear, $types);
     }
 
     # ---------------------------------------------------------------------
@@ -3108,7 +3133,7 @@ sub _similarLinkRow {
 # tiles, paged, with a walk-stable header. A band album names its band in line2,
 # everything else says Local. Returns the feed rows (empty list when no albums).
 sub _extraSection {
-    my ($client, $opts, $useH, $sort, $token, $image, $pageKey, $albums) = @_;
+    my ($client, $opts, $useH, $sort, $token, $image, $pageKey, $albums, $types) = @_;
     return () unless $albums && @$albums;
 
     my @dated   = sort { ($a->{_year} || 0) <=> ($b->{_year} || 0) } grep {  $_->{_year} } @$albums;
@@ -3117,7 +3142,10 @@ sub _extraSection {
 
     my @tiles = map {
         my %t = %$_;
-        $t{line2} = join(" \x{00B7} ", grep { length } ($t{_year} // ''), ($t{_band} // 'Local'));
+        # $types (Appearances only): MusicBrainz's type, as a release tile says it.
+        my $tp = ($types && $t{_mbid}) ? $types->{ $t{_mbid} } : undef;
+        my $type = $tp ? _displayType($client, { type => $tp->{type}, secondary => $tp->{secondary} || [] }) : '';
+        $t{line2} = join(" \x{00B7} ", grep { length } ($t{_year} // ''), $type, ($t{_band} // 'Local'));
         # Self-identifying go + play (stale-view fix): the tile IS the playable
         # node (its feed = the album tracklist, play = a core-resolved db: url),
         # so go dispatches by id and play/add/insert carry the db: url directly.
@@ -3770,6 +3798,15 @@ sub _artistSearchView {
     $q = '' if $q eq '__TAGGEDINPUT__';
     unless (length $q) { $callback->({ items => [] }); return }
 
+    # Various Artists / Various Composers is never one artist (API::isVarious,
+    # 0.56.41): answered with the line saying so, before any service, the
+    # library or MusicBrainz is asked.
+    if (Plugins::Discography::API->isVarious($q)) {
+        _dbg("artist search '$q': not one artist - nothing asked");
+        $callback->({ items => [ _notOneArtistRow($client, $q) ], cachetime => 0 });
+        return;
+    }
+
     # v2: 0.37.1 gated results — bypass any cached ungated 0.37.0 lists.
     # v3: `mergeArtistHits` buckets by `_norm`, and the decorative-mark change
     # makes "Layo & Bushwacka!" and "Layo & Bushwacka" bucket TOGETHER. A v2
@@ -3940,6 +3977,14 @@ sub _withMbCandidates {
     # (see _distinctTitles).
     my $reply = sub { $callback->({ items => _distinctTitles($_[0]) }) };
 
+    # No row for Various Artists / Various Composers, from any source (0.56.41;
+    # API::isVarious): its page asks nothing, so a row would open only the line
+    # saying so. First, so nothing below looks it up. A new list, never the
+    # cached one changed.
+    $merged = [ grep { !(ref $_ eq 'HASH'
+                         && Plugins::Discography::API->isVarious($_->{name}, $_->{_ident_mbid})) }
+                @{ $merged || [] } ];
+
     # Attach owned artists the Local leg could not spell-match, BEFORE anything
     # else looks at the rows (see Sources::attachLibraryArtists for the "The
     # Las" case this exists for). Deliberately here rather than beside the
@@ -4038,6 +4083,41 @@ sub _withMbCandidates {
                 _dbg("artist search '$q': the one MB artist ($lone->{mbid}) is not a result row - listed"
                     . ($lead ? ' as the top result' : ' under Artists'));
                 return $layout->();
+            }
+            # NOTHING FOUND: THE CLOSEST NAMES MUSICBRAINZ KNOWS (0.56.38, resolver
+            # plan Part D step 2; see API::fuzzyArtists). Asked only here, when the
+            # services, the library and the acts of this name gave nothing, so a
+            # search that finds anything never waits for it: one request, about a
+            # second, on a search that read "No artists found" after 4-7 s (Simon:
+            # "okay"). They go under Artists, below that line, as differently
+            # spelled acts do: the closest can be the wrong act (Jandec -> Jandek,
+            # then Handel), so none is made the Top Result. A name shown once among
+            # them gets its photo by name; a repeated one keeps the person icon, as
+            # the same-name acts do. Counts as for those: 0 hidden, unknown shown
+            # and asked after the reply.
+            unless (@{ $merged || [] }) {
+                return Plugins::Discography::API->fuzzyArtists($q, sub {
+                    my ($near) = @_;
+                    my @live = grep {
+                        my $n = Plugins::Discography::API->peekReleaseGroupCount($_->{mbid});
+                        (!defined $n || $n > 0)
+                            && !Plugins::Discography::API->isVarious($_->{name}, $_->{mbid});
+                    } @{ $near || [] };
+                    my @uncounted = grep {
+                        !defined Plugins::Discography::API->peekReleaseGroupCount($_->{mbid})
+                    } @live;
+                    if (@uncounted) {
+                        local $Plugins::Discography::API::NET_BG = 1;
+                        Plugins::Discography::API->warmCandidateCounts(\@uncounted);
+                    }
+                    my %times;
+                    $times{ lc($_->{name} // '') }++ for @live;
+                    @distinct = map { _mbCandidateRow($client, $_, $features,
+                                                      $times{ lc($_->{name} // '') } == 1 ? 1 : 0) } @live;
+                    _dbg("artist search '$q': nothing found - " . scalar(@live)
+                        . ' closest MB name(s) listed');
+                    $layout->();
+                });
             }
             _dbg("artist search '$q': " . scalar(@$cands)
                 . ' MB same-name artist(s) — none listed');
@@ -4383,6 +4463,14 @@ sub _searchResultItems {
     return [ map { _searchResultRow($client, $_, $features) } @$merged ];
 }
 
+# The one line a search for, or a page of, Various Artists / Various Composers
+# gets (0.56.41, API::isVarious): it names what was asked for.
+sub _notOneArtistRow {
+    my ($client, $name) = @_;
+    return { name => sprintf(cstring($client, 'PLUGIN_DISCOGRAPHY_NOT_ONE_ARTIST'), $name),
+             type => 'text' };
+}
+
 # One artist link row — the SAME drill-in as a similar-artist link, entered by
 # name (plus the contributor id when the library knows the artist, so the
 # reliable library-tag resolution path applies). line2 names the sources the
@@ -4615,7 +4703,13 @@ sub _releaseItem {
     # Service names stay in line2 (Simon, 2026-09-24): the badge (_extid) shows
     # only the playing source, and line2 is the one place every source, Local
     # included, is listed.
-    my $line2 = join(" \x{00B7} ", grep { defined && length } $year, $type, $svcTag);
+    # A single made playable by a track the user owns on a compilation says
+    # which album that is (0.56.39; Simon: "not one gives the album name"), in
+    # the release page's own words ("from <album>", _releaseDetail).
+    my $first = ($sections && @$sections) ? $sections->[0]{items}[0] : undef;
+    my $from  = ($first && $first->{_track} && defined $first->{_fromAlbum} && length $first->{_fromAlbum})
+              ? "from $first->{_fromAlbum}" : undef;
+    my $line2 = join(" \x{00B7} ", grep { defined && length } $year, $type, $svcTag, $from);
 
     # Matched tiles are type 'playlist': tap still drills (go -> detail page),
     # but play/add work on the whole tile via the play URL — AND XMLBrowser
@@ -4729,6 +4823,13 @@ sub _rgItemActions {
         }
     }
     return \%a;
+}
+
+# A group MusicBrainz types as a Compilation (secondary): the track link never
+# makes one Local (Sources::matchesFor, 0.56.39).
+sub _isComp {
+    my ($rg) = @_;
+    return (ref $rg eq 'HASH' && grep { ($_ // '') eq 'Compilation' } @{ $rg->{secondary} || [] }) ? 1 : 0;
 }
 
 # Primary type, with a meaningful secondary appended LBF-style
@@ -5166,7 +5267,7 @@ sub _releaseDetail {
             my ($rivalBucket, $eds, $idGroups) = @_;
             $sections = Plugins::Discography::Sources->matchesFor(
                 $bySvc, $artist, $rg->{title}, $local, $rg->{mbid}, $relMap, $rivalBucket,
-                { aliases => $rg->{aliases}, rgType => $rg->{type}, editions => $eds,
+                { aliases => $rg->{aliases}, rgType => $rg->{type}, rgComp => _isComp($rg), editions => $eds,
                   idGroups => $idGroups, localTracks => $localTracks,
                   # The artist's other MusicBrainz names, as the tile's (C3).
                   otherNames => _otherNames($ambid, $artist) });

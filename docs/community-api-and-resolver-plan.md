@@ -3,7 +3,7 @@
 
 **Status 2026-10-01: Part B BUILT; Part A in part; Part C APPROVED (Simon: "yes lets move forward"), C3 + C5 BUILT
 as 0.56.17 and CHECKED LIVE; its one open case (a non-Latin name opened cold) fixed in 0.56.18 (checked live; its 王菲 regression fixed in 0.56.19, checked live; the "Faye Wong" page's gap fixed in 0.56.20, checked live), C4 DECLINED in the ledger, C2 BUILT as 0.56.21 (measured
-beyond Simon's library first, below) and CHECKED LIVE, C1 BUILT as 0.56.36 and CHECKED LIVE; Part D step 1 (the one MusicBrainz act no row opens) BUILT as 0.56.37 and CHECKED LIVE (timing gate passed), the rest of Part D to be rewritten for approval.** Everything through
+beyond Simon's library first, below) and CHECKED LIVE, C1 BUILT as 0.56.36 and CHECKED LIVE; Part D step 1 (the one MusicBrainz act no row opens) BUILT as 0.56.37 and CHECKED LIVE (timing gate passed); step 2 (nothing found: the closest names) BUILT as 0.56.38 and CHECKED LIVE (timing gate passed 2026-10-02: one more request, only when nothing is found); 0.56.39 (outside the plan: an owned song makes only its single Local, once; Appearances say Soundtrack) and 0.56.40 (a list cut at MusicBrainz's 600 kept an hour) INSTALLED and CHECKED LIVE; 0.56.41 (outside the plan: Various Artists / Various Composers is never one artist, nothing asked) BUILT, not installed.** Everything through
 0.56.25 is committed and pushed to `dev` (62e0813, 2026-10-02) and INSTALLED and CHECKED LIVE on the rig (2026-10-02: Muzz's biography and the home page); 0.56.26 (outside the plan: a first visit waits for Qobuz/TIDAL; no archive cover fetched while browsing) and 0.56.27 (outside the plan: the missing archive covers fetched after the visit, with LBF's resizing) 0.56.28 (tile strips on Material 6.4.11 and later), 0.56.29 (artist rows round, with Material's artist header; CHECKED LIVE) and 0.56.30 (archive covers at 05:00 only, never for a release with no cover) are committed and pushed to `dev` together (2026-10-02); 0.56.30 is INSTALLED on the rig (2026-10-02; no freeze after a first visit, measured; the 05:00 covers still to see). 0.56.31-0.56.36 are committed and pushed to `dev` together (2026-10-02): 0.56.31 (outside the plan: the home page's search gets a big title and a caption, Works best with moves to the top of the settings page, new About text) and 0.56.32 (outside the plan: the artist page's Options collapsed behind More options) were INSTALLED; 0.56.33 (the artist page's order) and 0.56.34 (our Material menu entry asks for an artist page; needs the Material change, PR #1278) were built only; 0.56.35 (Search back in Options, always visible) is INSTALLED with Material test build 6.4.10.10 and works; 0.56.36 (C1, the initials lift) is INSTALLED and CHECKED LIVE.
 - **Part C** (§5) was rewritten on 2026-10-01 from today's code and today's measurements: what is already done, what
   is left (C1 initials, C2 an owned artist with no MusicBrainz tag, C3 the same releases whichever name opened the
@@ -452,7 +452,33 @@ after, on the public API, over the same names (Jandek, Hawkwind, ELO, Madness, T
 The Bees, Luna, Bush). A reply slower than the baseline, or a request added before the reply, fails the step. The
 baseline on 0.56.36: first replies 0.9-1.6 s (the Qobuz search), repeats 0.01-0.04 s. Work that needs more requests
 (a misspelt or partial name matched on MusicBrainz) is asked after the reply, for the next search, as the row check
-and the counts are, or it is not built.
+and the counts are, or it is not built. **Simon 2026-10-02: "if this generates too much lag we abondonen it, and we
+rely on how it stands now"** — a step that fails the timing rule is ABANDONED, not tuned, and 0.56.37 is where search
+stays.
+
+**MEASURED 2026-10-02 (misspelt names, live on 0.56.37 and on the public API; scratchpad `dprobe.py misspell0.56.37`,
+`fuzzyprobe.py`):**
+- Today a misspelt name is already slow and finds nothing: first replies 3.9-7.0 s (Jandk 5.5, Jandec 4.2, Hawkwnd
+  3.9, Beatels 7.0), each with 2-3 MusicBrainz requests before the reply (the typed name's own lookup trying its
+  passes), and "No artists found" for Jandec, Hawkwnd and Beatels (Qobuz does not catch them either). Radiohed works
+  (Qobuz/library). A partial name (Sufjan) works through the services.
+- Of the four query forms, only MusicBrainz's fuzzy one (`artist:X~`) finds the act: Beatels -> The Beatles 100,
+  Hawkwnd -> Hawkwind 100, Jandk -> Jandek 100; but Jandec -> Handel 100, Jandek 87. The quoted and unquoted forms
+  the resolver asks today, and `dismax=true`, find nothing (or J&K for Jandk). Each request answers in 0.13-0.18 s;
+  the cost is the one-per-second queue, about 1 s per extra request.
+- So matching misspellings costs ONE more request, after the passes the lookup already makes: about +1 s, and only
+  worth asking when nothing else was found.
+
+**Step 2, BUILT as 0.56.38 (2026-10-02; Simon "okay"):** a search that finds nothing lists up to 3 of the closest
+names MusicBrainz knows, under Artists below "No artists found" (ledger A2 `NOTHING FOUND: THE CLOSEST NAMES`).
+Picked by edit distance from what was typed, since the fuzzy scores are relative. Its timing check after install
+decides whether it stays.
+
+**Timing check, PASSED (2026-10-02, live on 0.56.40, `dprobe.py`; ledger dev log 0.56.38):** the step costs one
+MusicBrainz request (~1.1 s on the public API) and runs only when nothing else was found. First searches after the
+install, 0.56.37 -> 0.56.40: Jandec 4.2 -> 5.7 s, Hawkwnd 3.9 -> 4.6, Beatels 7.0 -> 5.9, Jandk 5.5 -> 3.2; each now
+lists the act meant. The ten ordinary names never ask it; their two slow ones (ELO 4.0 s, Madness 3.3 s) were
+musicbrainz.org refusing a request twice (503) and the retries. Second searches: every name under 0.2 s. It stays.
 
 ## 7. Order of work
 

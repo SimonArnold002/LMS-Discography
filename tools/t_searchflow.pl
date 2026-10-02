@@ -32,6 +32,8 @@ our $CANDS;      # section 7: the same-name set to answer with (undef = three Ge
 our ($LAYOUT, $STRIPS);   # section 8: the layout_search pref, a strip-capable Material
 our (%RESOLVED, @PEEKED); # section 9: the name resolver's cached answers, and who asked
 our %LIBMBID;             # section 9: the album lookup's kept answers, by library id (C2)
+our ($FUZZY, @FUZZY_ASKED); # section 11: the closest names MusicBrainz answers, and who asked
+our @CANDS_ASKED;           # section 12: the names the same-name acts were asked for
 
 BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
@@ -48,7 +50,8 @@ BEGIN {
     *{'Plugins::Discography::DB::store'} = sub { bless {}, 'T::Null' }; $INC{'Plugins/Discography/DB.pm'} = 1;
     # The strings the search rows format; any other key comes back as itself.
     my %EN = (PLUGIN_DISCOGRAPHY_OWNED_ALBUM  => '1 album',
-              PLUGIN_DISCOGRAPHY_OWNED_ALBUMS => '%s albums');
+              PLUGIN_DISCOGRAPHY_OWNED_ALBUMS => '%s albums',
+              PLUGIN_DISCOGRAPHY_NOT_ONE_ARTIST => '%s is not a single artist, so there is no discography');
     *{'Slim::Utils::Strings::cstring'}   = sub { $EN{ $_[1] } // $_[1] };
     *{'Plugins::Discography::Plugin::dbg'} = sub { };
     for my $e (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Strings)) {
@@ -79,6 +82,7 @@ BEGIN {
         return $cb->($rows);
     };
     *{"${A}::getArtistCandidates"} = sub {
+        push @main::CANDS_ASKED, $_[1];
         return $_[2]->([ map { +{ %$_ } } @$main::CANDS ]) if $main::CANDS;
         $_[2]->([ map { { mbid => main::id($_), name => 'Genesis' } } 1 .. 3 ]);
     };
@@ -90,7 +94,20 @@ BEGIN {
         return $cb ? $cb->() : undef;
     };
     *{"${A}::peekReleaseGroupCount"} = sub { $main::COUNT{ $_[1] // '' } };
+    # The closest names for a search that found nothing (0.56.38).
+    *{"${A}::fuzzyArtists"} = sub {
+        push @main::FUZZY_ASKED, $_[1];
+        $_[2]->([ map { +{ %$_ } } @{ $main::FUZZY || [] } ]);
+    };
     *{"${A}::peekArtistMbid"} = sub { push @main::PEEKED, $_[1]; $main::RESOLVED{ lc($_[1] // '') } };
+    # Not one artist (0.56.41): the two names and MB's Various Artists id. The
+    # real rule (the LMS name, the other special ids, _nameKey) is pinned in
+    # t_various.pl against the real API.
+    *{"${A}::isVarious"} = sub {
+        my ($class, $n, $m) = @_;
+        return 1 if defined $m && lc $m eq '89ad4ac3-39f7-470e-963a-56509c546377';
+        return (defined $n && $n =~ /^\s*various (?:artists|composers)\s*$/i) ? 1 : 0;
+    };
     # The album lookup's kept answer for an untagged library contributor (C2), by id.
     *{"${A}::peekLibraryMbid"} = sub { $main::LIBMBID{ $_[1] // '' } };
 }
@@ -737,6 +754,169 @@ section('10', sub {
     ok(scalar($run->('Madness', []) eq 'PLUGIN_DISCOGRAPHY_SEARCH_NONE|H:ARTISTS_HDR|MB:81|MB:82'),
        '10: control: two acts and nothing found -> "No artists found" then the acts, as before');
     ($CANDS, %RESOLVED, %COUNT) = (undef);
+});
+
+section('11', sub {
+    # -----------------------------------------------------------------------
+    # 11. NOTHING FOUND: THE CLOSEST NAMES MUSICBRAINZ KNOWS (0.56.38, resolver
+    #     plan Part D step 2; Simon: "okay"). Measured on 0.56.37: "Beatels",
+    #     "Hawkwnd", "Jandec" read "No artists found" after 4-7 s. Asked ONLY when
+    #     nothing else was found, listed under Artists below that line, never the
+    #     Top Result (the closest can be the wrong act: Jandec -> Handel).
+    # -----------------------------------------------------------------------
+    no warnings 'redefine'; no strict 'refs';
+    local *{"${B}::_searchResultItems"} = $realItems;
+    local *{"${B}::_mbCandidateRow"}    = $realMbRow;
+    local *{"${B}::_sectionHeader"}     = $realHdr;
+    local *{"${B}::_useStrips"}         = sub { $STRIPS };
+    local *{'Plugins::Discography::Sources::orderedAdapters'} = sub { ({ name => 'Qobuz' }) };
+    my $WJ = "\x{2060}";
+    my $out;
+    my $label = sub {
+        my ($r) = @_;
+        return 'H:' . ($r->{name} =~ s/^PLUGIN_DISCOGRAPHY_//r) if ($r->{type} // '') =~ /^header|^text$/
+            && ($r->{name} // '') =~ /^PLUGIN_DISCOGRAPHY_(?:TOP_RESULT|ARTISTS_HDR)$/;
+        my $pt = ($r->{passthrough} || [])->[0] || {};
+        return 'MB:' . ($pt->{c_mbid} =~ s/^0*(\d+)-.*/$1/r) if $pt->{c_mbid};
+        return ($r->{name} // '') =~ s/$WJ//gr;
+    };
+    my $run = sub {
+        my ($q, $merged, $part) = @_;
+        $out = undef;
+        @WARMED = (); @WARM_BG = (); @FUZZY_ASKED = ();
+        $realWith->('client', sub { $out = $_[0] }, '', $q, $merged, $part);
+        return join('|', map { $label->($_) } @{ ($out || {})->{items} || [] });
+    };
+    my $row = sub { my ($n) = @_;
+        (grep { ((($_->{passthrough} || [])->[0] || {})->{c_mbid} // '') eq id($n) } @{ ($out || {})->{items} || [] })[0] };
+    ($STRIPS, $LAYOUT, %RESOLVED) = (0, undef);
+    %COUNT = ();
+
+    # Beatels: nothing on the services, no act of that name.
+    $CANDS = [];
+    $FUZZY = [ { mbid => id(1), name => 'The Beatles', disambiguation => 'UK rock band', type => 'Group' },
+               { mbid => id(2), name => 'Beaters' } ];
+    ok(scalar($run->('Beatels', []) eq 'PLUGIN_DISCOGRAPHY_SEARCH_NONE|H:ARTISTS_HDR|MB:1|MB:2'),
+       '11: nothing found -> "No artists found", then the closest names under Artists, in their order');
+    ok(scalar("@FUZZY_ASKED" eq 'Beatels'), '11: ... asked once, for the typed name');
+    ok(scalar("@WARMED" eq id(1) . ' ' . id(2) && "@WARM_BG" eq '1'),
+       '11: ... their unknown counts asked as background work');
+    my $r1 = $row->(1);
+    ok(scalar($r1 && (((($r1->{itemActions} || {})->{items} || {})->{fixedParams} || {})->{mbid} // '') eq id(1)),
+       '11: ... each opens its act by id');
+    ok(scalar($r1 && ($r1->{image} // '') =~ m{^imageproxy/dsc/artist/The%20Beatles/}),
+       '11: ... a name shown once gets its photo by name');
+    ok(scalar($run->('Beatels', [], 'sect:ARTISTS') eq 'MB:1|MB:2'),
+       "11: the Artists heading's More answers the same names");
+
+    # A repeated name keeps the person icon (which of them the photo shows is a guess).
+    $FUZZY = [ { mbid => id(3), name => 'Nirvana', disambiguation => 'US grunge band' },
+               { mbid => id(4), name => 'Nirvana', disambiguation => '60s band from the UK' } ];
+    $run->('Nirvanna', []);
+    ok(scalar(!grep { ($_->{image} // '') !~ /icon_person/ } grep { $_ } ($row->(3), $row->(4))),
+       '11: a name shown twice keeps the person icon on both');
+    ok(scalar($row->(3) && $row->(4)), '11: ... and both are listed');
+
+    # Counts: 0 hidden, known not asked again.
+    $FUZZY = [ { mbid => id(5), name => 'Jandek' }, { mbid => id(6), name => 'Jander' } ];
+    %COUNT = (id(5) => 60, id(6) => 0);
+    ok(scalar($run->('Jandec', []) eq 'PLUGIN_DISCOGRAPHY_SEARCH_NONE|H:ARTISTS_HDR|MB:5' && !@WARMED),
+       '11: a name MusicBrainz counts no releases for is hidden; a known count is not asked again');
+    %COUNT = ();
+
+    # Nothing close: the page as before.
+    $FUZZY = [];
+    ok(scalar($run->('Xqzvw', []) eq 'PLUGIN_DISCOGRAPHY_SEARCH_NONE'),
+       '11: no close name -> "No artists found" alone');
+
+    # ASKED ONLY WHEN NOTHING ELSE WAS FOUND.
+    $FUZZY = [ { mbid => id(1), name => 'The Beatles' } ];
+    ok(scalar($run->('Beatels', [ { name => 'Beatels Tribute', sources => ['Qobuz'], _seq => 0 } ])
+              eq 'H:TOP_RESULT|Beatels Tribute' && !@FUZZY_ASKED),
+       '11: a result row found -> not asked');
+    $CANDS = [ { mbid => id(7), name => 'Jandek' } ];
+    %RESOLVED = ('jandek' => id(7));
+    ok(scalar($run->('Jandek', []) eq 'H:TOP_RESULT|MB:7' && !@FUZZY_ASKED),
+       '11: the one act of the name listed -> not asked');
+    $COUNT{ id(7) } = 0;
+    ok(scalar($run->('Jandek', []) eq 'PLUGIN_DISCOGRAPHY_SEARCH_NONE|H:ARTISTS_HDR|MB:1' && "@FUZZY_ASKED" eq 'Jandek'),
+       '11: ... but one with no releases leaves nothing found -> asked');
+    %COUNT = ();
+    $CANDS = [ map { { mbid => id($_), name => 'Madness', disambiguation => "act $_" } } 81 .. 82 ];
+    %COUNT = map { (id($_) => 5) } 81 .. 82;
+    ok(scalar($run->('Madness', []) eq 'PLUGIN_DISCOGRAPHY_SEARCH_NONE|H:ARTISTS_HDR|MB:81|MB:82' && !@FUZZY_ASKED),
+       '11: two acts of the name and no rows -> the acts as before, not asked');
+    ($CANDS, $FUZZY, %RESOLVED, %COUNT) = (undef, undef);
+});
+
+section('12', sub {
+    # -----------------------------------------------------------------------
+    # 12. VARIOUS ARTISTS / VARIOUS COMPOSERS IS NEVER ONE ARTIST (0.56.41;
+    #     Simon: "we should not allow a search for Various Artists"). Measured
+    #     on 0.56.40: the search listed MusicBrainz's special entity and asked
+    #     the community API for its discography (no answer in 30 s).
+    # -----------------------------------------------------------------------
+    no warnings 'redefine'; no strict 'refs';
+    local *{"${B}::_searchResultItems"} = $realItems;
+    local *{"${B}::_mbCandidateRow"}    = $realMbRow;
+    local *{"${B}::_sectionHeader"}     = $realHdr;
+    local *{"${B}::_useStrips"}         = sub { 0 };
+    local *{'Plugins::Discography::Sources::orderedAdapters'} = sub { ({ name => 'Qobuz' }) };
+    my $VA = '89ad4ac3-39f7-470e-963a-56509c546377';
+    my $WJ = "\x{2060}";
+    my $out;
+
+    # The typed name: one line, nothing asked.
+    for my $q ('Various Artists', '  various COMPOSERS ') {
+        fresh(); @CANDS_ASKED = (); @FUZZY_ASKED = (); @WARMED = ();
+        $out = undef;
+        $B->can('_artistSearchView')->('client', sub { $out = $_[0] }, '', $q);
+        my @items = @{ ($out || {})->{items} || [] };
+        (my $t = $q) =~ s/^\s+|\s+$//g;
+        ok(scalar(@items == 1 && ($items[0]{type} // '') eq 'text'
+                  && ($items[0]{name} // '') eq "$t is not a single artist, so there is no discography"),
+           "12: '$q' -> the one line saying it is not one artist, naming it");
+        ok(scalar(!@SVC_CALLS && !@MB_CALLS && !@CANDS_ASKED && !@FUZZY_ASKED && !@WARMED && !@MERGED),
+           "12: ... nothing asked: no service, no MusicBrainz lookup, no same-name acts, no closest names");
+    }
+    # Control: a name that only starts like it is searched as ever.
+    fresh(); @CANDS_ASKED = ();
+    view('Various Artists - Duck Records');
+    ok(scalar("@SVC_CALLS" eq 'Various Artists - Duck Records' && @MB_CALLS == 1),
+       '12: control: "Various Artists - Duck Records" is searched as before');
+
+    # Its rows, from any source, are dropped before anything looks at them.
+    my $label = sub {
+        my ($r) = @_;
+        return 'H:' . ($r->{name} =~ s/^PLUGIN_DISCOGRAPHY_//r) if ($r->{type} // '') =~ /^header|^text$/
+            && ($r->{name} // '') =~ /^PLUGIN_DISCOGRAPHY_(?:TOP_RESULT|ARTISTS_HDR|SEARCH_NONE)$/;
+        my $pt = ($r->{passthrough} || [])->[0] || {};
+        return 'MB:' . ($pt->{c_mbid} =~ s/^0*(\d+)-.*/$1/r) if $pt->{c_mbid};
+        return ($r->{name} // '') =~ s/$WJ//gr;
+    };
+    my $run = sub {
+        my ($q, $merged) = @_;
+        $out = undef; @FUZZY_ASKED = (); @WARMED = ();
+        $realWith->('client', sub { $out = $_[0] }, '', $q, $merged);
+        return join('|', map { $label->($_) } @{ ($out || {})->{items} || [] });
+    };
+    ($STRIPS, $LAYOUT, %RESOLVED, %COUNT) = (0, undef);
+    $CANDS = []; $FUZZY = [];
+    my $list = [ { name => 'Various Artists', artist_id => 151537, sources => ['Local'], _seq => 0 },
+                 { name => 'VARIOUS COMPOSERS', sources => ['Qobuz'], _seq => 1 },
+                 { name => 'VA', artist_id => 151659, sources => ['Local'], _ident_mbid => $VA, _seq => 2 },
+                 { name => 'Various Artists - Duck Records', sources => ['Qobuz'], _seq => 3 } ];
+    ok(scalar($run->('Various', $list) eq 'H:TOP_RESULT|Various Artists - Duck Records'),
+       '12: Various Artists (Local), VARIOUS COMPOSERS (Qobuz) and a row tagged as MB\'s Various Artists are dropped; the rest stays');
+    ok(scalar(@$list == 4), '12: ... the list it was handed (the search cache\'s own) is not changed');
+
+    # All of them dropped = nothing found: the closest names, minus those.
+    $FUZZY = [ { mbid => id(1), name => 'Various Artists' }, { mbid => $VA, name => 'Varioos' },
+               { mbid => id(2), name => 'Varius' } ];
+    ok(scalar($run->('Various', [ @$list[0 .. 2] ]) eq 'H:SEARCH_NONE|H:ARTISTS_HDR|MB:2'),
+       '12: rows all dropped -> nothing found; among the closest names, Various Artists by name or by id is dropped too');
+    ok(scalar("@WARMED" eq id(2)), '12: ... and only the kept name has its count asked');
+    ($CANDS, $FUZZY) = (undef, undef);
 });
 
 print "\n$pass passed, $fail failed\n";

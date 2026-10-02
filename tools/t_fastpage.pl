@@ -39,7 +39,7 @@
 #      pages; the groups past the cap kept with the community's verdicts for
 #      those groups only; MusicBrainz's own still asked by id; either source
 #      failing, MusicBrainz's list alone; no ceiling; merged-away ids left out;
-#      Various Artists asks nothing; MusicBrainz's own groups all checked before
+#      Various Artists asks nothing at all, not even its 600 (0.56.41); MusicBrainz's own groups all checked before
 #      the draw, the kept ones bounded.
 #
 # Standalone -- no LMS install needed:  perl tools/t_fastpage.pl
@@ -50,6 +50,7 @@ use FindBin;
 use JSON::XS ();
 
 my %CACHE;
+our %TTLS;          # key => the lifetime it was stored with (0.56.40)
 our @SENT;           # [ url, \%opt ]
 our @DEFERRED;
 our @DEFURL;         # the url of each deferred reply, in step
@@ -90,7 +91,7 @@ BEGIN {
 package T::Null;  our $AUTOLOAD; sub AUTOLOAD { return } sub DESTROY { }
 package T::Cache;
 sub get    { return $CACHE{ $_[1] } }
-sub set    { $CACHE{ $_[1] } = $_[2]; return 1 }
+sub set    { $CACHE{ $_[1] } = $_[2]; $main::TTLS{ $_[1] } = $_[3]; return 1 }
 sub remove { delete $CACHE{ $_[1] }; return 1 }
 package T::Prefs;
 sub get { return $_[1] eq 'mb_base_url' ? $main::MB_BASE : undef }
@@ -739,10 +740,17 @@ section('8', sub {
             return { 'release-group-count' => 900000, 'release-groups' => [ map { { id => id($_), title => "G$_" } } ($off + 1) .. ($off + 100) ] };
         };
         $CACHE{ 'dsc:rgfull:1:' . $VA } = 1;
+        my %before = %CACHE;
         ($got, $n) = (undef, 0);
         $A->getReleaseGroups(mbid => $VA, read => 1, onDone => sub { $got = shift; $n++ });
-        ok($n == 1 && @$got == $cap && !sent(qr/listenbrainz|lms-community/),
-           '8: a Refresh of Various Artists asks nothing else: its 600, as before');
+        # 0.56.41 (Simon: Various Artists is never one artist): not its 600 any
+        # more, nothing at all, and nothing kept.
+        ok($n == 1 && ref $got eq 'ARRAY' && !@$got && !@SENT
+           && join(',', sort keys %CACHE) eq join(',', sort keys %before),
+           '8: a Refresh of Various Artists asks nothing at all: an empty list, nothing cached (0.56.41)');
+        ($got, $n) = (undef, 0);
+        $A->getReleaseGroups(mbid => uc $VA, onDone => sub { $got = shift; $n++ });
+        ok($n == 1 && !@$got && !@SENT, '8: so does a plain visit, under any case of the id');
     }
     $setup->(lb => lb_reply(500), cm => cm_reply(5 => { r5 => 'Official' })); $run->();
     ok($n == 1 && @$got == $cap && !defined $CACHE{$CMD}, '8: nothing past the cap in either list: no verdicts kept');
@@ -763,6 +771,32 @@ section('8', sub {
     $setup->(lb => 'ERROR'); delete $CACHE{$FULL}; $run->();
     ok($n == 1 && @$got == $cap && sent(qr/listenbrainz/) == 1 && sent(qr/lms-community/) == 1,
        '8: not a Refresh (the first list failed, the browse instead): the two are not asked again');
+
+    # A LIST CUT AT THE CAP IS KEPT AN HOUR (0.56.40). Found live 2026-10-02:
+    # ListenBrainz and the community API timed out on Ella Fitzgerald's first
+    # visit after an install, the browse gave 600 of her 796 groups, and her Live
+    # albums were gone for RG_TTL (14 days).
+    my ($day14, $hour) = ($A->can('RG_TTL')->(), $A->can('RGCUT_TTL')->());
+    ok($hour == 3600 && $day14 == 14 * 86400, '8c: the two lifetimes: an hour, and 14 days');
+    ok(@{ $CACHE{$RG} || [] } == $cap && ($TTLS{$RG} // 0) == $hour,
+       '8c: the first list failed and the browse was cut (Ella): kept an hour, not 14 days');
+    delete $CACHE{$RG}; @SENT = ();
+    $REPLY{$LBQ} = lb_reply(640);
+    $run->();
+    ok(sent(qr/listenbrainz/) == 1 && @{ $got || [] } > $cap,
+       '8c: ... so the next visit after it asks ListenBrainz again, and gets the whole list');
+    $setup->(lb => 'ERROR'); delete $CACHE{$FULL}; $REPLY{$BRQ} = $browse->(400); $run->();
+    ok(@{ $got || [] } == 400 && ($TTLS{$RG} // 0) == $day14,
+       '8c: the first list failed but the browse was whole: 14 days, as before');
+    $setup->(); $run->();
+    ok(($TTLS{$RG} // 0) == $day14, '8c: a Refresh with the groups past the cap: 14 days');
+    $setup->(lb => 'ERROR'); $run->();
+    ok(@$got == $cap && ($TTLS{$RG} // 0) == $hour, '8c: a Refresh whose lists failed: still cut, an hour');
+    $setup->(lb => lb_reply(500), cm => cm_reply(5 => { r5 => 'Official' })); $run->();
+    ok(@$got == $cap && ($TTLS{$RG} // 0) == $day14,
+       '8c: a Refresh where both lists have nothing past the cap: the 600 are all of it, 14 days');
+    $setup->(mb => $cap); $run->();
+    ok(($TTLS{$RG} // 0) == $day14, '8c: a browse that is whole: 14 days');
 });
 
 section('9', sub {

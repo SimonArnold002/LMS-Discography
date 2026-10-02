@@ -59,6 +59,8 @@ BEGIN {
         return $cb->($rows);
     };
     *{"${A}::getArtistCandidates"} = sub { $_[-1]->([]) };   # no same-name section
+    # No row here is Various Artists (0.56.41); that rule is t_searchflow's §12.
+    *{"${A}::isVarious"} = sub { 0 };
 }
 
 package T::Null; our $AUTOLOAD; sub AUTOLOAD { return } sub DESTROY {}

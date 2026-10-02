@@ -148,6 +148,7 @@ because line numbers rot on the next edit.
 | Our page can give itself Material's artist header when opened from Material's own Discography action (library Artists view) | A3 | `A CUSTOM ACTION PAGE NEVER GETS THE HEADER` |
 | The C1 initials lift without any act literally named the abbreviation (plan's BTO row) | A3 | `THE INITIALS LIFT NEEDS AN ACT NAMED THE ABBREVIATION` |
 | A MusicBrainz-only act listed in search (0.56.37's Top Result) opens an empty page when hide_unmatched is on | A3 | `AN ACT ON NO SERVICE KEEPS ITS PAGE UNDER HIDE_UNMATCHED` |
+| Our own plugins caused ListenBrainz / community API timeouts after an LMS restart (several plugins' calls at once) | A3 | `OUR PLUGINS DO NOT CALL OUT ON RESTART` |
 | An unsized proxy request for a tile's https cover redirects the device to the source, so a Discography archive cover never loads through (or stalls) the server | A3 | `LBF CLAIMS EVERY coverartarchive.org URL` |
 | Stage 2's five behaviour changes (a promo-only group hidden, the release map's index lag, a group with no releases listed shown, owned-album lookups after the render, so a render without the map (check failed or past the deadline) places them by title — the Esher Demos wait a visit, a small artist's spine refreshed by the read) — all deliberate | A2 | `STAGE 2 CHANGED FIVE BEHAVIOURS ON PURPOSE` |
 | Stage 3's five behaviour changes (a public search hides dead ends, merges alias rows, attaches by tag and searches the services under MB's name; a row lookup runs every pass; a count may be the community API's; one name lookup per new search term; a merge reads the act's full record first) — all kept | A2 | `STAGE 3 CHANGED FIVE BEHAVIOURS ON PURPOSE` |
@@ -156,13 +157,17 @@ because line numbers rot on the next edit.
 | A second same-name owned artist merged into the first when it is only on the first's albums (Air / Alex Gopher) — deliberate | A2 | `A SAME-NAME CONTRIBUTOR FOUND ONLY ON THE MAIN ACT'S ALBUMS` |
 | Stage 3b's four behaviour changes (the community API judges the rows no shared search answers; a pick under another name only merges; pass 1 reads aliases; proven answers go to the page) — all deliberate | A2 | `STAGE 3b CHANGED FOUR BEHAVIOURS ON PURPOSE` |
 | Pass 1's unproven answers riding in pass 2 (0.56.6): only when pass 2 is sent anyway, never re-picking, no fallback if the extra names overflow the reply — deliberate | A2 | `PASS 1'S UNPROVEN ANSWERS RIDE IN PASS 2` |
-| The artist page drawn from ListenBrainz's list + the community API's verdicts (0.56.7): aliases, edition titles and the newest groups a visit late, groups past MB's 600 cap shown, the completed list swapped in only on a fresh entry, background MB requests yield, either source failing = the old path, no size ceiling, special artists (Various Artists) the old path, at most 200 groups checked by id before the draw and the rest after it, a Refresh keeps the groups past the cap (0.56.8) — deliberate | A2 | `THE ARTIST PAGE DRAWS FROM LISTENBRAINZ AND THE COMMUNITY API` |
+| The artist page drawn from ListenBrainz's list + the community API's verdicts (0.56.7): aliases, edition titles and the newest groups a visit late, groups past MB's 600 cap shown, the completed list swapped in only on a fresh entry, background MB requests yield, either source failing = the old path, no size ceiling, special artists (Various Artists) the old path (no path at all since 0.56.41), at most 200 groups checked by id before the draw and the rest after it, a Refresh keeps the groups past the cap (0.56.8) — deliberate | A2 | `THE ARTIST PAGE DRAWS FROM LISTENBRAINZ AND THE COMMUNITY API` |
 | The search shows its rows before the row check (0.56.9): junk, credit variants and zero-release same-name acts show on a FIRST search and go on the next; the check runs as background work and keeps its answers per result name — deliberate, reverses 0.44.5's awaited counts | A2 | `THE SEARCH DOES NOT WAIT FOR ITS ROW CHECK` |
 | The search's Local leg keeps every library artist LMS finds for the typed spelling (0.56.9); only the fallback spellings' hits are narrowed to the exact name | A2 | `THE SEARCH DOES NOT WAIT FOR ITS ROW CHECK` |
 | Background work is not SENT while a page has any request waiting or out on ANY host, or while a page answer runs; a background request's TIMEOUT holds background work only (a 429 still holds everything) (0.56.11, the 18.8 s tap-after-search regression) | A2 | `THE SEARCH DOES NOT WAIT FOR ITS ROW CHECK` |
 | A result row that opens a MusicBrainz act sharing its name shows that act's description LAST on line2 (owned by library tag, unowned by the resolver's cached answer; untagged owned rows get none, never a name guess; only when MB has 2+ acts of that name) (0.56.12, Simon) | A2 | `THE SEARCH PAGE IS TOP RESULT, THEN ARTISTS` |
 | The search page is "Top Result" (one row, Local trumps) then "Artists" (same-name acts FIRST, then the other rows, then other spellings); no "Other artists with this name" section; `layout_search` split / all tiles; More on the Top Result heading opens that artist (0.56.10, Simon's design) | A2 | `THE SEARCH PAGE IS TOP RESULT, THEN ARTISTS` |
 | The ONE MusicBrainz act of the typed name is listed when no result row opens it (an act on no service and not owned: Jandek), as the Top Result unless something is owned or the typed name opens another act (C1's ELO), then under Artists (0.56.37, Part D step 1; Simon: "Top Result") | A2 | `THE ONE MUSICBRAINZ ACT NO ROW OPENS` |
+| A search that finds NOTHING (no row, no act of the name) lists up to 3 of the closest names MusicBrainz knows (one fuzzy request, about +1 s, only then): under Artists below "No artists found", never the Top Result; picked by edit distance (2, or 1 for 4 letters or fewer, "the" dropped, a swap = 1 edit), then score (0.56.38, Part D step 2; Simon: "okay") | A2 | `NOTHING FOUND: THE CLOSEST NAMES` |
+| An owned track on a VA compilation makes Local only a SINGLE of its title (never an album, EP or compilation named after the song), and only the first same-titled single; that tile says "from <album>". An Appearances row says MusicBrainz's type (Album / Soundtrack, Compilation), from the release lookup's own reply (0.56.39; Simon, Ella Fitzgerald) | A2 | `A TRACK LINKS ITS SINGLE ONCE` |
+| Various Artists / Various Composers / LMS's own name for them / MB's special entities are never one artist: a search for one is one line saying so, nothing asked; their rows are dropped from every search and from the closest names; their page (by name, by a special library tag or mbid) is that line + Search for another artist, nothing asked; the same-name set drops MB's special entities; `getReleaseGroups` answers an empty list for one. "Various Artsts", "VA", "Various" and names that only contain it are NOT covered (0.56.41; Simon: "A short message") | A2 | `NEVER ONE ARTIST: VARIOUS ARTISTS` |
+| `%MB_SPECIAL_ARTIST` kept MB's special entities (Various Artists 89ad4ac3) out of every MusicBrainz name lookup | A3 | `THE SAME-NAME SET KEPT THE SPECIAL ENTITIES` |
 | MB's artist lookup listing only first-credited groups; omitting an empty `release-groups`; a combined `inc=` returning less; a 50-id `reid:` search being too long | A3 | `MEASURED FOR STAGE 1` |
 | A non-UUID album id tag spoiling a `reid:` batch | A3 | `LMS VALIDATES MB ID TAGS AT SCAN` |
 | Paging the `arid:` search as a complete list; the search carrying group aliases; the artist read's group list as incomplete under 25; the by-id search's URL or release lists being cut short | A3 | `MEASURED FOR STAGE 2` |
@@ -803,6 +808,7 @@ always with its reason, and those stay suppressed. The code a fix added is new a
      the community's reply time is covered by `FAST_TIMEOUT` 12 s (Bach 6.5 s, Mozart 7.3 s uncached). **Only
      MusicBrainz's special-purpose artists** (`%MB_SPECIAL_ARTIST`: Various Artists, [unknown], [traditional]...)
      keep the old path, on a cold page and a Refresh alike: Various Artists is 106 MB on ListenBrainz.
+     **AMENDED 0.56.41:** they now take no path at all, page or Refresh (`NEVER ONE ARTIST: VARIOUS ARTISTS`).
   7. **Refresh is MusicBrainz's own list, awaited** (`_refreshItem` -> `clearArtistCache(refresh => 1)` ->
      `dsc:rgfull` for an hour, used once). The `clearcache` command does NOT set it: it is a plain cold start, which
      is the first-list path. **Since 0.56.8 a Refresh keeps the groups past the cap** (`API::_pastCap`; found live
@@ -814,6 +820,12 @@ always with its reason, and those stay suppressed. The code a fix added is new a
      answers with MusicBrainz's verdicts and edition titles for them, in full before the draw; the kept groups the
      community does not classify take item 9's bound. Either source failing: MusicBrainz's 600, as before. Only a
      Refresh asks: the ordinary fallback browse (the first list failed) does not ask the same two sources again.
+     **AMENDED 0.56.40: a list still cut at the cap is kept an hour (`RGCUT_TTL`), not `RG_TTL`** — the fallback
+     browse when the first list failed, and a Refresh whose two lists failed. Found live 2026-10-02: ListenBrainz and
+     the community API timed out on Ella Fitzgerald's first visit after an install, the browse gave 600 of her 796
+     groups and her Live albums (24) and 7 compilations were gone for 14 days. The next visit after the hour tries the
+     first list again; the same visit still does not ask the two again. A whole browse, a Refresh with the groups
+     past the cap, or both lists answering with nothing past it: `RG_TTL` as before. `t_fastpage.pl` §8c.
   8. **Under 25 groups nothing changed**: the read carries the list, and ListenBrainz and the community API are not
      asked.
   9. **At most two by-id requests before the draw for what the community does not classify** (0.56.8,
@@ -890,7 +902,9 @@ always with its reason, and those stay suppressed. The code a fix added is new a
      alone (the row past `numScrollItems`).
   6. Nothing on the services or in the library: the "No artists found" line stays, any MusicBrainz acts follow
      under Artists (no Top Result), except the ONE act of the name, which is the Top Result (0.56.37, `THE ONE
-     MUSICBRAINZ ACT NO ROW OPENS`). The row count and order never depend on the setting (walk-stable).
+     MUSICBRAINZ ACT NO ROW OPENS`); with no act of the name either, the closest names MusicBrainz knows follow
+     under Artists (0.56.38, `NOTHING FOUND: THE CLOSEST NAMES`). The row count and order never depend on the
+     setting (walk-stable).
   7. **A matched row says which act it opens** (0.56.12; `_stampDisambiguation`, `API::peekArtistMbid`; Simon: *"show
      the disambiguation when they are matched so the bees says its the 60's garage band etc"*): line2 ends with the
      MusicBrainz description of the act the row opens, from the same-name list the search already fetches (all of
@@ -914,6 +928,86 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   3. **No request before the reply**: the candidate list is the reply the typed query's own lookup fetched; the count
      comes after. Its photo is by name (one act of the name, so the name-keyed photo is its own).
   Pinned in `tools/t_searchflow.pl` §10 (21); 18 mutants caught (scratchpad `mutLone.py`).
+- **NOTHING FOUND: THE CLOSEST NAMES** (0.56.38, resolver plan Part D step 2; `API::fuzzyArtists`, `_fuzzyPick`,
+  `_editDistance`, `_fuzzyFold`, `_fuzzyKey`; the nothing-found branch of `Browse::_withMbCandidates`; Simon
+  2026-10-02: *"if this generates too much lag we abondonen it, and we rely on how it stands now"*, then *"okay"* to
+  about +1 s on a search that today ends in "No artists found"). Measured on 0.56.37 (live + public API): a misspelt
+  name already costs 2-3 requests before the reply (3.9-7.0 s) and finds nothing (Beatels, Hawkwnd, Jandec); only
+  MusicBrainz's FUZZY query finds the act, and its scores are RELATIVE (top = 100 always: Jandec -> Handel 100, Jandek
+  87), so they cannot say how close a hit is.
+  1. **Asked only when nothing was found**: no result row after the row check, no act of the name listed (none, or
+     the one act hidden for 0 releases), and fewer than 2 acts of the name. Any search that finds anything never
+     waits for it. ONE request `artist:(w1~ w2~)` (each word fuzzy, `_norm`ed, a leading "the" dropped), limit 25.
+  2. **Picked by edit distance from what was typed** (after `_norm`, a leading "the" dropped, a swap of neighbouring
+     letters = one edit): at most 2 (1 for 4 letters or fewer), closest first, then score, at most 3. Special artists
+     never. Measured over 21 misspellings on the mirror (scratchpad `fuzzydesign.py`): the act meant kept for all 21.
+  3. **Under Artists, below "No artists found", never the Top Result** (the closest can be wrong: Jandec gives Jandek,
+     Jander, Jandez). Each opens by mbid. A name shown once gets its photo by name; a repeated one (two Nirvanas)
+     keeps the person icon. Counts as for the same-name acts (0 hidden, unknown shown and asked after the reply).
+  4. **Cached** with its answer for `CAND_TTL` (empty too, a real answer); a failed or unparsed reply answers nothing
+     and is not cached.
+  Pinned in `tools/t_fuzzynames.pl` (32) and `tools/t_searchflow.pl` §11 (14); 20 mutants caught (scratchpad
+  `mutFuzzy.py`). Not `tools/t_fuzzy.pl`, which is the relevance gate's typo tolerance (0.44.x).
+- **A TRACK LINKS ITS SINGLE ONCE** (0.56.39; `Sources::matchesFor`'s track-link pass (`$trackLinkable`),
+  `Browse::_isComp`, `_rivalsByTitle`'s `type`, `_releaseItem`'s `from`, `_extraSection`'s `$types`,
+  `API::_setRelType`, `peekLocalReleaseTypes`, `warmLocalReleases`; Simon 2026-10-02 on Ella Fitzgerald with only
+  what he owns: *"the same track is showing multiple times under compilations and not one gives the album name.
+  Also this is Soundtrack not a compilation not sure if LMS has that but MB does"*; then **Singles only, once** and
+  both extras). Measured: his one "A-Tisket, A-Tasket" (on the soundtrack The Last Time I Committed Suicide, album
+  artist Various Composers) made THREE MusicBrainz groups read Local (699976be 1996, 4cac5cf1 undated, df540516
+  1995 "A Tisket A Tasket"; all Album + Compilation, no single of that title on her page), and "I've Got You Under
+  My Skin" a fourth. The 0.50.2 track link (built for the Bees' single on Nuggets) never checked the group's type.
+  1. **Only a Single** that is not a Compilation takes the track (an album, EP or compilation named after the song is
+     many songs, not the one owned). Amends 0.50.2 / 0.51.9's scope, which stand otherwise (VA comps only; the comp
+     stays under Appearances).
+  2. **Once**: of same-titled groups (`_rivalsByTitle`), only the first SINGLE in the rivals' order (the earliest)
+     takes it; an album sharing the title never takes it from the single (the stock rivals rule ranks the album
+     first, which would have left the owned single unplayable).
+  3. **The tile says where the song is**: "1966 · Single · Local · from Nuggets", the release page's own words.
+  4. **Appearances rows say MusicBrainz's type** (`_displayType`: "Album / Soundtrack", "Compilation"). LMS reads a
+     soundtrack as ALBUM (`release_type` ALBUM, measured). The type comes in the release lookups made after the page
+     (`warmLocalReleases`: both the batched search and the one-by-one lookup carry `primary-type` /
+     `secondary-types`, measured on the public API), kept beside the group (`dsc:reltype:v1:`, 14 d, '' for none):
+     no extra request, except ONE more batched ask for a release whose group was cached before 0.56.39 (no type yet).
+     A row shows it from the next visit; an untagged album shows none.
+  Pinned in `t_tracklink.pl` §5, `t_extid.pl` §6, `t_view.pl` §11, `t_extras.pl` part D, `t_rel2rg.pl` §12; 17
+  of 19 mutants caught, the 2 left equivalent (rivals arrive sorted compilations last; an owned ALBUM row carries
+  no `_fromAlbum`) (scratchpad `mutTrack.py`).
+- **NEVER ONE ARTIST: VARIOUS ARTISTS** (0.56.41; `API::isVarious`, `getArtistCandidates`, `getReleaseGroups`,
+  `Browse::_artistSearchView`, `_withMbCandidates`, `_discographyView` `$notOne`, `_resolveArtistMbid`,
+  `_notOneArtistRow`; Simon 2026-10-02: *"we should not allow a search for Various Artists or look up on albums
+  tagged with various artists or various composers. MB uses this to put any non artist compilation under it would
+  grind to a halt"*, then **A short message**). Measured live on 0.56.40 (scratchpad `vaprobe.py`): a search for
+  "Various Artists" listed MB's special entity 89ad4ac3 ("add compilations to this artist") and asked the community
+  API for its discography (no answer in 30 s) and for six other acts of the name; the library's Various Composers
+  (151659, 82 albums) is TAGGED 89ad4ac3 and drew "Other releases (600)", unrelated compilations, in 10 s; a Various
+  Artists with a dead tag (159267, 3b1d203e, no groups) browsed 89ad4ac3's six pages and six other acts to
+  disambiguate (14.2 s, 12 requests); the main Various Artists (151537, 109 albums) is tagged fed7f4aa, a one-group
+  act, so it opened in 1.3 s as that act's page.
+  1. **The rule** (`isVarious($name, $mbid)`): an mbid in `%MB_SPECIAL_ARTIST` (any case), or a name equal under
+     `_nameKey` to "Various Artists", "Various Composers" or LMS's own `variousArtistString()` (the pref a user may
+     rename; an LMS lookup that dies leaves the two names). Deliberately NOT "Various Artsts", "Various", "VA" or a
+     name that only contains it ("Various Artists - Duck Records" is a Qobuz artist): the names seen, and a special
+     tag catches a library contributor of any name. `_nameKey` strips brackets, so "Various Artists (Forte Record
+     Kupang)" counts, a label entity anyway. Ordinary MB acts NAMED Various Artists (a Bristol band) no longer open
+     by name.
+  2. **Search:** a typed one answers one text row (*"<name> is not a single artist, so there is no discography"*)
+     before any service, the library or MusicBrainz is asked. Its rows are dropped from every other search, first in
+     `_withMbCandidates` (a new list; the cached one untouched), by name or by an owned row's `_ident_mbid`; and from
+     the closest names (0.56.38) by name or mbid. All rows dropped = nothing found, as for any search.
+  3. **Page:** by name at once; by mbid (a link's, or the library tag once read: `_resolveArtistMbid` no longer reads
+     a special tag's list) in `$withMbid`. The page is the line and `_searchButtonRow` (its tap is param-addressed,
+     so the page must carry the row). No bio, no pool, no lookups.
+  4. **The same-name set drops MB's special entities** (`getArtistCandidates`), as every other name lookup already
+     did (A3 `THE SAME-NAME SET KEPT THE SPECIAL ENTITIES`); this alone ends the 14 s disambiguation for any name.
+  5. **`getReleaseGroups` answers an empty list for a special mbid**, nothing asked or kept: a release tile or play
+     action left over from a page drawn before, and anything else. Amends `THE ARTIST PAGE DRAWS FROM LISTENBRAINZ AND
+     THE COMMUNITY API` item 6.
+  Not touched: an artist's own page still lists its VA compilations under Appearances and looks those releases up
+  by id (`warmLocalReleases`, batched 50 a request: Various Artists' 77 took 2); the track-link pool still reads VA
+  compilation tracks from the library only. Pinned in `tools/t_various.pl` (20, the real API), `t_searchflow.pl` §12
+  (9), `t_chain.pl` §13 (7, the real page), `t_fastpage.pl` §8 (now: nothing asked); 21 mutants caught (scratchpad
+  `mutVarious.py`), 2 more removed as code that could not matter (an empty LMS name, the page's own mbid check).
 - **A RELEASE MUSICBRAINZ LISTS UNDER THE ARTIST COMES THROUGH, HOWEVER THE SERVICE CREDITS IT** (0.56.13;
   `Browse::_poolQuery`, `Sources::getCandidates` `query`, `_resolveWithJoints`, `_jointArtists`, `_appendJoint`,
   `_isMainCredit`, `_mainArtistAs`, `_mainArtistNamed`, Browse's extras `_joint` skip, API fold `$libCanon`; Simon,
@@ -1313,6 +1407,8 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 | A Discography page opened from Material's own Discography action (the library Artists view: an artist's menu or its page's menu) can be given the artist header by something in OUR response | **WRONG** — A CUSTOM ACTION PAGE NEVER GETS THE HEADER (read 2026-10-02 in the 6.4.10.9 bundle = upstream master b652e87b1; Simon reported the missing header as a bug the same day) | Material opens an `lmsbrowse` custom action's page with `fetchItems(cmd, {cancache:false, id, title})` only: no `image`, no `stdItem` (`browse-page.js`, the `act.custom` branch of the current page's menu and `itemCustomAction`). `showDetailedSubtoolbar` reads `current.stdItem` or `current.altStdItem`, both from the TAPPED item; `altStdItem` is only ever copied from a row's own `stdItem` (`browse-functions.js`), never from a response. So no field, row type or response flag of ours can turn the header on for that page. Only a Material change can (drafted 2026-10-02, test build 6.4.10.10, "Material PR status"): e.g. a custom action that asks for it opens its page with the item's image and `STD_ITEM_ONLINE_ARTIST`, as an `artist-link` row does. Our own rows (search results, Also a member of, Similar artists) are unaffected. **Ways round it, checked the same day (Simon: "we sure we cant work around this issue witout another PR?"):** a `script` custom action firing Material's `browse` bus event types the page from its params (`artist_id:` first = a LIBRARY artist, with Material's own artist actions) but gives it NO image: Material takes a page image only from the tapped row or its own library album lists (`resp.image`), never from a plugin response, so still no header; calling `fetchItems` directly would mean reaching into Material's component tree (breaks on any refactor; not offered); a one-row stop-off page costs a tap (Material never opens a single row by itself). **The one route that works without a PR:** a row in LMS's artist info menu (Material's More on a library artist; Qobuz's "On Qobuz", TIDAL's "On TIDAL" live there): that response keeps each row's `type` (read live on Paul Weller), and Material's `artist-link` typing runs on every SlimBrowse row, so a Discography row of that type with the artist's photo opens our page WITH the header. One tap more than the menu entry (More, then Discography). Offered to Simon. |
 | The initials lift (resolver plan C1) should also run when NO act is literally named the abbreviation, the best-scoring alias act whose initials spell it winning (the plan's BTO row) | **WRONG** — THE INITIALS LIFT NEEDS AN ACT NAMED THE ABBREVIATION (measured 2026-10-02 on the PUBLIC API, scratchpad `c1replay.pl` / `c1score.py`, the real `_artistMbidByName` beside the rule, 356 names, 1,108 requests) | BTO already resolves Bachman–Turner Overdrive today (the alias pass), so it needs no lift. Lifting with no name-equal act breaks a working answer: OMD today opens Orchestral Manoeuvres in the Dark (its initials are "omitd", so it never qualifies) and the lift would take Of Mexican Descent (aka OMD, 79); CFB and KOW would go to obscure acts. With the stash's condition (at least one act NAMED the query, and the lifted act scoring above every one of them) those three drop out and nothing else changes: ELO, PIL, NIN, EBTG lift; ABC, TLC, HAIM, KLF, Bob, REM, GnR, SFA, OMD, BTO unchanged; 0 of the 73 short-named library album artists change (57 tagged); typing the initials of a library artist opens the owned act 13 -> 24 times of 269 (ADF, BBR, CCR, EBTG, ELO, KLO, MBV, MMJ, MSP, PCO, UMO), none lost. |
 | A MusicBrainz-only act listed in search (0.56.37, Jandek as the Top Result) opens an empty "No results" page when hide_unmatched is on, and records the 7-day empty verdict | **WRONG** — AN ACT ON NO SERVICE KEEPS ITS PAGE UNDER HIDE_UNMATCHED (measured live 2026-10-02 on 0.56.37, hide_unmatched = 1 on the rig) | A service that cannot identify the artist caches its pool as UNRESOLVED (`Sources::_cacheCands` `unresolved`), and `peekPool` does not count an unresolved pool as streaming checked, so `_buildList`'s visibility rule (`!$hideUnmatched || sections || !resolved`) shows every release and `$poolResolved` stays 0, so `markArtistEmpty` never runs. Jandek's page by mbid: bio + Albums (60), 78 rows, 0.64 s cold. The hide only bites an act a service DOES identify with nothing matching. |
+| Our own plugins caused the ListenBrainz and community API timeouts on Ella Fitzgerald's first visit after the 0.56.39 install (Simon: "be good to see if it wsnt us causing those timeouts with multiple calls going out from different plugins", "and on restart that could cause it") | **WRONG** — OUR PLUGINS DO NOT CALL OUT ON RESTART (measured 2026-10-02) | Of the fleet only Discography and LBF call ListenBrainz, the community API or MusicBrainz (grep of every repo). At startup Discography only probes for a same-host mirror (`autodetectMirror`) and arms the 05:00 covers; LBF probes the mirror and arms its warm/re-seed at `WARM_DELAY` 180 s. LMS was up at 17:03:37; Discography's page timed out at 17:04:10 (community) and 17:04:16 (ListenBrainz), before LBF's 17:06:37. The log holds no other plugin's call there. ListenBrainz itself was slow from OUTSIDE LMS (curl from the Mac, same request: no answer in 40 s, then 21 s, then 0.2 s; a small artist 5.9 s). Live afterwards, an uncached page (Sarah Vaughan) sent only Discography's requests, MusicBrainz ~1/s, ListenBrainz 0.26 s, community 2.6 s. |
+| `%MB_SPECIAL_ARTIST` keeps MB's special entities (Various Artists 89ad4ac3, [unknown], [traditional]...) out of every MusicBrainz name lookup, so no search lists one and no page disambiguates through one (the comment at its definition; six call sites filter it) | **WRONG** — THE SAME-NAME SET KEPT THE SPECIAL ENTITIES (measured 2026-10-02, live on 0.56.40) | `getArtistCandidates` filtered by name only. Live: a search for "Various Artists" listed 89ad4ac3 ("add compilations to this artist · Other") and asked the community API for its discography (no answer in 30 s); a library Various Artists with a dead tag (159267) walked the set in `_disambiguateByLibrary` and browsed 89ad4ac3's six pages (14.2 s, 12 requests; the 2026-09-30 "15.5 s, 13 requests" was this). Fixed 0.56.41 (A2 `NEVER ONE ARTIST: VARIOUS ARTISTS` item 4). |
 
 | Fetching the archive covers in the background at a gentle pace (2 in flight while browsing, 8 idle, after a 3 s grace) keeps the server responsive (0.56.27's design) | **WRONG** — AN ARCHIVE FETCH FREEZES THE SERVER WHATEVER THE PACE (measured on the rig 2026-10-02, scratchpad `thumbprobe.py`: a page then its thumbnails at the phone's 600 px, 6 at a time, a `version` ping every 50 ms) | **Ocean Colour Scene, first visit:** page 3.1 s, 32 thumbnails in 2.3 s, then the server FROZE 11.4, 4.4, 12.8 and 4.4 s within the next minute (35 s of 60). **Paul Weller, first visit:** page 5.5 s, its 60 thumbnails 13.4 s because the background had started while they loaded (Qobuz covers 1.4 s each against 0.3-0.6 s with the server free), then 32 s frozen in 45 s, worst 3.4 s. **Second visit:** page 0.08 s, 61 thumbnails in 1.65 s, no freeze. The loop is held until archive.org answers, so in-flight width does not spread it: up to ~4 s for a cover it has, 11-13 s for one it fails. Fixed in 0.56.30 (A2 `ARCHIVE COVERS ARE FETCHED AT 05:00`). LMS's image proxy DOES share one download per url (`ImageProxy.pm` `%queue`), so the four sizes were not the cost. |
 
@@ -2024,6 +2120,111 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   counterpart there.
 
 ## Development Log
+
+### 0.56.41 (2026-10-02) — Various Artists / Various Composers is never one artist: no search, no page, no lookups — BUILT (sha aa20012f), INSTALLED + CHECKED LIVE 2026-10-02, NOT committed; carries 0.56.38-0.56.40
+- **Source (Simon):** *"on other things we should not allow a search for Various Artists or look up on albums tagged
+  wiuth various artists or various composers. MB uses this to put any non artist compilation under it would grind to
+  a halt."* -> measured (below) -> asked what the page shows: **A short message**.
+- **Measured live on 0.56.40** (scratchpad `vaprobe.py`, `vaprobe_now.out`): search "Various Artists" 2.4 s, then 8
+  MusicBrainz + 8 community requests in the background, listing MB's special entity; search "Various Composers" 4.1
+  s (MB has no such artist; Qobuz's leads); page 151537 (Various Artists, 109 albums, tag fed7f4aa) 1.3 s; page
+  159267 (Various Artists, dead tag) 14.2 s, 12 MusicBrainz requests before the reply; page 151659 (Various
+  Composers, tagged 89ad4ac3) 10.1 s, "Other releases (600)".
+- **Change:** A2 `NEVER ONE ARTIST: VARIOUS ARTISTS` (new); `THE ARTIST PAGE DRAWS FROM LISTENBRAINZ AND THE COMMUNITY
+  API` item 6 AMENDED; A3 `THE SAME-NAME SET KEPT THE SPECIAL ENTITIES`. String `PLUGIN_DISCOGRAPHY_NOT_ONE_ARTIST`.
+  CACHE_VERSION 0.56.41 (empties the kept same-name sets that hold 89ad4ac3, and Various Composers' 600).
+- **Tests:** `t_various.pl` NEW (20, the real API), `t_searchflow.pl` 100 -> 109 (§12; `isVarious` stub), `t_chain.pl`
+  67 -> 74 (§13, the real page), `t_fastpage.pl` 111 -> 112 (§8: a Refresh of Various Artists now asks nothing),
+  `t_searchrank.pl` (stub only). 21 mutants caught (scratchpad `mutVarious.py`); 2 more survived as code that could
+  not matter and that code was removed (an empty LMS name; the page's early mbid check, which `$withMbid` repeats);
+  one survived a test joining two checks with "and", fixed. 65 suites / 3,251 green; syntax_check clean; zip == tree.
+- **Live check after install:** 1. Search "Various Artists" and "Various Composers": the one line, at once. 2. Open
+  Various Composers (151659) and the Various Artists entries (151537, 159267) from the library: the line + Search for
+  another artist, at once, and the log shows no request for them. 3. Search "Various": no Various Artists row.
+  4. Control: Ella Fitzgerald's Appearances unchanged (6).
+- **CHECKED LIVE 2026-10-02** (LMS restart 18:10:08; scratchpad `vacheck.py`, debug on): searches "Various Artists"
+  and "Various Composers" 0.01 s, the one line, 0 requests; pages 151659 (Various Composers), 151537, 159267, 159264
+  (Various Artists) 0.01 s each, the line + Search for another artist, 0 requests (were 1.3-14.2 s). Search "Various":
+  no Various Artists row; Top Result "Various Artsts" (the library's typo contributor, not covered by design); MB
+  acts named "Various" listed, one of them 09f8b185 "DO NOT USE: 'Various Artists' is what you want" with 0 groups
+  (public API), dropped by the row check on the next search as any empty act is. Ella: Appearances (6); first visit
+  after the install 51 / 65 / 24 as on 0.56.40's (the cold page, settling in the background).
+
+### 0.56.40 (2026-10-02) — a list cut at MusicBrainz's 600 is kept an hour, not 14 days (Ella's Live albums) — BUILT (sha ceda79bb), INSTALLED + CHECKED LIVE 2026-10-02, NOT committed; carries 0.56.38-0.56.39
+- **Source (Simon):** *"installed but now Ella takes ages to open a big regression"* -> measured (below) -> *"okay, be good
+  to see if it wsnt us causing those timeouts with multiple calls going out from different plugins as thats behaviour
+  we dont want"*, *"and on restart that could cause it"*.
+- **Measured:** the install restarted LMS at 17:03:36. Ella's visit: community API timed out 17:04:10, ListenBrainz no
+  callback 17:04:16, then the browse "truncated at 600 of 796". The page then had no Live albums (24) and 63 of 70
+  compilations, kept 14 days. ListenBrainz measured from the Mac: no answer in 40 s, then 21.4 s, later 0.2 s. NOT us:
+  A3 `OUR PLUGINS DO NOT CALL OUT ON RESTART`. 0.56.39's changes do not touch these requests.
+- **Change:** A2 old-path entry item 7 `AMENDED 0.56.40`. `API::RGCUT_TTL` (3600); `getReleaseGroups`' `$store`
+  keeps a list still cut at the cap for it; `_pastCap` says when its list is whole. CACHE_VERSION 0.56.40 (the install
+  empties Ella's cut list).
+- **Tests:** `t_fastpage.pl` 103 -> 111 (§8c; the cache stub records lifetimes). 7 mutants caught. 64 suites / 3,216
+  green; syntax_check clean; zip == tree.
+- **Live check after install:** 1. Ella Fitzgerald: Albums (52), Compilations (70), Live albums (24), Appearances (6)
+  as before the outage. 2. The 0.56.38-0.56.39 list (dev log 0.56.39).
+- **CHECKED LIVE 2026-10-02** (installed, LMS restart 17:19:21): Ella, first visit 3.06 s, then Albums (52),
+  Compilations (66), Live albums (24), Appearances (6) once background matching settled (about a minute; it read 51/65
+  on the first visit). Compilations 66, not 70: the 4 missing are exactly the A-Tisket x3 + Under My Skin groups, which
+  showed only through 0.56.39's removed track link and match no service, so hide_unmatched hides them. The "70" above
+  forgot 0.56.39's own item 2 ("Qobuz or unmatched"). Checked by expanding Compilations to all 66 tiles.
+
+### 0.56.39 (2026-10-02) — an owned song makes only its single Local, once, and says which album; Appearances say Soundtrack — BUILT (sha 8c7d07c6), INSTALLED 2026-10-02 (Ella's first visit then hit a ListenBrainz outage: 0.56.40), CHECKED LIVE on 0.56.40, NOT committed; carries 0.56.38
+- **Source (Simon):** *"before we do seeing some oddities when searching Ella Fitzgerald and showing only what I own the
+  same track is showing multiple times under compilations and not one gives the album name. Also this is Soundtrack not
+  a compilation not sure if LMS has that but MB does"*; asked: **Singles only, once**; extras **Album name on linked
+  singles** and **Soundtrack on Appearances**.
+- **Reproduced live** (0.56.37, Ella Fitzgerald, only what I own): Compilations (5) = the Gershwin Song Book (owned) +
+  "A-Tisket, A-Tasket" 1996, "A Tisket A Tasket" 1995, "A-Tisket, A-Tasket" (no date), "I've Got You Under My Skin"
+  1989, each Local off one owned VA track. MusicBrainz: all three A-Tisket groups are Album + Compilation. The
+  soundtrack itself is under Appearances (correct); LMS types it ALBUM.
+- **Change:** A2 `A TRACK LINKS ITS SINGLE ONCE`. CACHE_VERSION 0.56.39.
+- **Tests:** `t_tracklink.pl` 26 -> 37 (existing link cases now say Single), `t_extid.pl` 30 -> 40, `t_view.pl` 71 ->
+  75, `t_extras.pl` 31 -> 33, `t_rel2rg.pl` 44 -> 51 (§10 seeds the type; §12 new). 17 of 19 mutants caught, 2
+  equivalent. 64 suites / 3,208 green; syntax_check clean; zip == tree.
+- **Live check after install** (0.56.38's list too): 1. Ella Fitzgerald, only what I own: Compilations = the Gershwin
+  Song Book only; no A-Tisket or Under My Skin tile reads Local. 2. Show all: those groups are ordinary compilation
+  tiles (Qobuz or unmatched). 3. Appearances, from the SECOND visit: The Last Time I Committed Suicide and Mad Men
+  read "Album / Soundtrack", the others "Compilation", Greatest Divas (untagged) as before. 4. The Bees' "Voices Green
+  and Purple" single still Local, now "· from Nuggets".
+- **CHECKED LIVE 2026-10-02 on 0.56.40:** 1. Ella, only what I own: Albums (1), Compilations (1) = Gershwin, Appearances
+  (6). 2. Show all: the four groups are unmatched, so hidden (dev log 0.56.40). 3. Appearances exactly as listed above.
+  4. The garage Bees (library artist 160341, not the UK band 155528): "1966 · Single · Local · from Nuggets: Original
+  Artyfacts From the First Psychedelic Era, 1965–1968"; Nuggets under Appearances reads "1972 · Local" on the first
+  visit, "1972 · Compilation · Local" on the second.
+
+### 0.56.38 (2026-10-02) — Part D step 2: a search that finds nothing lists the closest names MusicBrainz knows (Beatels -> The Beatles) — BUILT (sha a75f886d), INSTALLED with 0.56.40 + TIMING GATE PASSED 2026-10-02, NOT committed
+- **Source (Simon):** *"if this generates too much lag we abondonen it, and we rely on how it stands now"* ->
+  measured (below) -> *"okay"*.
+- **Change:** A2 `NOTHING FOUND: THE CLOSEST NAMES`; `THE SEARCH PAGE IS TOP RESULT, THEN ARTISTS` item 6.
+  `API::fuzzyArtists`, `_fuzzyPick`, `_editDistance`, `_fuzzyFold`, `_fuzzyKey`, `FUZZY_MAX` (new); the
+  nothing-found branch of `Browse::_withMbCandidates`. CACHE_VERSION 0.56.38.
+- **Measured first** (plan doc Part D "MEASURED 2026-10-02 (misspelt names"): live on 0.56.37, first replies Jandk 5.5 s,
+  Jandec 4.2, Hawkwnd 3.9, Beatels 7.0, Radiohed 5.0, Sufjan 4.0, 2-3 MusicBrainz requests before each; Jandec,
+  Hawkwnd, Beatels "No artists found". Public API, four query forms: only `artist:X~` finds the act. Mirror, the
+  built query over 21 misspellings: the act meant kept for all 21. My probe hit MusicBrainz's 503 after 18 public
+  requests (the server shares the IP), so the rest was measured on the mirror.
+- **Tests:** `t_fuzzynames.pl` NEW (32), `t_searchflow.pl` 86 -> 100 (§11). 20 mutants caught (scratchpad
+  `mutFuzzy.py`; a 3-edit fixture added for "limit 3", an equivalent "listed first" mutant replaced by "made the
+  Top Result"). 64 suites / 3,175 green; syntax_check clean; zip == tree. (The new suite was first written over the
+  existing `t_fuzzy.pl`, the relevance gate's typo suite; restored from HEAD, unchanged, before anything else ran.)
+- **Live check after install:** 1. "Beatels", "Hawkwnd", "Jandec": "No artists found", then under Artists The Beatles /
+  Hawkwind / Jandek (first), each opening its page. 2. The ten baseline names: the same rows as on 0.56.37. 3. Timing
+  (`dprobe.py`, second pass after 10 minutes): the ten baseline names no slower; the misspelt ones about 1 s more than
+  on 0.56.37 and no more (the trade Simon accepted); more than that and the step is abandoned.
+- **CHECKED LIVE 2026-10-02 on 0.56.40 — PASSED** (scratchpad `dprobe_after0.56.40_{cold,warm}.out`; cold = the first
+  pass after the install emptied the search lists and candidates). 1. Jandec -> Jandek, Jander, Jandez; Hawkwnd ->
+  Hawkwind; Beatels -> The Beatles, Beaters (Beatals, no releases, gone by the warm pass); Jandk -> Jandek, JANK,
+  Janda (its Qobuz row Swen Jandke dropped by the row check on the repeat). 2. The ten baseline names: same rows.
+  3. Cold, first reply (0.56.37 -> 0.56.40): Jandec 4.2 -> 5.7, Hawkwnd 3.9 -> 4.6, Beatels 7.0 -> 5.9, Jandk 5.5 ->
+  3.2, Radiohed 5.0 -> 5.7, Sufjan 4.0 -> 2.5; the closest-names request is ONE more MusicBrainz request (paced
+  ~1.1 s), and only on a search that found nothing. The ten baseline names 0.1-1.2 s except ELO 4.0 and Madness 3.3:
+  NOT this step (neither asks it); each had its same-name request refused twice by musicbrainz.org ("mb shed", 503)
+  and retried. 9 sheds in the window, all 88 MusicBrainz requests ours, spaced ~1.1 s, no other plugin's (A3
+  `OUR PLUGINS DO NOT CALL OUT ON RESTART` holds). Warm (search lists expired, re-searched): every name 0.01-0.17 s
+  (0.56.37's warm pass: 0.04-1.06 s; Qobuz answered from its own cache this time).
 
 ### 0.56.37 (2026-10-02) — Part D step 1: the one MusicBrainz act no row opens is listed (Jandek), as the Top Result — BUILT (sha 9bccc700), INSTALLED 2026-10-02, CHECKED LIVE (timing gate passed), COMMITTED + dev PUSHED 2026-10-02
 - **Source (Simon):** *"With the current way it works do we loose out on artists that are not in streaming?"* ->

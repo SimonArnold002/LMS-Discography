@@ -56,7 +56,7 @@ my $prefs = preferences('plugin.discography');
 # first module to call DB->store() sets it and later calls are ignored.
 # tools/syntax_check.sh asserts all three agree and match install.xml.
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.37';
+use constant CACHE_VERSION => '0.56.41';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 # The families DB.pm keeps across builds, by their CURRENT key prefix, so rows
 # written under an older key version are retired at open. Taken from the key
@@ -801,6 +801,14 @@ use constant MBID_EMPTY_TTL =>       3600;
 # Release-group lists change rarely (a new release every few months at most).
 # The browse view's Refresh action bypasses this.
 use constant RG_TTL => 14 * 86400;
+# A list MusicBrainz cut at its cap, with nothing to complete it (0.56.40): kept
+# an hour, so the next visit tries ListenBrainz and the community API again
+# instead of drawing the cut list for RG_TTL. Found live 2026-10-02: ListenBrainz
+# and the community API both timed out on Ella Fitzgerald's first visit after an
+# install (ListenBrainz measured from outside LMS: 40 s without an answer, then
+# 21 s), the page fell back to the browse, 600 of her 796 groups, and her Live
+# albums section was gone for 14 days. 0.56.8 fixed this for a Refresh only.
+use constant RGCUT_TTL => 3600;
 
 # MB pagination: 100/page max; pages fetched serially with a courtesy gap
 # (MB asks for <=1 req/s). 6 pages = 600 release groups — beyond any artist
@@ -955,6 +963,28 @@ my %MB_SPECIAL_ARTIST = map { $_ => 1 } (
     'f731ccc4-e22a-43af-a747-64213329e088',   # [anonymous]
     '9be7f096-97ec-4615-8957-8d40b5dcbc41',   # [traditional]
 );
+
+# NEVER ONE ARTIST (0.56.41; Simon, 2026-10-02: "we should not allow a search for
+# Various Artists or look up on albums tagged with various artists or various
+# composers. MB uses this to put any non artist compilation under it"). True for
+# the special entities above, and for the names compilations are filed under:
+# Various Artists, Various Composers, and LMS's own name for them (the
+# variousArtistsString pref, which a user may have renamed). The callers ask
+# nothing at all for one. Measured live on 0.56.40: a search asked the community
+# API for 89ad4ac3's discography (no answer in 30 s); the library's Various
+# Composers, tagged 89ad4ac3, drew 600 unrelated compilations in 10 s; a Various
+# Artists with a dead tag browsed 89ad4ac3's six pages to disambiguate (14 s, 12
+# requests). The names are compared under _nameKey, so "VARIOUS ARTISTS" is one.
+sub isVarious {
+    my ($class, $name, $mbid) = @_;
+    return 1 if defined $mbid && $MB_SPECIAL_ARTIST{ lc $mbid };
+    return 0 unless defined $name && length $name;
+    my $k = _nameKey($name);
+    return 0 unless length $k;
+    my $lms = eval { Slim::Music::Info::variousArtistString() };
+    return (grep { defined $_ && _nameKey($_) eq $k }
+                 'Various Artists', 'Various Composers', $lms) ? 1 : 0;
+}
 
 # Is $cand plausibly the SAME artist as the query $want (both already _norm'd)?
 # True when the names are token-subset-equal give or take a SINGLE token — an
@@ -2484,13 +2514,13 @@ sub _pastCap {
         my $go = sub {
             unless ($lb && $cm) {
                 _dbg("release groups for $mbid: no list past the cap - MusicBrainz's " . scalar(@$mb) . ' only');
-                return $done->($mb);
+                return $done->($mb);    # still cut: kept RGCUT_TTL
             }
             my %have = map { $_->{mbid} => 1 } @$mb;
             my @extra = ((grep { !$have{ $_->{mbid} }++ } @$lb), _cmExtra($cm, \%have));
             unless (@extra) {
                 _dbg("release groups for $mbid: nothing past the cap - MusicBrainz's " . scalar(@$mb) . ' only');
-                return $done->($mb);
+                return $done->($mb, undef, 1);    # both lists say this is all of it
             }
             my @all = sort { $a->{mbid} cmp $b->{mbid} } (@$mb, @extra);
             _pruneAliases(\@all);
@@ -2500,7 +2530,7 @@ sub _pastCap {
             _dbg("release groups for $mbid: MusicBrainz's " . scalar(@$mb) . ' and ' . scalar(@extra)
                  . ' past its cap from ListenBrainz and the community API, ' . scalar(keys %o)
                  . ' of those with its verdict');
-            $done->(\@all, { o => \%o, r => \%r, past => \%x });
+            $done->(\@all, { o => \%o, r => \%r, past => \%x }, 1);
         };
         $answered == 2 ? $go->() : ($waiting = $go);
     };
@@ -3852,6 +3882,105 @@ sub warmArtistAliases {
     return;
 }
 
+# THE CLOSEST NAMES MUSICBRAINZ KNOWS, FOR A SEARCH THAT FOUND NOTHING (0.56.38,
+# resolver plan Part D step 2; Simon 2026-10-02: "okay", on the trade of about a
+# second more on a search that today ends in "No artists found"). Measured on
+# 0.56.37: a misspelt name costs 2-3 requests before the reply (3.9-7.0 s) and
+# finds nothing; of the query forms, only MusicBrainz's FUZZY one finds the act
+# (Beatels -> The Beatles, Hawkwnd -> Hawkwind, Jandk -> Jandek). Its scores are
+# RELATIVE (the top hit is always 100, Jandec -> Handel 100), so they cannot say
+# how close a hit is: the pick is by edit distance from what was typed instead.
+#
+# ONE request, each word fuzzy (`artist:(w1~ w2~)`, limit 25), asked by Browse
+# only when the services, the library and the same-name acts gave nothing. Kept:
+# a name at most 2 edits from the typed one (1 for 4 letters or fewer), compared
+# after _norm with a leading "the" dropped, a swap of neighbouring letters
+# counting as one edit; closest first, then MusicBrainz's score; at most 3.
+# Measured on 21 misspellings (mirror, scratchpad fuzzydesign.py): the act meant
+# kept for all 21, first for 18. Cached with its answer (CAND_TTL), empty too;
+# a failed request answers nothing and is not cached.
+use constant FUZZY_MAX => 3;
+
+sub _fuzzyKey {
+    my $k = 'dsc:fuzzy:1:' . lc($_[0] // '');
+    utf8::encode($k) if utf8::is_utf8($k);
+    return $k;
+}
+
+sub _fuzzyFold {
+    (my $k = _nameKey($_[0])) =~ s/^the //;
+    return $k;
+}
+
+# Edits between two strings, a swap of neighbouring letters counting as one
+# ("beatels" is one from "beatles").
+sub _editDistance {
+    my @a = split //, $_[0];
+    my @b = split //, $_[1];
+    my @d = ([ 0 .. scalar @b ]);
+    for my $i (1 .. @a) {
+        $d[$i][0] = $i;
+        for my $j (1 .. @b) {
+            my $v = $d[$i-1][$j-1] + ($a[$i-1] eq $b[$j-1] ? 0 : 1);
+            $v = $d[$i-1][$j] + 1 if $d[$i-1][$j] + 1 < $v;
+            $v = $d[$i][$j-1] + 1 if $d[$i][$j-1] + 1 < $v;
+            $v = $d[$i-2][$j-2] + 1
+                if $i > 1 && $j > 1 && $a[$i-1] eq $b[$j-2] && $a[$i-2] eq $b[$j-1]
+                && $d[$i-2][$j-2] + 1 < $v;
+            $d[$i][$j] = $v;
+        }
+    }
+    return $d[scalar @a][scalar @b];
+}
+
+sub _fuzzyPick {
+    my ($name, $arts) = @_;
+    my $want = _fuzzyFold($name);
+    return [] unless length $want;
+    (my $letters = $want) =~ s/ //g;
+    my $lim = length($letters) <= 4 ? 1 : 2;
+    my @near;
+    for my $art (@{ ref $arts eq 'ARRAY' ? $arts : [] }) {
+        next unless ref $art eq 'HASH' && $art->{id} && !$MB_SPECIAL_ARTIST{ lc $art->{id} };
+        my $k = _fuzzyFold($art->{name});
+        next unless length $k && abs(length($k) - length($want)) <= $lim;
+        my $d = _editDistance($want, $k);
+        push @near, [ $d, $art ] if $d <= $lim;
+    }
+    @near = sort { $a->[0] <=> $b->[0] || ($b->[1]{score} // 0) <=> ($a->[1]{score} // 0) } @near;
+    splice @near, FUZZY_MAX if @near > FUZZY_MAX;
+    return [ map { my $x = $_->[1];
+                   +{ mbid => lc $x->{id}, name => $x->{name}, score => $x->{score} // 0,
+                      disambiguation => $x->{disambiguation}, country => $x->{country},
+                      type => $x->{type} } } @near ];
+}
+
+sub fuzzyArtists {
+    my ($class, $name, $cb) = @_;
+    my @w = split ' ', _fuzzyFold($name);
+    return $cb->([]) unless @w;
+    if (my $hit = $cache->get(_fuzzyKey($name))) {
+        return $cb->(ref $hit eq 'ARRAY' ? $hit : []);
+    }
+    my $q = 'artist:(' . join(' ', map { "$_~" } @w) . ')';
+    utf8::encode($q) if utf8::is_utf8($q);
+    (my $safe = $q) =~ s/([^A-Za-z0-9])/sprintf("%%%02X",ord($1))/ge;
+    _netGet(_mbBase() . 'artist?query=' . $safe . '&fmt=json&limit=25',
+        sub {
+            my $data = eval { from_json(shift->content) };
+            my $arts = (!$@ && ref $data eq 'HASH' && ref $data->{artists} eq 'ARRAY')
+                       ? $data->{artists} : undef;
+            return $cb->([]) unless $arts;
+            my $near = _fuzzyPick($name, $arts);
+            eval { $cache->set(_fuzzyKey($name), $near, CAND_TTL); 1 };
+            _dbg("closest names '$name': " . (join('; ', map { $_->{name} } @$near) || 'none'));
+            $cb->($near);
+        },
+        sub { _dbg("closest names '$name': request failed"); $cb->([]) },
+        timeout => 12);
+    return;
+}
+
 my %candWaiting;
 
 sub getArtistCandidates {
@@ -3931,6 +4060,11 @@ sub getArtistCandidates {
                 my @out;
                 for my $a (@{ $arts || [] }) {
                     next unless $a->{id} && _nameKey($a->{name}) eq $want;
+                    # Never one of MB's special entities, as every other name
+                    # lookup here already drops them (0.56.41): listed, a search
+                    # asked about 89ad4ac3's discography, and a dead library tag
+                    # browsed its six pages to disambiguate (_disambiguateByLibrary).
+                    next if $MB_SPECIAL_ARTIST{ lc $a->{id} };
                     # disambiguation/country/type are what make several acts
                     # with ONE name tellable apart ("English pop/ska band" vs
                     # "Horrorcore rapper, member of Bedlam"). MB has always
@@ -4033,6 +4167,17 @@ sub getReleaseGroups {
     my $onDone  = $a{onDone}  || sub {};
     my $onError = $a{onError} || sub { $onDone->([]) };
 
+    # One of MB's special entities has no list worth asking for (0.56.41,
+    # isVarious): Various Artists is every compilation, six pages to browse.
+    # No page shows one since; this answers a release tile or play action left
+    # over from a page drawn before, and anything else that would ask. Nothing
+    # is cached.
+    if ($MB_SPECIAL_ARTIST{ lc $mbid }) {
+        _dbg("release groups for $mbid: a special MB entity - nothing asked");
+        $onDone->([]);
+        return;
+    }
+
     my $key = _rgKey($mbid);
     if (!$a{force} && (my $c = $cache->get($key))) {
         $log->info("release-group cache hit: $key (" . scalar(@$c) . " entries)");
@@ -4057,11 +4202,14 @@ sub getReleaseGroups {
         _browseGroups($mbid,
             sub {
                 my ($all, $total, $truncated) = @_;
+                # $whole: the groups past the cap were asked and answered
+                # (_pastCap). A list still cut at the cap is kept RGCUT_TTL.
                 my $store = sub {
-                    my ($list, $cm) = @_;
+                    my ($list, $cm, $whole) = @_;
+                    my $ttl = ($truncated && !$whole) ? RGCUT_TTL : RG_TTL;
                     $cache->remove($_) for _rgFastKey($mbid), _cmDiscoKey($mbid), _rgFullKey($mbid);
                     eval {
-                        $cache->set($key, $list, RG_TTL);
+                        $cache->set($key, $list, $ttl);
                         $cache->set(_cmDiscoKey($mbid), $cm, RG_TTL) if $cm;
                         1;
                     } or do {
@@ -4070,10 +4218,12 @@ sub getReleaseGroups {
                         $log->warn("release-group cache set failed: $@");
                         $cache->remove(_cmDiscoKey($mbid));
                         $list = $all;
-                        eval { $cache->set($key, $all, RG_TTL); 1 }
+                        $ttl  = $truncated ? RGCUT_TTL : RG_TTL;
+                        eval { $cache->set($key, $all, $ttl); 1 }
                             or $log->warn("release-group cache set failed: $@");
                     };
-                    $log->info("release groups for $mbid: " . scalar(@$list) . " of $total");
+                    $log->info("release groups for $mbid: " . scalar(@$list) . " of $total"
+                        . ($ttl == RGCUT_TTL ? ' (cut at the cap: kept an hour)' : ''));
                     $onDone->($list);
                 };
                 return $store->($all) unless $truncated && $past;
@@ -4504,6 +4654,39 @@ sub peekLocalReleaseMap {
     return \%map;
 }
 
+# THE GROUP'S TYPE, FROM THE SAME REPLY (0.56.39; Simon 2026-10-02, on Ella
+# Fitzgerald's "The Last Time I Committed Suicide": "this is Soundtrack not a
+# compilation not sure if LMS has that but MB does"). LMS keeps no such type (the
+# album reads ALBUM); MusicBrainz's group does (Album + Soundtrack), and both the
+# batched search and the one-by-one lookup below already carry it, so it is kept
+# beside the group at no extra request: { type => primary, secondary => [...] },
+# '' for a release with no group. Read by Browse for the Appearances rows.
+sub _relTypeKey { 'dsc:reltype:v1:' . $_[0] }
+
+sub _setRelType {
+    my ($m, $g) = @_;
+    my $v = ref $g eq 'HASH'
+        ? { type      => $g->{'primary-type'} // '',
+            secondary => [ grep { defined && length } @{ ref $g->{'secondary-types'} eq 'ARRAY'
+                                                         ? $g->{'secondary-types'} : [] } ] }
+        : '';
+    eval { $cache->set(_relTypeKey($m), $v, REL2RG_TTL); 1 }
+        or $log->warn("local-release type cache set failed: $@");
+}
+
+# Cache-only, sync: { release-mbid => { type, secondary } } for the given
+# release MBIDs whose group type is known. Safe in the render path.
+sub peekLocalReleaseTypes {
+    my ($class, $mbids) = @_;
+    my %map;
+    for my $m (@{ $mbids || [] }) {
+        next unless $m;
+        my $t = $cache->get(_relTypeKey($m));
+        $map{$m} = $t if ref $t eq 'HASH' && length($t->{type} // '');
+    }
+    return \%map;
+}
+
 my %rel2rgInFlight;
 
 # BATCHED FIRST (stage 1, 2026-09-29; docs/mb-efficiency-and-community-api-
@@ -4535,7 +4718,10 @@ sub warmLocalReleases {
     my ($class, $mbids, $cb) = @_;
     $cb ||= sub {};
 
-    my @todo = grep { $_ && !defined $cache->get(_rel2rgKey($_)) && !$rel2rgInFlight{$_} }
+    # A release whose group is known but whose TYPE is not (cached before
+    # 0.56.39) is asked again, once, for it.
+    my @todo = grep { $_ && !$rel2rgInFlight{$_}
+                      && (!defined $cache->get(_rel2rgKey($_)) || !defined $cache->get(_relTypeKey($_))) }
                @{ $mbids || [] };
     return $cb->() unless @todo;
 
@@ -4588,6 +4774,7 @@ sub warmLocalReleases {
                     next unless $rg;     # a hit without its group: the lookup decides
                     eval { $cache->set(_rel2rgKey($m), $rg, REL2RG_TTL); 1 }
                         or $log->warn("local-release cache set failed: $@");
+                    _setRelType($m, $r->{'release-group'});
                     $got{$m} = $rg;
                     delete $rel2rgInFlight{$m};
                 }
@@ -4621,6 +4808,7 @@ sub warmLocalReleases {
                        ? lc($data->{'release-group'}{id} // '') : '';
                 eval { $cache->set(_rel2rgKey($m), $rg, REL2RG_TTL); 1 }
                     or $log->warn("local-release cache set failed: $@");
+                _setRelType($m, $rg ? $data->{'release-group'} : undef);
                 _dbg("local-release: $m -> " . ($rg || 'no group'));
                 $done->();
             },
@@ -4631,6 +4819,7 @@ sub warmLocalReleases {
                 # id directly anyway. Other errors cache nothing (retry later).
                 if ($err =~ /\b404\b/) {
                     eval { $cache->set(_rel2rgKey($m), '', REL2RG_TTL); 1 };
+                    _setRelType($m, undef);
                     _dbg("local-release: $m -> 404 (not a release mbid; cached empty)");
                 }
                 else {

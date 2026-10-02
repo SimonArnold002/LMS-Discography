@@ -27,6 +27,7 @@ use warnings;
 use FindBin;
 
 our (%PREF, $POOL, @SOURCES, %CANON, %ALIASES, @MARKED, $PEEK_REAL);   # the last four: part C
+our ($LOCAL, $RELTYPES);   # part D: the owned albums, and MusicBrainz's types for them
 
 BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
@@ -56,6 +57,7 @@ BEGIN {
     *{"${A}::peekOfficial"}        = sub { undef };
     *{"${A}::peekReleaseMap"}      = sub { {} };
     *{"${A}::peekLocalReleaseMap"} = sub { {} };
+    *{"${A}::peekLocalReleaseTypes"} = sub { $main::RELTYPES || {} };
     *{"${A}::peekEditions"}        = sub { {} };
     *{"${A}::clearArtistEmpty"}    = sub { 0 };
     *{"${A}::markArtistEmpty"}     = sub { push @main::MARKED, $_[1] };
@@ -313,6 +315,32 @@ $items = page(pool => [ copy('Qobuz', 'Lemon', 2018, 'y3', artist => 'Kenshi Yon
 @str = grep { ($_->{id} // '') =~ /^str:/ } flat(@$items);
 ok(scalar(@str == 0), 'C4: control: without his aliases, the copy is not his');
 %CANON = ();
+
+print "# PART D - MusicBrainz's type on an Appearances row (0.56.39)\n";
+# Simon, on Ella Fitzgerald's soundtrack: "this is Soundtrack not a compilation not
+# sure if LMS has that but MB does". Through the REAL _buildList: the page reads the
+# types the release lookup kept and the Appearances row says it.
+{
+    local $PREF{show_library_extras} = 1;
+    local $LOCAL = [
+        { name => 'The Last Time I Committed Suicide', type => 'playlist', _svc => 'Local', _albumid => 49674,
+          _year => 1997, _mbid => 'c1383e5a-d211-48d7-bbe3-aa977c949e6e', _candArtist => 'Various Composers',
+          _candTitle => 'The Last Time I Committed Suicide', play => 'db:album.id=49674' },
+        { name => 'Greatest Divas', type => 'playlist', _svc => 'Local', _albumid => 5,
+          _year => 1999, _candArtist => 'Various Artists', _candTitle => 'Greatest Divas', play => 'db:album.id=5' },
+    ];
+    local $RELTYPES = { 'c1383e5a-d211-48d7-bbe3-aa977c949e6e' => { type => 'Album', secondary => [ 'Soundtrack' ] } };
+    local @SOURCES = ('Qobuz');
+    local $POOL = { bySvc => {} };
+    # The owned albums go in as the page hands them over (its last argument).
+    my $items = $B->can('_buildList')->(undef, { %$opts }, 'artist-mbid', [ { %$RG } ], '', $LOCAL);
+    my ($st) = grep { ($_->{_albumid} // 0) == 49674 } @$items;
+    my ($gd) = grep { ($_->{_albumid} // 0) == 5 } @$items;
+    ok(scalar($st && ($st->{line2} // '') eq "1997 \x{00B7} Album / Soundtrack \x{00B7} Local"),
+       'D1: the soundtrack\'s Appearances row says Album / Soundtrack');
+    ok(scalar($gd && ($gd->{line2} // '') eq "1999 \x{00B7} Local"),
+       'D1: ... an untagged one stays as it was');
+}
 
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

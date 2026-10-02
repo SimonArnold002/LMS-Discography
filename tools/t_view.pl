@@ -64,6 +64,7 @@ BEGIN {
     *{"${A}::peekOfficial"}       = sub { undef };
     *{"${A}::peekReleaseMap"}     = sub { {} };
     *{"${A}::peekLocalReleaseMap"} = sub { {} };
+    *{"${A}::peekLocalReleaseTypes"} = sub { {} };
     *{"${A}::peekEditions"}       = sub { {} };
     *{"${A}::clearArtistEmpty"}   = sub { 0 };
     *{"${A}::markArtistEmpty"}    = sub { };
@@ -429,6 +430,31 @@ for my $v (['albums', $tog2], ['singles', $tog]) {
     my $src = do { local $/; <$fh> };
     ok(scalar($src =~ /\$same \? \([^)]*opts\s*=>\s*\$prev->\{opts\}[^)]*\) : \(\)/s),
        '10: a same-artist fresh entry keeps the open state; another artist starts closed');
+}
+
+# 11. THE TRACK LINK IS TOLD WHAT EACH GROUP IS (0.56.39; Ella Fitzgerald's
+#     "A-Tisket, A-Tasket" compilations read Local off one owned song). Through
+#     the REAL _buildList: each group's type and compilation flag reach the
+#     matcher, and the same-title rivals carry their type for the "first single".
+{
+    no warnings 'redefine'; no strict 'refs';
+    my %opt;
+    local *{'Plugins::Discography::Sources::peekMatches'} = sub {
+        my ($c, $artist, $title, $local, $pool, $mbid, $relMap, $rivals, $o) = @_;
+        $opt{$mbid} = { %{ $o || {} }, rivals => $rivals };
+        { sections => [], resolved => 1 } };
+    my @g = (rg('A-Tisket, A-Tasket', 'Album', 'Compilation'), rg('A-Tisket, A-Tasket', 'Single'),
+             rg('Ella and Louis', 'Album'));
+    $B->can('_buildList')->(undef, { artist => 'Ella Fitzgerald', sort => 'newest' }, 'artist-mbid', \@g, undef, []);
+    my ($comp, $single, $album) = map { $opt{ $_->{mbid} } || {} } @g;
+    ok(scalar(($comp->{rgComp} // -1) == 1 && ($comp->{rgType} // '') eq 'Album'),
+       '11: a compilation group is passed as one (rgComp 1)');
+    ok(scalar(($single->{rgComp} // -1) == 0 && ($single->{rgType} // '') eq 'Single'),
+       '11: a single as a single (rgComp 0)');
+    ok(scalar(($album->{rgComp} // -1) == 0), '11: an album is not a compilation');
+    my %rt = map { ($_->{mbid} => $_->{type}) } @{ $single->{rivals} || [] };
+    ok(scalar(($rt{ $g[1]{mbid} } // '') eq 'Single' && ($rt{ $g[0]{mbid} } // '') eq 'Album'),
+       "11: the same-title rivals carry each group's type");
 }
 
 print "\n$pass passed, $fail failed\n";

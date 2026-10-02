@@ -13,6 +13,9 @@ PLUGIN_DISCOGRAPHY_OWNED_ALBUMS
 PLUGIN_DISCOGRAPHY_SEARCH_NONE
 	EN	No artists found
 
+PLUGIN_DISCOGRAPHY_NOT_ONE_ARTIST
+	EN	%s is not a single artist, so there is no discography
+
 PLUGIN_DISCOGRAPHY_SEARCH_HDR
 	EN	Find an artist
 

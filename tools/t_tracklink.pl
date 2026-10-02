@@ -109,7 +109,7 @@ my $rgTitle = 'Voices Green and Purple / Trip to New Orleans';
 {
     my $sec = $SRC->matchesFor(
         {}, 'The Bees', $rgTitle, undef, 'rg-1', {}, undef,
-        { sources => \@SOURCES, localTracks => [ $comptrack ] });
+        { sources => \@SOURCES, rgType => 'Single', localTracks => [ $comptrack ] });
     ok(scalar(@{ $sec || [] } == 1), 'an orphaned release gains ONE section');
     ok(scalar($sec->[0]{svc} eq 'Local'), '... a Local section');
     ok(scalar($sec->[0]{items}[0]{play} eq 'db:track.id=500'),
@@ -123,7 +123,7 @@ my $rgTitle = 'Voices Green and Purple / Trip to New Orleans';
     my $qcand = { _candTitle => $rgTitle, _candArtist => 'The Bees', _albumid => 'q1', _svc => 'Qobuz' };
     my $sec = $SRC->matchesFor(
         { Qobuz => [ $qcand ] }, 'The Bees', $rgTitle, undef, 'rg-1', {}, undef,
-        { sources => \@SOURCES, localTracks => [ $comptrack ] });
+        { sources => \@SOURCES, rgType => 'Single', localTracks => [ $comptrack ] });
     ok(scalar(@{ $sec || [] } == 1 && $sec->[0]{svc} eq 'Qobuz'),
        'a streaming-matched release keeps ONLY its streaming section (no track bolt-on)');
 }
@@ -132,7 +132,7 @@ my $rgTitle = 'Voices Green and Purple / Trip to New Orleans';
 {
     my $sec = $SRC->matchesFor(
         {}, 'The Bees', 'A Completely Different Single', undef, 'rg-2', {}, undef,
-        { sources => \@SOURCES, localTracks => [ $comptrack ] });
+        { sources => \@SOURCES, rgType => 'Single', localTracks => [ $comptrack ] });
     ok(scalar(@{ $sec || [] } == 0), 'a release with no linking owned track stays unmatched');
 }
 
@@ -142,10 +142,10 @@ my $rgTitle = 'Voices Green and Purple / Trip to New Orleans';
     my $lazy  = sub { $calls++; [ $comptrack ] };
     my $qcand = { _candTitle => $rgTitle, _candArtist => 'The Bees', _albumid => 'q1', _svc => 'Qobuz' };
     $SRC->matchesFor({ Qobuz => [ $qcand ] }, 'The Bees', $rgTitle, undef, 'rg-1', {}, undef,
-        { sources => \@SOURCES, localTracks => $lazy });
+        { sources => \@SOURCES, rgType => 'Single', localTracks => $lazy });
     ok(scalar($calls == 0), 'the lazy track pool is NOT fetched when the release already matched');
     $SRC->matchesFor({}, 'The Bees', $rgTitle, undef, 'rg-1', {}, undef,
-        { sources => \@SOURCES, localTracks => $lazy });
+        { sources => \@SOURCES, rgType => 'Single', localTracks => $lazy });
     ok(scalar($calls == 1), '... and IS fetched (once) for an unmatched release');
 }
 
@@ -155,7 +155,7 @@ my $rgTitle = 'Voices Green and Purple / Trip to New Orleans';
                        _trackid => $_, play => "db:track.id=$_", _svc => 'Local' } } 1 .. 20;
     my $sec = $SRC->matchesFor(
         {}, 'The Bees', $rgTitle, undef, 'rg-1', {}, undef,
-        { sources => \@SOURCES, localTracks => \@many });
+        { sources => \@SOURCES, rgType => 'Single', localTracks => \@many });
     ok(scalar(@{ $sec->[0]{items} } <= 8),
        'track matches are capped (MAX_PER_SVC): ' . scalar(@{ $sec->[0]{items} }));
 }
@@ -206,14 +206,63 @@ my $rgTitle = 'Voices Green and Purple / Trip to New Orleans';
        'only the VA-compilation track enters the pool (album and artist-comp tracks do not)');
 
     my $sec = $SRC->matchesFor({}, 'The B-52s', 'Rock Lobster', undef, 'rg-rl', {}, undef,
-        { sources => \@SOURCES, localTracks => $pool });
+        { sources => \@SOURCES, rgType => 'Single', localTracks => $pool });
     ok(!scalar(@{ $sec || [] }), 'the "Rock Lobster" single no longer reads Local off the album track');
     $sec = $SRC->matchesFor({}, 'The B-52s', "The B\x{2010}52\x{2019}s / Cosmic Thing", undef,
-        'rg-2in1', {}, undef, { sources => \@SOURCES, localTracks => $pool });
+        'rg-2in1', {}, undef, { sources => \@SOURCES, rgType => 'Single', localTracks => $pool });
     ok(!scalar(@{ $sec || [] }), '... nor does the two-album set off Cosmic Thing\'s title track');
     $sec = $SRC->matchesFor({}, 'The B-52s', 'Roam', undef, 'rg-roam', {}, undef,
-        { sources => \@SOURCES, localTracks => $pool });
+        { sources => \@SOURCES, rgType => 'Single', localTracks => $pool });
     ok(scalar(@{ $sec || [] }), 'a single owned on a VA compilation still links (control)');
+}
+
+# ---------------------------------------------------------------------------
+# 5. A SINGLE, ONCE (0.56.39; Simon 2026-10-02, Ella Fitzgerald with only what he
+#    owns: "the same track is showing multiple times under compilations and not
+#    one gives the album name"). His one "A-Tisket, A-Tasket" (on the soundtrack
+#    The Last Time I Committed Suicide) made THREE compilation ALBUMS named after
+#    the song read Local (MusicBrainz: 699976be, 4cac5cf1, df540516, all Album +
+#    Compilation). A song links only the release that IS the song: a single.
+# ---------------------------------------------------------------------------
+{
+    my $tisket = { _candTitle => 'A-Tisket, A-Tasket', _track => 1, _trackid => 700,
+                   play => 'db:track.id=700', _svc => 'Local',
+                   _fromAlbum => 'The Last Time I Committed Suicide' };
+    my $link = sub {
+        my ($title, $mbid, %o) = @_;
+        my $sec = $SRC->matchesFor({}, 'Ella Fitzgerald', $title, undef, $mbid, {}, $o{rivals},
+            { sources => \@SOURCES, localTracks => [ $tisket ], %o });
+        return scalar @{ $sec || [] };
+    };
+    ok(scalar(!$link->('A-Tisket, A-Tasket', 'rg-c1', rgType => 'Album', rgComp => 1)),
+       '5: a compilation album named after the song does not read Local');
+    ok(scalar(!$link->('A Tisket A Tasket', 'rg-c2', rgType => 'Album', rgComp => 1)),
+       '5: ... nor its differently punctuated twin');
+    ok(scalar(!$link->('A-Tisket, A-Tasket', 'rg-a', rgType => 'Album')),
+       '5: an album named after the song does not either');
+    ok(scalar(!$link->('A-Tisket, A-Tasket', 'rg-e', rgType => 'EP')),
+       '5: nor an EP');
+    ok(scalar(!$link->('A-Tisket, A-Tasket', 'rg-sc', rgType => 'Single', rgComp => 1)),
+       '5: nor a single MusicBrainz calls a compilation');
+    ok(scalar(!$link->('A-Tisket, A-Tasket', 'rg-x')),
+       '5: nor a group of no known type');
+    ok(scalar($link->('A-Tisket, A-Tasket', 'rg-s', rgType => 'Single')),
+       '5: a single of that title does (control)');
+
+    # Same-titled singles: only the first in the rivals' order (the earliest).
+    my $rivals = [ { mbid => 'rg-a',  type => 'Album',  comp => 0, rank => 0, date => '1937' },
+                   { mbid => 'rg-s1', type => 'Single', comp => 0, rank => 2, date => '1938-06' },
+                   { mbid => 'rg-s2', type => 'Single', comp => 0, rank => 2, date => '1950' },
+                   { mbid => 'rg-c',  type => 'Album',  comp => 1, rank => 0, date => '1996' } ];
+    ok(scalar($link->('A-Tisket, A-Tasket', 'rg-s1', rgType => 'Single', rivals => $rivals)),
+       '5: of two same-titled singles the earliest gets the track');
+    ok(scalar(!$link->('A-Tisket, A-Tasket', 'rg-s2', rgType => 'Single', rivals => $rivals)),
+       '5: ... and the later one does not: the track shows once');
+    ok(scalar($link->('A-Tisket, A-Tasket', 'rg-s1', rgType => 'Single',
+                      rivals => [ $rivals->[0], $rivals->[1] ])),
+       '5: an album sharing the title never takes it from the single');
+    ok(scalar($link->('A-Tisket, A-Tasket', 'rg-s1', rgType => 'Single', rivals => [ $rivals->[1] ])),
+       '5: a title with no rival links as before');
 }
 
 print "\n$pass passed, $fail failed\n";

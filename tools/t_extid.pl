@@ -18,7 +18,7 @@ use strict;
 use warnings;
 use FindBin;
 
-our ($SECTIONS);
+our ($SECTIONS, @MF_OPTS);
 
 BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
@@ -62,7 +62,7 @@ BEGIN {
     *{"${S}::getCandidates"}       = sub { $_[-2]->({}) };
     *{"${S}::localAlbums"}         = sub { [] };
     *{"${S}::localTracks"}         = sub { [] };
-    *{"${S}::matchesFor"}          = sub { $main::SECTIONS };
+    *{"${S}::matchesFor"}          = sub { push @main::MF_OPTS, $_[8]; $main::SECTIONS };
 }
 
 package T::Null; our $AUTOLOAD; sub AUTOLOAD { return } sub DESTROY {}
@@ -208,6 +208,61 @@ sub detail {
     $row->{url}->(undef, sub { }, {}, @{ $row->{passthrough} || [] }) if $row;
     ok(scalar(@CLR == 1 && ($CLR[0][0] // '') eq 'Radiohead' && ($CLR[0][1] // '') eq $AM),
        "5: ... it clears with the artist's mbid as well as the name (the key the page's pool is under)");
+}
+
+# 6. WHERE AN OWNED SONG LIVES, AND WHAT MUSICBRAINZ CALLS AN APPEARANCE
+#    (0.56.39; Simon, Ella Fitzgerald: "not one gives the album name", and
+#    "this is Soundtrack not a compilation not sure if LMS has that but MB does").
+{
+    my $single = { mbid => '22222222-2222-2222-2222-222222222222', title => 'Voices Green and Purple',
+                   type => 'Single', secondary => [], date => '1966' };
+    my $track  = { name => 'Voices Green and Purple', type => 'audio', _svc => 'Local', _track => 1,
+                   _trackid => 500, play => 'db:track.id=500', _fromAlbum => 'Nuggets' };
+    my $t = $tile->(undef, {}, $single, [ sec('Local', $track) ]);
+    ok(scalar(($t->{line2} // '') eq "1966 \x{00B7} Single \x{00B7} Local \x{00B7} from Nuggets"),
+       '6: a single played from a compilation track says which album: "from Nuggets"');
+    $t = $tile->(undef, {}, $single, [ sec('Local', { %$track, _fromAlbum => undef }) ]);
+    ok(scalar(($t->{line2} // '') eq "1966 \x{00B7} Single \x{00B7} Local"),
+       '6: ... no album name known: nothing added');
+    $t = $tile->(undef, {}, $rg, [ sec('Local', lib()) ]);
+    ok(scalar(($t->{line2} // '') !~ /from/), '6: an owned ALBUM tile is unchanged');
+
+    my $extra = $B->can('_extraSection');
+    my $albums = sub { [
+        { name => 'The Last Time I Committed Suicide', _albumid => 1, _year => 1997, _mbid => 'rel-1' },
+        { name => 'Jazz in the Charts 078',            _albumid => 2, _year => 2006, _mbid => 'rel-2' },
+        { name => 'Greatest Divas',                    _albumid => 3, _year => 1999 },
+        { name => 'Unknown type',                      _albumid => 4, _year => 2001, _mbid => 'rel-4' },
+    ] };
+    my $types = { 'rel-1' => { type => 'Album', secondary => [ 'Soundtrack' ] },
+                  'rel-2' => { type => 'Album', secondary => [ 'Compilation' ] } };
+    my %l2 = map { ($_->{name} // '') => ($_->{line2} // '') }
+             grep { $_->{_albumid} } $extra->(undef, {}, 0, 'newest',
+                 'PLUGIN_DISCOGRAPHY_APPEARANCES', 'x.png', 'APPEAR', $albums->(), $types);
+    ok(scalar($l2{'The Last Time I Committed Suicide'} eq "1997 \x{00B7} Album / Soundtrack \x{00B7} Local"),
+       '6: an Appearances row says Soundtrack, as MusicBrainz types it');
+    ok(scalar($l2{'Jazz in the Charts 078'} eq "2006 \x{00B7} Compilation \x{00B7} Local"),
+       '6: ... a compilation says Compilation');
+    ok(scalar($l2{'Greatest Divas'} eq "1999 \x{00B7} Local" && $l2{'Unknown type'} eq "2001 \x{00B7} Local"),
+       '6: ... an untagged album, or one whose type is not known yet, as before');
+    %l2 = map { ($_->{name} // '') => ($_->{line2} // '') }
+          grep { $_->{_albumid} } $extra->(undef, {}, 0, 'newest',
+              'PLUGIN_DISCOGRAPHY_LIBRARY_EXTRAS', 'x.png', 'EXTRAS', $albums->());
+    ok(scalar($l2{'The Last Time I Committed Suicide'} eq "1997 \x{00B7} Local"),
+       '6: a section given no types (Also in your library) is unchanged');
+
+    # The release page tells the track link what the group is, as the list does.
+    local $T::Prefs::P{show_all_versions} = 0;
+    local $SECTIONS = [];
+    for my $case ([ 'Album', ['Compilation'], 1 ], [ 'Single', [], 0 ]) {
+        @MF_OPTS = ();
+        my $g = { mbid => '33333333-3333-3333-3333-333333333333', title => 'A-Tisket, A-Tasket',
+                  type => $case->[0], secondary => $case->[1], date => '1996' };
+        $B->can('_releaseDetail')->(undef, sub {}, { artist => 'Ella Fitzgerald', rg => $g, shared_name => 0 });
+        my ($o) = grep { ref $_ eq 'HASH' } @MF_OPTS;
+        ok(scalar($o && ($o->{rgType} // '') eq $case->[0] && ($o->{rgComp} // -1) == $case->[2]),
+           "6: the release page passes rgType $case->[0] and rgComp $case->[2]");
+    }
 }
 
 print "\n$pass passed, $fail failed\n";

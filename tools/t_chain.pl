@@ -587,6 +587,58 @@ ok(!defined $CACHE{"dsc:rgfull:1:$RH"} && !defined $CACHE{"dsc:rgfast:1:$RH"} &&
        '12: control: a warm pool draws at once, no wait armed');
 }
 
+# ---------------------------------------------------------------------------
+# 13. VARIOUS ARTISTS / VARIOUS COMPOSERS IS NEVER ONE ARTIST (0.56.41; Simon:
+#     "we should not allow ... look up on albums tagged with various artists or
+#     various composers", then "A short message"). Measured on 0.56.40: the
+#     library's Various Composers, tagged with MB's Various Artists (89ad4ac3),
+#     drew 600 unrelated compilations in 10 s; a Various Artists with a dead tag
+#     browsed 89ad4ac3's six pages to disambiguate (14 s, 12 requests). Now: the
+#     line saying so and the way back to search, nothing asked, by name, by
+#     LMS's own name, by the library tag or by an mbid.
+# ---------------------------------------------------------------------------
+{
+    no strict 'refs'; no warnings 'redefine';
+    my $VA = '89ad4ac3-39f7-470e-963a-56509c546377';
+    my (%TAG, @asked);
+    local *{"${API}::_libraryTagMbid"} = sub { $TAG{ $_[0] // '' } };
+    local *{"${API}::getArtistCandidates"} = sub { push @asked, "cands $_[1]"; $_[-1]->([]) };
+    local *{'Plugins::Discography::Sources::getCandidates'} = sub { push @asked, 'pool'; $_[4] ? $_[4]->() : () };
+    local *{'Slim::Music::Info::variousArtistString'} = sub { 'Diverse Künstler' };
+    local *{"${B}::cstring"} = sub {
+        $_[1] eq 'PLUGIN_DISCOGRAPHY_NOT_ONE_ARTIST' ? '%s is not a single artist, so there is no discography' : $_[1];
+    };
+    my $cl = bless {}, 'T::Client';
+    my $open = sub {
+        my (%o) = @_;
+        fresh(); @asked = (); %TAG = %{ $o{tag} || {} };
+        my $got;
+        $B->can('_discographyView')->($cl, sub { $got = shift },
+            { artist => $o{name}, artist_id => $o{id}, ($o{mbid} ? (mbid => $o{mbid}) : ()), fresh => 1 });
+        flush();
+        my @it = @{ ($got || {})->{items} || [] };
+        return join('|', map { ($_->{id} // '') eq 'act:search' ? 'SEARCH' : ($_->{name} // '') } @it);
+    };
+    my $quiet = sub { scalar(!gets(@EV) && !@BUILT && !@asked) };
+
+    ok(scalar($open->(name => 'Various Artists', id => 151537)
+              eq 'Various Artists is not a single artist, so there is no discography|SEARCH'),
+       '13: Various Artists (library) -> the line naming it, then Search for another artist');
+    ok($quiet->(), '13: ... nothing asked: no request, no services, no same-name acts, no page built');
+    ok(scalar($open->(name => 'VARIOUS COMPOSERS', id => 151659) =~ /^VARIOUS COMPOSERS is not a single artist.*\|SEARCH$/
+              && $quiet->()), '13: Various Composers, any case -> the same, nothing asked');
+    ok(scalar($open->(name => 'Diverse Künstler', id => 5) =~ /^Diverse Künstler is not/ && $quiet->()),
+       "13: LMS's own name for various artists (the variousArtistsString pref) -> the same");
+    ok(scalar($open->(name => 'Mixes', id => 151700, tag => { 151700 => $VA })
+              =~ /^Mixes is not a single artist.*\|SEARCH$/ && $quiet->()),
+       "13: a library artist TAGGED with MB's Various Artists (as the library's Various Composers is) -> the same; the tag's list is never read");
+    ok(scalar($open->(name => 'Old Link', id => undef, mbid => uc $VA) =~ /^Old Link is not/ && $quiet->()),
+       "13: an mbid of MB's Various Artists from an old link -> the same");
+    $open->(name => 'Various Artists - Duck Records', id => 9, tag => { 9 => $LH });
+    ok(scalar(gets(@EV) && @BUILT == 1),
+       '13: control: a name that only starts like it opens its page as ever');
+}
+
 package T::Client; sub id { 'c1' }
 package main;
 
