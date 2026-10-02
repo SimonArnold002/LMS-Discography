@@ -27,6 +27,7 @@ use Time::HiRes ();
 
 use Plugins::Discography::API;
 use Plugins::Discography::Sources;
+use Plugins::Discography::Covers;
 
 # The FUNCTION form (0.56.16): LMS's logger() takes the category as its first
 # argument, so `Slim::Utils::Log->logger(...)` filed this file's lines under
@@ -36,7 +37,7 @@ my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.25';
+use constant CACHE_VERSION => '0.56.30';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -96,6 +97,13 @@ use constant OFFICIAL_WAIT_DEFAULT => 15;
 # handler doesn't look like a hung page.
 use constant POOL_WAIT_MAX => 20;
 
+# The same wait with hide_unmatched OFF (0.56.26). Nothing is hidden then, so a
+# service that answers late costs only its badges and covers until the next
+# visit, and the page should not stand still for the full watchdog. Measured
+# 2026-10-02: a cold pool lands about 1.7 s after the page would have drawn
+# (Calum Scott, James Arthur); TIDAL's own watchdog is SVC_TIMEOUT, 20 s.
+use constant POOL_WAIT_SHOWN => 6;
+
 # Secondary types NEVER shown (variant noise, not discography entries). Live
 # is deliberately NOT here — it's its own selectable section now.
 my %HIDE_SECONDARY = map { $_ => 1 } ('Remix', 'DJ-mix');
@@ -128,6 +136,14 @@ sub _groupOf {
     return 'EPS'     if $t eq 'EP';
     return 'SINGLES' if $t eq 'Single';
     return 'OTHER';
+}
+
+# A release's type icon, the one its section header shows (0.56.26: a tile with
+# no cover the server holds shows it, see _caaHeld).
+my %GROUP_ICON = map { $_->[0] => $_->[2] } @GROUP_ORDER;
+sub _typeIcon {
+    my ($rg) = @_;
+    return IMG_BASE . 'dsc_MTL_svg_' . $GROUP_ICON{ _groupOf($rg) } . '.png';
 }
 
 # Release-groups grouped by the MATCHER's normalised title: the rivals that will
@@ -334,23 +350,55 @@ sub _headerType {
     return $_headerTypeCache = $useBasic ? 'header-basic' : 'header';
 }
 
+# The installed Material is at least the version given: four parts compared as
+# numbers (6.4.9 < 6.4.11, 6.10.0 > 6.4.x), a missing fourth part counting as
+# 0, so a release 6.4.11 sits above Simon's self-built 6.4.10.x test builds. A
+# non-numeric version (a git checkout says DEVELOPMENT) or no Material is never
+# new enough.
+sub _materialAtLeast {
+    my @want = @_;
+    my $ver  = eval { Plugins::MaterialSkin::Plugin->getPluginVersion() } // '';
+    my @have = $ver =~ /^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?/ or return 0;
+    $have[3] //= 0;
+    for my $i (0 .. 3) {
+        my $c = $have[$i] <=> ($want[$i] // 0);
+        return $c > 0 ? 1 : 0 if $c;
+    }
+    return 1;
+}
+
 # Tile strips: a 'header-strip' header makes Material draw the tiles after it
 # as one sideways-scrolling row, the way its own search results look, so the
-# bio and link rows can share the page with tiles. Only a Material carrying the
-# 'plugin-tile-strips' patch understands the type, and no release does yet.
-# TEST GATE: a self-built Material has a fourth version number (6.4.10.1);
-# Craig's releases have three, so they get exactly the old list. Replace with
-# the release that ships the patch once it is merged.
+# bio and link rows can share the page with tiles. Material 6.4.11 is the first
+# release that understands the type (the 'plugin-tile-strips' PR, #1270, merged
+# 2026-09-27; upstream ChangeLog 6.4.11 item 5). Before it, only Simon's
+# self-built test builds did, 6.4.10.1 and up. 6.4.10 itself, anything older,
+# a non-numeric version or no Material at all gets exactly the old list.
 # 30 tiles, the most Material ever shows in a strip: it caps each strip by
 # screen width with numScrollItems (10 to 30, the way its search and home rows
 # do; Craig on the PR, 2026-09-24), so a phone shows 10 and a 1920px desktop
 # about 15. Sending more would be dropped. The header's More opens every tile.
 use constant STRIP_SIZE => 30;
 my $_stripsCache;
-sub _useStrips {
-    return $_stripsCache if defined $_stripsCache;
-    my $ver = eval { Plugins::MaterialSkin::Plugin->getPluginVersion() } // '';
-    return $_stripsCache = ($ver =~ /^6\.4\.10\.\d+$/) ? 1 : 0;
+sub _useStrips { $_stripsCache //= _materialAtLeast(6, 4, 10, 1) }
+
+# ARTIST ROWS (0.56.29): a row of type 'artist-link' is an artist to Material
+# (Simon's PR #1276, merged 2026-10-02): a round image, and Material's artist
+# header (photo and name) on the page it opens. Search results, MusicBrainz
+# same-name rows, Also a member of and Similar artists send it. First in
+# Simon's test build 6.4.10.9 (upstream master b652e87b1); expected in the
+# 6.4.11 release beside the strips, though not yet in its ChangeLog. A Material
+# without it shows the row exactly like a 'link' (no Material code reads that
+# type), but it is gated like header-strip all the same: that Material AND a
+# client that draws headers, so Default/Classic, the CLI and old controllers
+# keep 'link'. NOT 'artist': Material offers Play on an 'artist' row whose go
+# action carries `artist` or an id (hasPlayableId), which every one of ours does.
+my $_artistLinksCache;
+sub _useArtistLinks { $_artistLinksCache //= _materialAtLeast(6, 4, 10, 9) }
+
+sub _artistRowType {
+    my ($features) = @_;
+    return (_wantHeaders($features) && _useArtistLinks()) ? 'artist-link' : 'link';
 }
 
 # Each section's layout is the user's choice (Settings, 0.54.0): Singles follow
@@ -853,6 +901,10 @@ sub _cid { my ($client) = @_; return $client ? $client->id : '_none' }
 sub topLevel {
     my ($client, $callback, $args) = @_;
 
+    # Somebody is looking: the archive cover fetch (Covers.pm) waits, then runs
+    # at its browsing width (0.56.27).
+    Plugins::Discography::Covers::noteBrowse();
+
     my $params   = ref $args->{params} eq 'HASH' ? $args->{params} : {};
     my $artistId = _cleanParam($params->{artist_id});
     my $artist   = _cleanParam($params->{artist});
@@ -1208,10 +1260,10 @@ sub _discographyView {
             # (0.56.7): on a fresh entry only, before anything reads the spine.
             Plugins::Discography::API->promoteCompleted($mbid) if $opts->{fresh};
 
-            # Warm the streaming candidate caches in the background (async, does
-            # NOT delay this render): the first list view may be badge-less, but
-            # any navigation re-renders with playable, tagged tiles — no drill
-            # needed first. Client-gated: without a player context the service
+            # Warm the streaming candidate caches. A COLD pool is awaited, up to a
+            # deadline (the await block below, 0.56.26), so the first view
+            # normally has playable, badged tiles; with the pool already cached
+            # nothing waits. Client-gated: without a player context the service
             # handlers can't be created and would pollute the cache with empties.
             # SPINE-AWARE: with an ambiguous name a blind warm fetches the
             # WRONG act's catalogue and caches it (field, 0.43.0 — the rapper's
@@ -1338,13 +1390,25 @@ sub _discographyView {
                     # artist is cold after an update, so this was not an edge
                     # case. Costs the streaming resolution once per artist.
                     #
-                    # Only when the pref is on: with it off, unmatched releases
-                    # are shown anyway, so there is nothing to wait for.
+                    # AWAITED WITH THE PREF OFF TOO (0.56.26; Simon 2026-10-02,
+                    # Adele -> Sam Smith on a phone: tiles not playable, no
+                    # service badges, every cover slow). 0.44.8 waited only when
+                    # the pref was on, reasoning that unmatched releases are
+                    # shown anyway; but a page drawn before its pool has NO
+                    # matches at all, so every tile lost its play, its badge and
+                    # its streaming cover, and fell back to the Cover Art
+                    # Archive (slow, and it stalls the server while it loads).
+                    # The wait is shorter with the pref off (POOL_WAIT_SHOWN):
+                    # each service caches its pool as it lands, so a render at
+                    # the deadline still shows the services that answered.
                     my $poolCold = Plugins::Discography::Sources
                         ->peekPool($opts->{artist}, $mbid)->{cold};
-                    my $await = ($prefs->get('hide_unmatched') && $poolCold) ? 1 : 0;
+                    my $await = $poolCold ? 1 : 0;
+                    my $waitMax = $prefs->get('hide_unmatched')
+                        ? POOL_WAIT_MAX : POOL_WAIT_SHOWN;
                     $poolDone = 1 unless $await;
-                    _dbg("pool is cold - awaiting streaming resolution before render")
+                    _dbg("pool is cold - awaiting streaming resolution before render"
+                        . " (at most ${waitMax}s)")
                         if $await;
 
                     if ($await) {
@@ -1358,11 +1422,11 @@ sub _discographyView {
                             $poolDone = 1;
                             $render->();
                         };
-                        Slim::Utils::Timers::setTimer(undef, time() + POOL_WAIT_MAX,
+                        Slim::Utils::Timers::setTimer(undef, time() + $waitMax,
                             sub {
                                 return if $settled;
                                 _dbg('pool warm did not settle in '
-                                    . POOL_WAIT_MAX . 's - rendering anyway');
+                                    . $waitMax . 's - rendering anyway');
                                 $finish->();
                             });
                         $warm->(_spineTitles($rgs), $finish);
@@ -2561,6 +2625,8 @@ sub _buildList {
             { id => 'sect:OPT', itemActions => _listItemActions($opts, 'sect:OPT') }),
         @optRows);
 
+    # Which groups the archive has a cover for, once per page (API::peekCoverFlags).
+    my $coverFlags = Plugins::Discography::API->peekCoverFlags($mbid);
     for my $g (_groupOrder($useH)) {
         my ($key, $token, $iconName) = @$g;
         my $rels = $bucket{$key} or next;
@@ -2571,11 +2637,12 @@ sub _buildList {
         my @undated =                                          grep { !length $_->[0]{date} } @$rels;
         @dated = reverse @dated if $sort eq 'newest';
 
-        my @tiles = map { _releaseItem($client, $opts, @$_) } @dated, @undated;
+        my @tiles = map { _releaseItem($client, $opts, $_->[0], $_->[1], $coverFlags) } @dated, @undated;
 
         # Long sections are capped; the header keeps naming the TRUE total, so
         # "Singles (87)" over 30 rows reads as paging, not as a lost release.
         my ($vis, $pgRows, $all) = _sectionTiles($client, $opts, $useH, $key, \@tiles);
+        _wantCovers($vis);
 
         # The divider row is emitted for EVERY client — only its type differs
         # (real header vs text) — so the tree shape (and item_id indexing) is
@@ -2594,7 +2661,7 @@ sub _buildList {
             my @kids = @$all;
             $hdr->{id}          = 'sect:' . $key;
             $hdr->{itemActions} = _listItemActions($opts, $hdr->{id});
-            $hdr->{url}         = sub { $_[1]->({ items => \@kids }) };
+            $hdr->{url}         = sub { _wantCovers(\@kids); $_[1]->({ items => \@kids }) };
             $hdr->{passthrough} = [{}];
         }
 
@@ -2929,7 +2996,7 @@ sub _bandLinkRow {
     my ($client, $opts, $band) = @_;
     return {
         name        => $band->{name},
-        type        => 'link',
+        type        => _artistRowType($opts->{features}),
         # MAI image-proxy URL: the photo loads asynchronously in-view.
         image       => _artistImg($band->{name}),
         # Self-identifying go (stale-view fix): enters the band as a fresh
@@ -2992,7 +3059,7 @@ sub _similarLinkRow {
     my ($client, $opts, $name) = @_;
     return {
         name        => $name,
-        type        => 'link',
+        type        => _artistRowType($opts->{features}),
         image       => _artistImg($name),
         # Self-identifying go (stale-view fix): fresh top-level entry by name.
         itemActions => { items => { command => ['discography', 'items'],
@@ -4115,7 +4182,7 @@ sub _mbCandidateRow {
     );
     return {
         name        => $cand->{name},
-        type        => 'link',
+        type        => _artistRowType($features),
         line2       => $line2,
         # _artistImg is keyed by NAME. For an act whose spelling is UNIQUE
         # ($named) that resolves to the right artist, so it gets a real photo.
@@ -4171,7 +4238,7 @@ sub _searchResultRow {
     );
     return {
         name        => $name,
-        type        => 'link',
+        type        => _artistRowType($features),
         # For a same-name split act, use LMS's OWN artist icon (folder art):
         # `_img` when LMS holds art, a neutral person icon when it knows the act
         # but has none (`_noart`) — NOT MAI's online guess of the prominent act,
@@ -4274,12 +4341,62 @@ sub _extid {
     return defined $id && length $id ? "$pfx:album:$id" : "$pfx:";
 }
 
+# THE ARCHIVE COVER ONLY WHEN THE SERVER ALREADY HOLDS IT (0.56.26; Simon
+# 2026-10-02: build it, and decide later when to fetch the missing covers). A
+# tile no source gives a cover to used to point at the Cover Art Archive, and
+# the image proxy then fetched it from archive.org while the user browsed.
+# Measured on the rig that day: about 3 s a cover with the whole server stalled
+# about 0.65 s each (LBF's "Slow artwork / server freezes": an LMS core HTTPS
+# read blocks the event loop); 13 at once held a status request 11 s; an
+# archive.org 500 held the server 14 s, and a failed cover is never cached, so
+# it was fetched (and stalled) again on every visit. Such a tile now shows its
+# release-type icon unless the proxy's own cache holds the cover, and the cover
+# is fetched in the background after the visit (0.56.27, Covers.pm), so the
+# NEXT visit shows it.
+#
+# THE KEY IS THE PROXY'S, NOT proxiedImage's: Slim::Web::HTTP strips the leading
+# slash and URL-decodes the path before getImage caches under it (pinned live by
+# LBF 1.0.17); the extension is the url's (`.jpg` since 0.56.27, API::caaImage;
+# an extensionless url is proxied as `.png`, proxiedImage). The specs: the unsized request Material 6.4.10 sends for an `icon` row, then the
+# sizes it asks once that is fixed (list 150/300, grid 300/600). A held cover a
+# device asks at ANOTHER size is still fetched once, from a source known to
+# answer. A failed fetch is never cached (`_artworkError` sends no-cache), so a
+# hit is always a real cover. A read costs ~0.05 ms (LBF measured 6,543 reads).
+my @CAA_HELD_SPECS = ('', '_300x300_f', '_150x150_f', '_600x600_f');
+my $proxyCache;
+sub _caaHeld {
+    my ($url) = @_;
+    return 0 unless defined $url && length $url;
+    $proxyCache ||= eval { require Slim::Web::ImageProxy; Slim::Web::ImageProxy::Cache->new() }
+        or return 0;
+    # The extension exactly as proxiedImage picks it (LMS 9.1).
+    my $ext = $url =~ /(\.(?:jpg|jpeg|png|gif))/ ? $1 : '.png';
+    $ext =~ s/jpeg/jpg/;
+    for my $spec (@CAA_HELD_SPECS) {
+        my $hit = eval { $proxyCache->get('imageproxy/' . $url . '/image' . $spec . $ext) };
+        return 1 if $hit;
+    }
+    return 0;
+}
+
+# Want the archive covers of the tiles a page SHOWS (0.56.27). Called with the
+# visible tiles of each section, and with a strip's full list when its header
+# is opened; a tile behind "Show more" is wanted when that page is drawn
+# (Show more rebuilds the list). Wanting only records: Covers fetches at 05:00
+# (0.56.30).
+sub _wantCovers {
+    my ($tiles) = @_;
+    Plugins::Discography::Covers::want($_->{_caaWant})
+        for grep { ref $_ eq 'HASH' && $_->{_caaWant} } @{ $tiles || [] };
+    return;
+}
+
 sub _releaseItem {
-    my ($client, $opts, $rg, $sections) = @_;
+    my ($client, $opts, $rg, $sections, $coverFlags) = @_;
 
     my $year = ($rg->{date} =~ /^(\d{4})/) ? $1 : '';
     my $type = _displayType($client, $rg);
-    my $image = Plugins::Discography::API->caaImage($rg->{mbid});
+    my $image;
 
     my ($favurl, $playUrl, $svcTag, $extid);
     if ($sections && @$sections) {
@@ -4309,11 +4426,27 @@ sub _releaseItem {
         # even on dated releases (verified: Marc Almond "Against Nature" /
         # "The Dancing Marquis" — matched, but CAA-less -> blank tile). We can't
         # detect a CAA 404 server-side, and the source cover is already in the
-        # candidate cache (no extra fetch, faster CDN load), so PREFER it and
-        # keep the CAA url only as the fallback for a tile with no match yet
-        # (pre-warm) or an unmatched release shown with hide_unmatched off.
+        # candidate cache (no extra fetch, faster CDN load), so PREFER it.
         my ($cover) = grep { defined && length } map { $_->{items}[0]{_cover} } @$sections;
         $image = $cover if defined $cover && length $cover;
+    }
+
+    # No source cover: the archive's, only if the server holds it (_caaHeld),
+    # else the type icon. Never an archive fetch from browsing (0.56.26); a
+    # tile that shows the icon names its archive url in `_caaWant`, and the
+    # page wants the ones it shows for the 05:00 run (_wantCovers, 0.56.27;
+    # night only since 0.56.30). A private key, like the `_svc` on streaming
+    # rows: XMLBrowser sends none of them to the client. NOT when ListenBrainz
+    # says the archive has no cover for the group ($coverFlags 0, 0.56.30):
+    # the icon is then the final answer and nothing is ever fetched. No flags
+    # (ListenBrainz never answered for this artist) = maybe, as before.
+    my $caaWant;
+    unless (defined $image) {
+        my $caa = Plugins::Discography::API->caaImage($rg->{mbid});
+        my $none = $coverFlags && defined $coverFlags->{ lc($rg->{mbid} // '') }
+                   && !$coverFlags->{ lc($rg->{mbid} // '') };
+        if (_caaHeld($caa)) { $image = $caa }
+        else                { $image = _typeIcon($rg); $caaWant = $caa unless $none }
     }
 
     # Service names stay in line2 (Simon, 2026-09-24): the badge (_extid) shows
@@ -4344,6 +4477,7 @@ sub _releaseItem {
         (defined $playUrl ? (play => $playUrl)           : ()),
         (defined $favurl  ? (favorites_url => $favurl)   : ()),
         (defined $extid   ? (extid => $extid)            : ()),
+        (defined $caaWant ? (_caaWant => $caaWant)       : ()),
         itemActions => _rgItemActions($opts, $rg->{mbid}, undef, defined $playUrl),
         passthrough => [{ %$opts, rg => $rg }],
         url         => sub {

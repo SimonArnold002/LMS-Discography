@@ -56,7 +56,7 @@ my $prefs = preferences('plugin.discography');
 # first module to call DB->store() sets it and later calls are ignored.
 # tools/syntax_check.sh asserts all three agree and match install.xml.
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.25';
+use constant CACHE_VERSION => '0.56.30';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 # The families DB.pm keeps across builds, by their CURRENT key prefix, so rows
 # written under an older key version are retired at open. Taken from the key
@@ -2172,7 +2172,26 @@ sub _rgFastKey  { 'dsc:rgfast:1:'  . lc($_[0] // '') }   # the list is the first
 sub _rgNextKey  { 'dsc:rgnext:1:'  . lc($_[0] // '') }   # MusicBrainz's completed list, for the next entry
 sub _rgFullKey  { 'dsc:rgfull:1:'  . lc($_[0] // '') }   # a Refresh asked for MusicBrainz itself
 sub _cmDiscoKey { 'dsc:cmdisco:1:' . lc($_[0] // '') }   # the community's verdicts for the first draw
+sub _caaFlagsKey { 'dsc:caaflag:1:' . lc($_[0] // '') }  # ListenBrainz: which groups the archive has a cover for
 use constant RGFULL_TTL => 3600;
+
+# WHICH GROUPS THE ARCHIVE HAS A COVER FOR (0.56.30). ListenBrainz's artist list
+# gives each group's `caa_id`, null when the Cover Art Archive has no front for
+# it: 24 of 24 sampled agreed with the archive (David Bowie, 12 each way,
+# 2026-10-02). Kept per artist whenever ListenBrainz answers, { group => 1|0 },
+# longer than the list itself (RG_TTL), since MusicBrainz's completed list that
+# replaces it carries no such field. Browse wants no cover for a 0 (Covers.pm:
+# a failing archive fetch froze the server 11-13 s).
+use constant CAA_FLAGS_TTL => 30 * 86400;
+
+# { group mbid => 1|0 } for an artist, cache only, or undef when ListenBrainz
+# has not answered for it (every group then counts as maybe having a cover).
+sub peekCoverFlags {
+    my ($class, $mbid) = @_;
+    return undef unless defined $mbid && length $mbid;
+    my $f = eval { $cache->get(_caaFlagsKey($mbid)) };
+    return ref $f eq 'HASH' ? $f : undef;
+}
 
 # One spine entry from an outside list, in the browse's shape (no aliases), or
 # undef without a group id or a title.
@@ -2207,6 +2226,9 @@ sub _lbGroups {
                     ? _fastEntry($_->{mbid}, $_->{name}, $_->{date}, $_->{type}, $_->{secondary_types})
                     : undef
             } @$list;
+            my %flags = map { (lc $_->{mbid} => ($_->{caa_id} ? 1 : 0)) }
+                        grep { ref $_ eq 'HASH' && defined $_->{mbid} && $_->{mbid} =~ $UUID_RE } @$list;
+            eval { $cache->set(_caaFlagsKey($mbid), \%flags, CAA_FLAGS_TTL) if %flags; 1 };
             $cb->(@all ? \@all : undef);
         },
         sub {
@@ -5108,9 +5130,17 @@ sub _officialById {
 # CAA cover by release-group MBID — a plain URL; CAA redirects to the front
 # image of the group's representative release. A CAA miss 404s and the UI shows
 # its default art, which is the honest state.
+#
+# THE `.jpg` IS FOR THE IMAGE PROXY, NOT THE ARCHIVE (0.56.27, LBF's
+# API::coverArtUrl). The archive answers `/front-250` and `/front-250.jpg` alike
+# (probed 2026-10-02 on a release group: same 17,439 bytes, image/jpeg). LMS
+# names the proxied path after the url's extension and defaults to `.png`
+# (proxiedImage), and the proxy then stores every rendition as PNG: LBF measured
+# a 600 px cover at 648,081 B as PNG against 101,100 B as JPEG. The size is
+# rewritten to 1200 by the proxy handler (Covers::proxyHandler) either way.
 sub caaImage {
     my ($class, $rgMbid, $size) = @_;
-    return CAA_RG_BASE_URL . $rgMbid . '/front-' . ($size || 250);
+    return CAA_RG_BASE_URL . $rgMbid . '/front-' . ($size || 250) . '.jpg';
 }
 
 # ---------------------------------------------------------------------------

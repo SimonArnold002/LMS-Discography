@@ -134,7 +134,16 @@ because line numbers rot on the next edit.
 | A library artist with NO MusicBrainz tag opens the act its OWN albums name (up to 3 owned titles asked as `releasegroup:"T" AND artist:"Name"`, exact-title hits only, an act named as the library beats one whose name holds it, a title two same-named acts hold counts for neither, the first title agreeing with the name ends it); kept per library contributor (id + name), never under the name; a tag still wins, a miss keeps the name's answer (0.56.21, resolver plan C2; measured beyond Simon's library: 436 pretend libraries, 0 made wrong) | A2 | `AN UNTAGGED LIBRARY ARTIST IS NAMED BY ITS ALBUMS` |
 | Overruling a library tag that the owned albums' own release ids contradict (Rico: MusicBrainz's 2020 release of "That Man Is Forward" credits the album to the wrong Rico, so the files' MUSICBRAINZ_ALBUMARTISTID is the Dutch MC's while every MUSICBRAINZ_ARTISTID is Rico Rodriguez's) — DECLINED 2026-10-02 (Simon: *"if tags are wrong we should not try to work around them, garbage in garbage out. In this case MB is messed up"*). A tag is trusted, right or wrong; the fix is the tags or MusicBrainz | A2 | `A TAG IS TRUSTED, RIGHT OR WRONG` |
 | An act that is not the best-known one of its name gets its biography by its MusicBrainz id (the community API's answer for that mbid, accepted only when it names that mbid and a Wikidata page, read with MAI's Wikipedia reader), never by name; none when there is no such page; similar artists stay hidden (Last.fm, by name) (0.56.22, Muzz) | A2 | `A SHARED NAME'S BIOGRAPHY COMES BY ITS MBID` |
-| The home page reads: cover banner, "Find an artist" (header + search box), the About section headed "Discography" (0.56.25; was "About Discography"), Works best with; the box is therefore never focused on arrival (Material focuses only a first-row box, never on phones/tablets) (0.56.24, Simon) | A2 | `THE SEARCH BOX SITS BETWEEN THE BANNER AND ABOUT` |
+| The home page reads: cover banner, "Find an artist" (header + search box), the About section headed "Discography" (0.56.25; was "About Discography"), Works best with; the box is therefore never focused on arrival (Material focuses only a first-row box, never on phones/tablets) — KEPT by Simon 2026-10-02 ("leave it"): do not propose moving the box back to row 0 or a Material focus change (0.56.24, Simon) | A2 | `THE SEARCH BOX SITS BETWEEN THE BANNER AND ABOUT` |
+| A first visit WAITS for a cold Qobuz/TIDAL pool whatever `hide_unmatched` says: at most 6 s with it off (`POOL_WAIT_SHOWN`), 20 s with it on (`POOL_WAIT_MAX`); reverses 0.44.8's "with the pref off, nothing waits" (0.56.26, Simon: tiles not playable, no badges, slow covers on a first visit) | A2 | `A FIRST VISIT WAITS FOR QOBUZ AND TIDAL` |
+| A tile with no source cover shows the Cover Art Archive cover ONLY when the server's image cache already holds it, else its release-type icon (and so does its release page) (0.56.26) | A2 | `NO ARCHIVE COVER IS FETCHED WHILE BROWSING` |
+| The missing archive covers are fetched AT 05:00 ONLY with LBF's resizing (`.jpg` url, every size from one 1200 px download, the four sizes in one turn): a page only records what it wants; at most 300 a night, newest first; a failure stays wanted, given up after 3 for 30 days; a group ListenBrainz flags as having no archive cover is never wanted; a helper process outside LMS DECLINED (0.56.30, Simon: *"okay do it"*, *"ignore the helper"*; was after the visit, 0.56.27) | A2 | `ARCHIVE COVERS ARE FETCHED AT 05:00` |
+| Background archive-cover fetching at a gentle pace (2 in flight while browsing) keeps the server responsive | A3 | `AN ARCHIVE FETCH FREEZES THE SERVER WHATEVER THE PACE` |
+| MAI or the community API as a quicker or better cover source for unmatched tiles | A3 | `MAI'S COVERS ARE FOUND BY NAME` |
+| Artist rows (search results, same-name, Also a member of, Similar artists) are `type => 'artist-link'` on Material >= 6.4.10.9 with a header client: round images + Material's artist header; pages opened from the artist page inherit the header (0.56.29, PR #1276) | A2 | `ARTIST ROWS ARE TYPED artist-link` |
+| `type => 'artist'` on our rows (Sven's Qobuz) gives round images and Material's artist header | A3 | `TYPE ARTIST ADDS A PLAY ENTRY` |
+| Material's online-artist header only shows on wide screens | A3 | `ONLINE ARTISTS GET THE HEADER ON PHONES` |
+| An unsized proxy request for a tile's https cover redirects the device to the source, so a Discography archive cover never loads through (or stalls) the server | A3 | `LBF CLAIMS EVERY coverartarchive.org URL` |
 | Stage 2's five behaviour changes (a promo-only group hidden, the release map's index lag, a group with no releases listed shown, owned-album lookups after the render, so a render without the map (check failed or past the deadline) places them by title — the Esher Demos wait a visit, a small artist's spine refreshed by the read) — all deliberate | A2 | `STAGE 2 CHANGED FIVE BEHAVIOURS ON PURPOSE` |
 | Stage 3's five behaviour changes (a public search hides dead ends, merges alias rows, attaches by tag and searches the services under MB's name; a row lookup runs every pass; a count may be the community API's; one name lookup per new search term; a merge reads the act's full record first) — all kept | A2 | `STAGE 3 CHANGED FIVE BEHAVIOURS ON PURPOSE` |
 | A community count asked with the placeholder name `_` answering for another act | A3 | `MEASURED FOR STAGE 3` |
@@ -1052,8 +1061,119 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   `<text-field :focus="index==0 && !IS_MOBILE">`, read in the 6.4.10.8 bundle the rig serves; `IS_MOBILE` includes
   iPad and a touch Mac), and a header is a row. 0.56.22 put the box first with no header for that (Simon had asked
   for the box to be active on entry); he then chose this layout. No plugin field changes Material's rule; the only
-  route would be a Material change. Pinned in `t_searchbtn.pl` §5 (7; header dropped, box above the banner and box
+  route would be a Material change. **DECIDED 2026-10-02:** offered the three options (keep this layout unfocused,
+  box back at row 0, or a Material change focusing the first search box wherever it sits); Simon: *"leave it"*.
+  Not a finding; do not re-propose. Pinned in `t_searchbtn.pl` §5 (7; header dropped, box above the banner and box
   after About all mutated and caught).
+
+- **A FIRST VISIT WAITS FOR QOBUZ AND TIDAL** (0.56.26; `Browse::_discographyView`'s await block, `POOL_WAIT_SHOWN`,
+  `POOL_WAIT_MAX`, `Sources::peekPool`'s `cold`; Simon 2026-10-02 on Adele -> Sam Smith, phone: *"loaded quick but the
+  artwork took a long time to draw"*, *"they also were not playable links on mobile and had no service badges"*).
+  0.44.8 awaited a cold pool only with `hide_unmatched` on (*"with it off, unmatched releases are shown anyway, so there
+  is nothing to wait for"*); that reasoning covered hiding only. A page drawn before its pool has NO matches: no tile
+  plays, none has a badge, every cover falls back to the archive. Now a cold pool (no service has any cached entry) is
+  awaited either way, capped at 6 s with the pref off and 20 s with it on (unchanged). Each service caches its pool as
+  it lands, so a render at the deadline shows the services that answered. Measured cost, cold, rig, 2026-10-02: matches
+  land about 1.7 s after the page would have drawn (Calum Scott: drew at 3.4 s, 3 of 6 tiles matched by about 5 s;
+  James Arthur: drew at 4.6 s, matched by 6.8 s). TIDAL timed out once that morning (`candidates Tidal timed out`,
+  08:54), which is why the cap is not the 20 s watchdog. **Unchanged:** a pool with some services cached and one
+  missing is NOT cold, so the page draws at once and fetches the missing one in the background (`TEST TRAP` in
+  the 0.56.13 entry). Pinned in `t_chain.pl` §12 (9); mutants: pref-gated again, never awaited, 20 s with the pref
+  off, 6 s with it on, timer fixed at 20 s, render not gated, all caught.
+
+- **NO ARCHIVE COVER IS FETCHED WHILE BROWSING** (0.56.26; `Browse::_releaseItem`, `_caaHeld`, `@CAA_HELD_SPECS`,
+  `_typeIcon`, `%GROUP_ICON`; Simon 2026-10-02: *"build it and then we can decide on when to populate the missing
+  artwork"*). A tile with no source cover (no match, or a match with no art) used to point at the Cover Art Archive,
+  and the image proxy fetched it from archive.org when a device asked. Measured on the rig 2026-10-02 (scratchpad
+  `stallprobe.py`, `stall2.py`, `refail.py`, a `version` ping every 50 ms): Qobuz covers 0.3-0.6 s, ping unmoved;
+  archive covers about 3.1 s each, ping held about 0.65 s each; 13 at once (a browser's 6 connections) 21.8 s, ping
+  held up to 11.3 s; one archive.org 500 held the server 14 s; a FAILED cover is not cached (`_artworkError` sends
+  no-cache), so it is fetched (and stalls) again on every view (7.8 s / 6.4 s on the retry); a good one is cached
+  (0.04 s). The stall is LBF's open item (its "Slow artwork / server freezes": an LMS core HTTPS read blocks the
+  event loop; it was believed LBF-only because "the other plugins don't use CAA" — Discography does). Now:
+  1. a source cover (Local, Qobuz, TIDAL, Deezer, Spotify) always wins, as before (0.22.0);
+  2. otherwise the archive url only when the proxy's own cache holds it under one of the four requests a client
+     makes (unsized, the shape Material 6.4.10 sends for an `icon` row; `_300x300_f`, `_150x150_f`, `_600x600_f`),
+     keyed as LMS caches it: `imageproxy/<url, URL-DECODED>/image<spec><ext>`, no leading slash (LBF pinned this
+     live, 1.0.17), the extension as `proxiedImage` picks it (`.png` for the extensionless `front-250`);
+  3. otherwise the release-type icon its section header shows (`dsc_MTL_svg_release-album` etc.).
+  **Known, accepted:** a held cover asked at ANOTHER size by another device is fetched once (from a source known to
+  answer, so never the 14 s failure loop); the release page shows the tile's image, so an unheld release's page shows
+  the icon too (said otherwise to Simon before building, corrected in the report). **Decided 2026-10-02, built in
+  0.56.27:** the missing covers are fetched after the visit; at 05:00 only since 0.56.30 (`ARCHIVE COVERS ARE FETCHED AT 05:00`). Discography's own MusicBrainz
+  covers on Simon's rig also go through LBF's `coverartarchive.org` handler, so they are fetched at `front-1200`
+  (A3 `LBF CLAIMS EVERY coverartarchive.org URL`). Pinned in `t_tilecover.pl` (24, new); 13 mutants (always the
+  archive cover, always the icon, escaped key, leading slash, one spec only, sized only, extension always `.png`,
+  `jpeg` not folded, unguarded read, no url check, one icon for all, icon by primary type only, source cover not
+  preferred), all caught; a 14th (the icon's `|| 'release'` fallback) survived as unreachable and was removed.
+
+- **ARCHIVE COVERS ARE FETCHED AT 05:00** (0.56.30; was `ARCHIVE COVERS ARE FETCHED AFTER THE VISIT`, 0.56.27.
+  `Covers.pm`: `want`, `_nightTick`, `_tick`, `_launch`, `_paths`, `proxyHandler`, `WANT_KEY`, `MISS_KEY`;
+  `Browse::_wantCovers`, `_caaWant`; `API::caaImage`, `peekCoverFlags`; the handler in `Plugin.pm`. Simon 2026-10-02:
+  *"follow the same resizing we do in LBF as it works well"*, then *"After the visit"*; then, shown the measured
+  freezes (A3 `AN ARCHIVE FETCH FREEZES THE SERVER WHATEVER THE PACE`), options 1 + 2: *"okay do it"*; the third
+  option, a helper process downloading outside LMS, DECLINED: *"ignore the helper"* — do not re-propose it). Each part,
+  with its reason:
+  1. **LBF's resizing, all three parts.** The archive url ends `.jpg` (`caaImage`), so the proxy stores JPEG: LBF
+     measured a 600 px cover at 648,081 B as PNG against 101,100 B as JPEG; the archive answers `/front-250` and
+     `/front-250.jpg` alike (probed on a release group, same 17,439 B). Every size is cut from one `front-1200`
+     download (`proxyHandler`, LBF's handler to the character, registered under the SAME pattern and gate as LBF's:
+     LMS keeps one handler per pattern, `Tie::RegexpHash::add` replaces an equal key, so with both plugins installed
+     whichever loads last serves both, identically). A cover's sizes go out in ONE turn (`_launch`), so they share
+     the download.
+  2. **Plus the UNSIZED request**, which LBF does not warm: Material 6.4.10 asks an `icon` row unsized, and that is a
+     tile. It is the 1200 px original, stored as fetched (`_resizeFromFile`'s "original size requested" branch), no
+     extra download. Only when a handler claims the url: without one `getImage` answers an unsized https request with
+     a 301, our own request would follow it, and the server would download the cover and cache nothing.
+  3. **Only what the page SHOWS is queued**: a section's visible tiles, a strip's full list when its header is
+     opened, a "Show more" page when drawn. A tile behind "Show more" is not fetched until it is shown.
+  4. **Nothing is fetched by day (0.56.30).** A page only RECORDS what it wants (`want`): one kv row
+     (`dsc:cvwant:v1`, `{ url => last wanted at }`), written once 10 s after the first change, pruned of urls not
+     wanted for 30 days and capped at 5,000 (oldest out). At 05:00 (+ a fixed per-install offset under 30 min, LBF's
+     clock) the night run queues the most recently wanted first, at most 300 a night (the rest wait: each cover can
+     freeze the server for seconds), and runs them with LBF's widths: 8 in flight, 2 if someone browsed Discography
+     in the last 20 s, none within 3 s of a Discography request or while a page has a request out (`_netFgBusy`).
+     So a first visit shows icons until the morning after. **Accepted cost:** the night run freezes the server at
+     05:00, as LBF's warm does.
+  5. **A failure stays wanted and is asked again the next night**: no rendition in the proxy after the fetch (a
+     placeholder, an error, a timeout) counts one failure (`dsc:cvmiss:v1`, `{ url => [last failure at, failures in
+     a row] }`); after 3 in a row the cover is given up for 30 days (`GIVEUP_TTL`): not asked at night and not
+     recorded by a visit. A cover that lands, or that the proxy already holds, is no longer wanted and its count is
+     cleared. Our own server refusing or resetting the connection, or the proxy cache being unreadable, counts
+     nothing (LBF 1.0.24's rule); a 401/403 drops the night's queue (the wants stay). A build empties kv: wants and
+     counts start again (covers already in the proxy stay there).
+  6. **Covers stored under the old extensionless address do not count** (a different key): fetched again once.
+  7. **Never for a cover that does not exist (0.56.30).** ListenBrainz's artist list gives each group's `caa_id`
+     (null = no archive front): 24 of 24 sampled agreed with the archive (David Bowie, 12 each way, 2026-10-02).
+     `API::_lbGroups` keeps `{ group => 1|0 }` per artist (`dsc:caaflag:1:<mbid>`, 30 days, written whenever
+     ListenBrainz answers, since MusicBrainz's completed list that replaces the first one has no such field);
+     `_buildList` reads it once (`peekCoverFlags`) and `_releaseItem` wants no cover for a 0: the type icon is the
+     final answer. A group not in the flags, or an artist ListenBrainz never answered for, is wanted as before. A
+     cover the proxy already holds shows whatever the flag says. These were the 11-13 s freezes.
+  Pinned in `t_covers.pl` (43, new: the real module against a fake proxy, server, clock and timers, the clock change
+  checked in Europe/London), `t_tilecover.pl` (28, `.jpg` keys and `_caaWant`), `t_view.pl` §8 (5, the real
+  `_buildList`, paged and as tile strips in a child process); 27 mutants (scratchpad `mutC12.py`), all caught (one
+  survived first: queuing a section's full list equals queuing its shown tiles in the paged layout; the strip run
+  was added for it).
+
+- **ARTIST ROWS ARE TYPED artist-link** (0.56.29; Simon after Craig merged PR #1276, 2026-10-02: *"lets add it to
+  our local build so we can build and test the design"*). Search results, MusicBrainz same-name rows, Also a member
+  of and Similar artists send `type => 'artist-link'` (`Browse::_artistRowType`), so Material draws them round and
+  gives the page they open its artist header; the bio stays first on the page. Route B of `docs/artist-rows-plan.md`;
+  route A (Sven's favourites link) NOT built and not needed. Rules:
+  1. **Gated like `header-strip`:** a Material of at least 6.4.10.9 (Simon's test build of upstream b652e87b1; the
+     release expected to be 6.4.11, not yet in its ChangeLog) AND a client that draws headers (`_wantHeaders`).
+     Default/Classic, the CLI and old controllers keep `link`. The rig's 6.4.10.8 has strips but NOT this.
+  2. **Never `artist`:** Material offers Play on an `artist` row whose go action carries `artist`/an id (A3 `TYPE
+     ARTIST ADDS A PLAY ENTRY`).
+  3. **One version compare for both gates:** `_materialAtLeast` (four parts, numeric, a missing fourth = 0;
+     non-numeric or no Material = never). Strips from 6.4.10.1, artist rows from 6.4.10.9, separate caches.
+  4. **Known effects, deliberate (Material's own behaviour for an online artist's page, as on Qobuz/TIDAL):** rows on
+     the artist page without their own link become 'artist category' rows, so Read more, a section's More and
+     Search for an artist (our home page) open under the artist's header; the page opened from Material's own
+     Discography action, LBF or PFR has no header (the row that opened it is not ours).
+  Pinned in `t_artistrows.pl` (351: a written-out table of 14 versions x the four REAL builders x header/no-header
+  clients) and `t_strips.pl` (303); 13 mutants all caught.
 
 ### A3. DISPROVEN — a review WILL re-derive these from the code; each was measured
 
@@ -1094,6 +1214,13 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 | `artist/<id>?inc=release-groups` lists a partial or different set from the browse, so it cannot stand in for the spine | **WRONG below 25** — MEASURED FOR STAGE 2 (public API, 2026-09-29) | Library artists under 25 groups: the same groups with the same title, type, secondary types, date and aliases as `release-group?artist=<id>&inc=aliases`, **10 of 10**, then **9 of 9** in the same order once sorted by group id. MB caps the list at 25 and gives no count (Califone lists 25 and has 25; Kings of Convenience 26, Orange Juice 36, The xx 47 all list 25), so exactly 25 means "maybe more" and the browse runs. **The ORDER differs** (type, then date; a one-page browse is in group-id order, 0 of 8 alike), which is why `_readArtist` sorts by id before caching it as the spine: the list's date sort keeps the input order for equal dates. |
 | The by-id search has a limit that bites: the URL is too long at 100 ids, or a big group's release list is cut short | **WRONG as measured** — MEASURED FOR STAGE 2 (public API, 2026-09-29) | 100 ids: a **5,160-character URL** with `-` left raw (5,960 with it encoded), HTTP 200 both ways, 100 of 100, ~190 KB (Kraftwerk). Release lists: `count` equalled the releases listed for all 600 Beatles page groups, and for Dark Side of the Moon (151), Nevermind (98) and Abbey Road (73). `warmOfficial` still treats a shorter list as unproven: a bootleg verdict needs the whole list. |
 | A community-API count asked with the placeholder name `_` (`/music/artist/_/discography?mbid=`) answers for another act, or not at all | **WRONG for a known mbid** — MEASURED FOR STAGE 3 (public, `X-LMS-Plugin-ID` sent, 2026-09-30, stage-3 review) | Radiohead a74b1b7f: 580 entries with its name and with `_`, the same mbid echoed; Kraftwerk 5700dcd4: 163 both ways. Load-bearing: `_hostedCount` fills the path with `_` when neither the candidate nor `peekArtistName` has a name, which is most search rows (a batch pick carries only its mbid). The `?mbid=` decides for a KNOWN mbid; an unknown one falls back to the NAME (A3 `silently falls back to the NAME`), and the echo check then sends it to MusicBrainz. The one difference is Cloudflare's cache, which is per URL: the `_` URL is its own entry (Radiohead 2.5 s cold against 0.14 s for the named URL an earlier run had warmed), shared by every Discography install that asks for that mbid. |
+| An unsized proxy request (`.../image.png`, what Material 6.4.10 sends for an `icon` row) for an https cover is redirected to the source, so a tile's Cover Art Archive cover is fetched by the DEVICE and never loads through, or stalls, the server | **WRONG on any server with ListenBrainz Fresh Releases installed** — LBF CLAIMS EVERY coverartarchive.org URL (read 2026-10-02) | LMS 9.1 `ImageProxy::getImage` redirects (301 to the original url) only when NO handler matches the url AND the spec is a bare extension. LBF's `Plugin.pm` registers `registerHandler(match => qr/coverartarchive\.org/)` (rewriting `front-<n>` to `front-1200`), and the match is by url, not by plugin, so Discography's archive covers take it too: the server downloads them from archive.org, at 1200 px (measured: 255-396 KB PNG answers for `front-250` requests). That is why they stalled the server on the rig (A2 `NO ARCHIVE COVER IS FETCHED WHILE BROWSING`). Without LBF the redirect applies to unsized requests only; a SIZED request (`_300x300_f`, the Default skin, Material once its `icon`-row sizing is fixed) is fetched by the server either way. So the redirect is not a fix to rely on. **Since 0.56.27 Discography registers the same handler itself**
+(`Covers::proxyHandler`), so this holds with or without LBF (A2 `ARCHIVE COVERS ARE FETCHED AT 05:00`). |
+| MAI (Last.fm, Discogs) or the community API is a quicker or better source for the covers of unmatched tiles than the Cover Art Archive | **WRONG for these tiles** — MAI'S COVERS ARE FOUND BY NAME (measured 2026-10-02, rig) | **Community API:** no images of its own; `/discography`'s `cover` is an archive.org url for 106 of Sam Smith's 112 groups (the full-size ORIGINAL, `archive.org/download/mbid-.../...jpg`, the host that stalls the server, larger than CAA's thumbnails); `/album/<t>/<a>/cover` the same. **MAI** (`["musicartistinfo","albumcovers","artist:..","album:.."]` on the server, MAI's own keys, nothing decoded): a cover for 15 of the 25 unmatched releases of Sam Smith, James Arthur and Calum Scott (Last.fm 9, Discogs 6, and CAA by release, archive.org again). Through the proxy, a ping every 50 ms: Discogs 0.28-0.47 s and Last.fm 0.06-10.0 s cold, neither stalling the server (worst ping 0.03 s); CAA 2.2-2.6 s, stalling 0.6-0.7 s. **But MAI looks covers up by NAME, and 3 of 3 checked were WRONG:** "Unholy (live version)" -> the studio "Unholy" cover, "Lay Me Down (Live from The BRITs)" -> the studio single's, "SOS (X Factor Performance)" -> a different James Arthur album. Unmatched tiles are mostly live, session and performance releases, exactly where a name lookup lands on the studio record. The archive cover by release-group mbid is the right cover. (Scratchpad `maicovers.py`, `maistall.py`, `covers/`.) |
+| Sending `type => 'artist'` on our artist rows (as Sven's Qobuz does) makes Material draw them round and give the page they open its artist header | **WRONG** — TYPE ARTIST ADDS A PLAY ENTRY (read 2026-10-02, Material upstream master 31514817c + the live 6.4.10.8 bundle) | Material types an app row as an artist ONLY from `metadata.type` (slimserver #1452, stalled, never sent by LMS 9.1.2/9.2) or a favourites link starting `qobuz://artist:` / `tidal://artist:` / `deezer://artist:` / `spotify:artist:` (`browse-resp.js`), and LMS forwards that link only on a PLAYABLE row (`XMLBrowser.pm` `_favoritesParams` inside `if ($isPlayable)`: `play`, `playlist`, or type `audio`/`playlist`). `type` itself is never read for that. Worse, `type=="artist"` puts the row in Material's play block, and `hasPlayableId` accepts our go action's `artist:` parameter (live: Adele's row is `go` `{"artist":"Adele","menu":1}`), so the row gains a Play entry that runs its go action. Sven's rows work because he ALSO sends `favorites_url` + `playlist =>` the same link (his comment says so), and his Qobuz 30.7.3.6 plays `qobuz://artist:` (top tracks); stock Qobuz 3.7.2 turns it into one broken track, TIDAL plays top tracks. Plan: `docs/artist-rows-plan.md`; the Material PR draft uses a NEW type, `artist-link`. |
+| Material shows an online artist's (or online album's) header only on wide screens, `wide>=WIDE_COVER` (650 px) | **WRONG** — ONLINE ARTISTS GET THE HEADER ON PHONES (read 2026-10-02, same sources) | `showDetailedSubtoolbar` also admits `stdItem>=STD_ITEM_MAI` (200), and the online types are 300-302, so the `WIDE_COVER` clause beside it is redundant: an online artist row with an image gets the header from 350 px wide (and 400 px tall), phones included. The header photo has square corners even for library artists; only list, grid and strip images are drawn round (`circular`). |
+
+| Fetching the archive covers in the background at a gentle pace (2 in flight while browsing, 8 idle, after a 3 s grace) keeps the server responsive (0.56.27's design) | **WRONG** — AN ARCHIVE FETCH FREEZES THE SERVER WHATEVER THE PACE (measured on the rig 2026-10-02, scratchpad `thumbprobe.py`: a page then its thumbnails at the phone's 600 px, 6 at a time, a `version` ping every 50 ms) | **Ocean Colour Scene, first visit:** page 3.1 s, 32 thumbnails in 2.3 s, then the server FROZE 11.4, 4.4, 12.8 and 4.4 s within the next minute (35 s of 60). **Paul Weller, first visit:** page 5.5 s, its 60 thumbnails 13.4 s because the background had started while they loaded (Qobuz covers 1.4 s each against 0.3-0.6 s with the server free), then 32 s frozen in 45 s, worst 3.4 s. **Second visit:** page 0.08 s, 61 thumbnails in 1.65 s, no freeze. The loop is held until archive.org answers, so in-flight width does not spread it: up to ~4 s for a cover it has, 11-13 s for one it fails. Fixed in 0.56.30 (A2 `ARCHIVE COVERS ARE FETCHED AT 05:00`). LMS's image proxy DOES share one download per url (`ImageProxy.pm` `%queue`), so the four sizes were not the cost. |
 
 ### B. KNOWN-OPEN AND ACCEPTED — do not re-report as new
 
@@ -1160,8 +1287,9 @@ curl -s http://plex:9000/jsonrpc.js -d '{"id":1,"method":"slim.request","params"
 ## File Structure
 ```
 Discography/
-├── Plugin.pm       # OPMLBased entry point (tag 'discography', is_app); prefs; canonical `dbg` (API/Browse/Sources delegate); Material custom action REGISTERED once (`_registerMaterialActions`) + old actions.json entry stripped at startup (`_clearMaterialActions`); Settings under WEBUI; registers the `imageproxy/dsc/artist/<name>` artwork handler
-├── Browse.pm       # topLevel ($VAR guard, %lastCtx stash+expand flags+page counts+visibility snapshot); app-root view (_rootView: _coverCollageRow responsive random-album-cover banner, "Find an artist" header + search box (0.56.24), About prose, "Works best with" as ONE strip of plugin tiles (badge + name + tick/cross, role as tooltip) w/ badgeSrc imageproxy normaliser); global artist search (_searchRow type=search item in the app root ONLY; the artist page's Options carries _searchButtonRow `act:search`, which opens _rootView; go action overridden w/ search:__TAGGEDINPUT__ fixedParams -> topLevel search-param dispatch GATED on item_id being absent, so a positional walk still reaches the row's own coderef; _artistSearchView w/ 10-min merged cache, only written when every source settled OK (the row check runs every time); `_distinctTitles` gives a repeated result name invisible word joiners so Material shows each (0.56.4); owned acts split by identity say how many albums they open on; the list is SERVICE-first, laid out by `_searchSections` as Top Result + Artists (MusicBrainz same-name acts first, then the other rows, then other spellings; `layout_search` split / all tiles on a strip-capable Material; the MusicBrainz-first redo is not in the code, see `THE SEARCH LIST IS MUSICBRAINZ-FIRST`), _searchResultRow name-drills, _mbCandidateRow mbid-drills); grouped list (bio header, Options/type/library-extras sections, Albums / Singles view toggle _viewToggleItem `act:view:<to>` (Singles view = EPs + Singles, a true tab; per-player ctx `view`), sort+Refresh, release sections as tile strips on a strip-capable Material (`header-strip`, `_useStrips`/`_stripsOn`, layout_albums/layout_singles), service badge via row `extid` (`_extid`), _pageSection 30-at-a-time Show more/less, "Also a member of" band links + "Similar artists" name-drill links w/ artist-photo thumbnails, both second-load, similar deduped against bands by _dropBandDupes — Material keys app rows by TITLE, so a repeated name loses a row); artist artwork resolver (artistImageProxy handler for `imageproxy/dsc/artist/<name>`: MAI local files -> MAI online picture w/ Deezer placeholder HEAD probe -> live service photo -> person icon, verdict cached 30d); release detail (review w/ inline expand, version rows w/ Show-other-versions toggle, MB links); `_poolOpts` (the streaming lookup's options, one helper for the artist page and the release page) and `_otherNames` (the artist's other MusicBrainz names, cache only), both 0.56.17; _proseRow avatar-column indent; bio/review prose ported from LBF (_cleanBio HTML->structure, _bioParagraphs heading/bullet/paragraph parser, _proseBlock one styled row per block, _proseSection shared collapse/expand shape, _cleanProse the one fetch-side entry point)
+├── Plugin.pm       # OPMLBased entry point (tag 'discography', is_app); prefs; canonical `dbg` (API/Browse/Sources delegate); Material custom action REGISTERED once (`_registerMaterialActions`) + old actions.json entry stripped at startup (`_clearMaterialActions`); Settings under WEBUI; registers the `imageproxy/dsc/artist/<name>` artwork handler and (0.56.27) LBF's `coverartarchive.org` handler (`Covers::proxyHandler`), and arms the 05:00 cover retry (`Covers::init`)
+├── Covers.pm       # (0.56.27; night only since 0.56.30) the archive covers a page showed an icon for, fetched AT 05:00 with LBF's resizing: `proxyHandler` (front-<n> -> front-1200), `want` (records only: `dsc:cvwant:v1`, written after 10 s, 30-day prune, 5,000 cap), `_nightTick` (newest first, at most 300), `_tick`/`_launch` (8 in flight, 2 if browsing, page grace + `_netFgBusy` wait; unsized + 150/300/600 in one turn), failure counts `dsc:cvmiss:v1` (3 in a row = given up 30 days), `_secsUntilNight` (05:00 local + per-install offset)
+├── Browse.pm       # artist rows typed `artist-link` on Material >= 6.4.10.9 + header clients (`_artistRowType`, `_materialAtLeast`, 0.56.29); topLevel ($VAR guard, %lastCtx stash+expand flags+page counts+visibility snapshot); app-root view (_rootView: _coverCollageRow responsive random-album-cover banner, "Find an artist" header + search box (0.56.24), About prose, "Works best with" as ONE strip of plugin tiles (badge + name + tick/cross, role as tooltip) w/ badgeSrc imageproxy normaliser); global artist search (_searchRow type=search item in the app root ONLY; the artist page's Options carries _searchButtonRow `act:search`, which opens _rootView; go action overridden w/ search:__TAGGEDINPUT__ fixedParams -> topLevel search-param dispatch GATED on item_id being absent, so a positional walk still reaches the row's own coderef; _artistSearchView w/ 10-min merged cache, only written when every source settled OK (the row check runs every time); `_distinctTitles` gives a repeated result name invisible word joiners so Material shows each (0.56.4); owned acts split by identity say how many albums they open on; the list is SERVICE-first, laid out by `_searchSections` as Top Result + Artists (MusicBrainz same-name acts first, then the other rows, then other spellings; `layout_search` split / all tiles on a strip-capable Material; the MusicBrainz-first redo is not in the code, see `THE SEARCH LIST IS MUSICBRAINZ-FIRST`), _searchResultRow name-drills, _mbCandidateRow mbid-drills); grouped list (bio header, Options/type/library-extras sections, Albums / Singles view toggle _viewToggleItem `act:view:<to>` (Singles view = EPs + Singles, a true tab; per-player ctx `view`), sort+Refresh, release sections as tile strips on a strip-capable Material (`header-strip`, `_useStrips`/`_stripsOn`, layout_albums/layout_singles), service badge via row `extid` (`_extid`), _pageSection 30-at-a-time Show more/less, "Also a member of" band links + "Similar artists" name-drill links w/ artist-photo thumbnails, both second-load, similar deduped against bands by _dropBandDupes — Material keys app rows by TITLE, so a repeated name loses a row); artist artwork resolver (artistImageProxy handler for `imageproxy/dsc/artist/<name>`: MAI local files -> MAI online picture w/ Deezer placeholder HEAD probe -> live service photo -> person icon, verdict cached 30d); tile covers (`_releaseItem`: the source's cover, else the archive cover only when the image proxy already holds it, `_caaHeld`, else the type icon, `_typeIcon`, 0.56.26; an icon tile names its archive url in `_caaWant` and `_wantCovers` queues the shown ones for `Covers`, 0.56.27); a cold streaming pool awaited on every first visit, at most `POOL_WAIT_SHOWN` 6 s with hide_unmatched off (0.56.26); release detail (review w/ inline expand, version rows w/ Show-other-versions toggle, MB links); `_poolOpts` (the streaming lookup's options, one helper for the artist page and the release page) and `_otherNames` (the artist's other MusicBrainz names, cache only), both 0.56.17; _proseRow avatar-column indent; bio/review prose ported from LBF (_cleanBio HTML->structure, _bioParagraphs heading/bullet/paragraph parser, _proseBlock one styled row per block, _proseSection shared collapse/expand shape, _cleanProse the one fetch-side entry point)
 ├── API.pm          # Async MusicBrainz (base = mb_base_url pref, mirror-aware _mbBase; EVERY request, MusicBrainz and the community API's `hosted` bucket, through the one `_netGet` queue): artist MBID (library tag first, MB search score>=90; `_nameSearch` shares one `artist:"q"` reply between the resolver, the same-name set and the search), paginated release-group browse (the artist page skips it under 25 groups: `getReleaseGroups(read => 1)` takes the spine from the artist read), url-rels links; the artist page's first list (0.56.7: `_fastSpine` from ListenBrainz `_lbGroups` + the community `_hostedDisco`, `completeArtist` in the background, `promoteCompleted` on a fresh entry; `_pastCap` keeps a Refresh's groups past the cap (0.56.8); `_cmExtra` leaves the community's merged-away ids out; `_officialLater` the bootleg check's rest after the draw (`PREDRAW_RGID_MAX`); `_browseGroups` / `_officialById` the browse and by-id check, shared); filterRowsWithContent (the search's row check; since 0.56.9 the search runs it `known`: decided from the cache, `_rowKey` / `_rememberRow`, the full check after the reply as background work, `$NET_BG` inherited through answers, `_netPromote`; `_rowBatch`: the typed query's reply, then one combined search that also proves pass 1's unproven answers (0.56.6), then the community API by name for the rest (`_hostedByName`, 0.56.5), the resolver only where it cannot decide; proven answers written for the page (`_rememberProven`); counts community API first (`_hostedCount`); then the dead-end/empty-verdict row filter + alias fold, then the 0.51.3 tag attach: a kept row with no artist_id is claimed by its resolved mbid — AFTER the fold, so survivor choice is unchanged; among several tagged contributors the one OWNING the most albums wins, and an id another kept row already carries is never handed to a second row); peekOfficial/warmOfficial + _isOfficial (bootleg filter: the page's groups asked BY ID from the release-group search, `rgid:A OR …`, `RGID_BATCH_MAX` 100 to a request -> {rg=>official?} + {release=>rg} + edition titles, fail-open; its callback says done / 'busy' / 'failed'); peekLocalReleaseMap/warmLocalReleases (release->rg for the owned albums the bootleg check did not place, AFTER the render: one `reid:` OR-search per 50 ids, `REL_BATCH_MAX`, then the per-id lookup for whatever it leaves out); _readArtist (ONE `artist/<id>?inc=aliases+artist-rels+release-groups` read behind warmArtistAliases, warmBandMembers AND the page's spine, fills aliases, MB name, bands, collaboration candidates and, under 25 groups (`ARTIST_RG_LIST_MAX`), the spine, sorted by group id; a caller arriving mid-flight waits on it); _rgEntry/_pruneAliases (one spine entry / the alias prune, shared by the browse and the read); peekBands/warmBandMembers (member-of-band); _vetCollabs (one `inc=artist-rels+release-groups` lookup per candidate: size test + has-releases in one reply); CAA image URLs; caching
 ├── Sources.pm      # Source engine: Q/T/D adapters (artist-FIRST candidate fetch, per-adapter query_enc, shared _renderAlbums + _albumArray envelope unwrap), Local pseudo-source (sync albums query, db:album.id play; localAlbums resolves IDENTITY FIRST — localArtistsByMbid/localArtistIdsByMbid read the library's own Contributor.musicbrainz_id tag, ALL matching contributors, before the name ladder; an explicit artist_id still outranks both UNLESS it performs on no album and the page builder opts in via `Browse::_idFallback` — then tag, then name, name never on a shared-name page); localTracks (the track-link pool: Various Artists compilation tracks ONLY, performance roles checked on the per-role ids from `tags:S` because `titles` ignores role_id, same empty-id fallback gated on owning no album), matcher (fleet-synced), matchesFor/peekPool+peekMatches/claimedLocalIds (`_otherNamesFor`: a copy credited under another of the artist's MusicBrainz names is judged under that name, 0.56.17), LL favurl handshake; global artist search (searchArtists parallel per-service artist-type legs + Local CLI leg, cb(\%bySvc, \%failed) — the 2nd arg names services that ERRORED/TIMED OUT, since a failure settles as an empty list and callers must not persist an incomplete set; mergeArtistHits pure norm-keyed dedupe/rank + relevance gate vs the typed query, rows carry the service's own artist photo); artistImage/_svcArtistImage/isPlaceholderImage (live per-service artist photo via each plugin's OWN url builder, priority order; an exact-name photo ends the walk, a token-subset photo is only a fallback when NO service knows the exact name, and an exact entity without a photo vetoes it; Deezer placeholders in both forms, md5('') and the empty `/images/artist//` hash; 30d cache); serviceStatus takes an OPTIONAL pre-built adapters list (omitted = probe); randomAlbumCovers (app-root banner, sort:random — measured ~20ms/2900 albums, cheap); splitOwnedByIdentity (one search result per owned MusicBrainz identity, 0.50.0; a same-name identity found only on the main act's albums merges into it, 0.56.5, via `_albumsFor`)
 ├── Settings.pm     # Web settings: source priorities (detection), view options (type checkboxes->CSV), release page, integration
@@ -1803,7 +1931,137 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
-### 0.56.25 (2026-10-02) — home page: "Find an artist" under the banner, the About header reads "Discography" — BUILT (sha 63adb392), NOT installed; carries 0.56.22-0.56.24 (none installed)
+### 0.56.30 (2026-10-02) — archive covers fetched at 05:00 only, and never for a release with no cover — BUILT (sha a3c35e97), INSTALLED 2026-10-02, check 1 MEASURED LIVE, COMMITTED + dev PUSHED 2026-10-02
+- **Source (Simon):** *"it still seems a bit slow at loading the thumbnails thouogh when we have show all not just what
+  you can play we need to optomise this some more"*. Measured (A3 `AN ARCHIVE FETCH FREEZES THE SERVER WHATEVER THE
+  PACE`): the thumbnails themselves load in 2-3 s on a first visit, but 0.56.27's background archive fetching froze
+  the server for up to 35 s of the next minute, in freezes of up to 12.8 s, slowing the page's own thumbnails and
+  whatever opened next. Three options offered; Simon chose 1 + 2 (*"okay do it"*) and declined 3 (*"ignore the
+  helper"*).
+- **Changes:** A2 `ARCHIVE COVERS ARE FETCHED AT 05:00` (renamed from `... AFTER THE VISIT`), points 4, 5 and 7.
+  `Covers.pm` records wants by day (`dsc:cvwant:v1`) and fetches at 05:00 only (`_nightTick`, at most 300, newest
+  first); `MISS_TTL`/`_isHeld`/`_retryTick` gone (a failure stays wanted; 3 in a row = given up 30 days).
+  `API::_lbGroups` keeps ListenBrainz's `caa_id` per group (`dsc:caaflag:1:<mbid>`, `peekCoverFlags`); `_buildList`
+  reads it once and `_releaseItem` wants nothing for a group flagged with no cover (24/24 agreed with the archive).
+- **Tests:** `t_covers.pl` 43 -> 55 (rewritten for the night run: nothing by day, one delayed write, grace and page
+  waits at 05:00, widths, success/failure/give-up, newest 300, 30-day prune, 5,000 cap); `t_tilecover.pl` 28 -> 36
+  (flags: none / has / unknown / case-blind / held wins; source pins); `t_fastpage.pl` +7 (§9: the flags kept from a
+  ListenBrainz reply, nothing from another artist's answer or a failure); `t_view.pl` +4 (§9: read once for the page's
+  artist, flagged-none tiles not wanted). 18 mutants all caught (scratchpad `mutNight.py`). 62 suites / 3,032 green;
+  syntax_check clean; zip == tree.
+- **Live check after install:**
+  1. Open an artist never opened before (show all on): thumbnails load in a few seconds and NOTHING freezes afterwards
+     (open a second artist straight after: as quick as the first).
+  2. Icons stay until the morning after; after 05:xx the covers show.
+  3. A release the archive has no cover for keeps its icon (and is never fetched).
+  (A probe for 1: `thumbprobe.py "<new artist>" 60` in the scratchpad: the 'after (background)' line should show no
+  freezes.)
+  **Check 1 MEASURED LIVE 2026-10-02** (`thumbprobe.py`, two first visits back to back, 50 ms pings): Teenage Fanclub
+  page 2.9 s + 30 thumbnails 2.1 s; Super Furry Animals straight after, page 3.2 s + 24 thumbnails 2.2 s; worst ping
+  0.5 s, and ZERO stalls in the 40 s after (0.56.27: Ocean Colour Scene froze 35 s of the next 60). Checks 2 and 3
+  await the 05:00 run.
+
+### 0.56.29 (2026-10-02) — artist rows round, with Material's artist header — BUILT (sha 35dd66c6), INSTALLED 2026-10-02 with Material 6.4.10.9, WORKS on screen (Simon, after a full refresh of Material), COMMITTED + dev PUSHED 2026-10-02 (with 0.56.30); carries 0.56.26-0.56.28
+- **Live, 2026-10-02:** the server serves Material 6.4.10.9 (`material.min.js?r=6.4.10.9`, `artist-link` in the
+  bundle) and 0.56.29 sends `artist-link` on the search rows (Adele: top result + 18 artist rows) and on Sam Smith's
+  Also a member of / Similar artists. Simon first saw no change: the device was still running the old Material until
+  a FULL refresh (no service worker involved). Then: *"works"*. The rest of the live list below still to report.
+- **Source (Simon):** Craig merged PR #1276 (`artist-link`, upstream b652e87b1, identical to fork commit 3b92941cc)
+  the same day it was drafted: *"merged into master all ready whoop so lets add it to our local build so we can build
+  and test the design"*.
+- **Change:** A2 `ARTIST ROWS ARE TYPED artist-link`. `Browse::_artistRowType` on the four artist-row builders;
+  `_useArtistLinks` (>= 6.4.10.9) and `_useStrips` (>= 6.4.10.1, same answers as 0.56.28's rule for every version
+  in its table) now share `_materialAtLeast`.
+- **Material test build 6.4.10.9:** `mkrel.py 6.4.10.9 --nocheck` on a `git archive` of upstream/master b652e87b1 in
+  the scratchpad (so `public.xml` in Simon's checkout is untouched); zip copied to
+  `/Users/simona/Documents/GitHub/lms-material/lms-material-6.4.10.9.zip` (sha1 5c4499e6). It carries every 6.4.11
+  change so far (upstream ChangeLog items 1-9, e.g. 'Fix image sizes in SlimBrowse items', 'Respect LMS 9.1's artist
+  picture setting'), so a visual change on install is not necessarily ours. Named after the last release, as the
+  6.4.10.x builds were, so the official 6.4.11 is still offered as an update.
+- **Tests:** new `t_artistrows.pl` (351); `t_strips.pl` 303 unchanged after the refactor; 13 mutants all caught
+  (scratchpad `mutArtist.py`). 62 suites / 3,001 green; syntax_check clean; zip == tree.
+- **Live check after installing BOTH zips (Material first), on the phone:**
+  1. Search Adele: the Top Result tile and the Artists rows are round.
+  2. Open Adele: Material's artist header (photo + name) at the top, the bio first below it, strips as before.
+  3. Also a member of and Similar artists are round; opening one gives its own header.
+  4. No Play entry on an artist row's menu.
+  5. Read more, a section's More and Search for an artist open under the artist's header (expected): judge the home
+     page there by eye.
+  6. Release pages and tile strips unchanged; the Default skin's search rows unchanged.
+
+### 0.56.28 (2026-10-02) — tile strips on Material 6.4.11 and later — BUILT (sha c39adfa0), NOT installed on its own, COMMITTED + dev PUSHED 2026-10-02 (with 0.56.30); carries 0.56.26 and 0.56.27 (neither installed)
+- **Source (Simon):** *"update that part about accepting Material 6.4.11"*. The strips PR (#1270) was merged
+  2026-09-27 and is item 5 of upstream's 6.4.11 ChangeLog (not released; latest tag 6.4.10). Its strip code in
+  `browse-resp.js`, `browse-page.js`, `search-list.js` and `style.css` is IDENTICAL on upstream master and the
+  tested `plugin-tile-strips` branch (6.4.10.8, the rig's).
+- **Change:** `Browse::_useStrips` turns strips on for Material 6.4.11 or later (numeric compare of the first three
+  parts, so 6.4.9 < 6.4.11 and 6.10.0 > 6.4.x), and for the four-part 6.4.10.x test builds as before. 6.4.10, any
+  other four-part build below 6.4.11, a non-numeric version (DEVELOPMENT) and no Material keep the plain list.
+  No other code reads the version for strips (`t_searchflow` stubs the gate; `t_view`'s strip run is 6.4.10.8).
+- **Tests:** `t_strips.pl` 39 -> 303: a written-out `%DRAWS` table of 15 versions (not the rule under test), one
+  child run each, every assertion following its row. 8 mutants all caught (the old 6.4.10.x-only rule, a string
+  compare, any 6.4.10 on, from 6.4.12, any four-part build on, test builds dropped, major ignored, non-numeric on).
+  61 suites / 2,650 green; syntax_check clean; zip == tree.
+- **Live check:** nothing changes on the rig (6.4.10.8 keeps strips). When Material 6.4.11 is installed, the artist
+  page keeps its tile strips.
+
+### 0.56.27 (2026-10-02) — the missing archive covers fetched after the visit, with LBF's resizing — BUILT (sha 318be669), NOT installed on its own, COMMITTED + dev PUSHED 2026-10-02 (with 0.56.30); carries 0.56.26 (never installed)
+- **Source (Simon), on 0.56.26's report:** *"follow the same resizing we do in LBF as it works well"*; then, of three
+  timings offered (after the visit / overnight only / exactly like LBF), *"After the visit"*. Mid-build: *"did you
+  check MAI or the community API for covers to see if it would work?"* - measured then (A3 `MAI'S COVERS ARE FOUND BY
+  NAME`): neither is a better route for these tiles.
+- **Changes:** A2 `ARCHIVE COVERS ARE FETCHED AFTER THE VISIT`. New `Covers.pm`; `API::caaImage` ends `.jpg`;
+  `Plugin.pm` registers LBF's archive handler (same pattern, same `useLocalImageproxy` gate) and arms the 05:00 retry;
+  `Browse.pm`: `_caaWant` on an icon tile, `_wantCovers` for the shown tiles and a strip header's page,
+  `Covers::noteBrowse` at the top of `topLevel`, `_caaHeld`'s comment (`.jpg`). `tools/syntax_check.sh` compiles
+  `Covers.pm`. CACHE_VERSION 0.56.27 in API/Sources/Browse.
+- **Read first:** LBF's handler (`Plugin.pm`), `API::coverArtUrl` and its cover warm (`Browse.pm` `_coverLaunch`,
+  `_coverTick`, `_coverNoteMiss`, `_secsUntilNextWarm`); LMS 9.1 `ImageProxy.pm` (`getImage`'s 301 for an unsized
+  https request with no handler; `_resizeFromFile` stores an unsized `.jpg` as fetched) and `Tie::RegexpHash`
+  (`add` replaces an equal key: two plugins registering one pattern keep one entry).
+- **Tests:** new `t_covers.pl` (43), `t_tilecover.pl` 24 -> 28, `t_view.pl` §8 (5, incl. a tile-strip child run). 27
+  mutants (scratchpad `mutC12.py`), all caught. **61 suites, 2,394 assertions, 0 failures**; `syntax_check.sh` (zsh)
+  clean. zip sha1 `318be669049a61fd1a7d5c050cd5332a22e4f91b`, 38 entries (+ Covers.pm).
+- **Live check owed (after install; includes 0.56.26's):**
+  1. an artist never opened, on the phone: tiles playable and badged on the first visit; tiles with no Qobuz/TIDAL
+     cover show the type icon;
+  2. about 20-30 s later (after the page, 2 at a time), reopen it: those tiles show their archive covers; the log
+     (debug on) reads `covers: N fetched, M failed, K already held`;
+  3. a cover the archive has none for stays an icon and is not fetched again on the next visit (held);
+  4. Sam Smith: the covers loaded under the old address are fetched once more, then show;
+  5. LBF's own covers unchanged (its handler and ours are one entry).
+
+### 0.56.26 (2026-10-02) — a first visit waits for Qobuz/TIDAL; no archive cover is fetched while browsing — BUILT (sha 59b07e87), NOT installed on its own, COMMITTED + dev PUSHED 2026-10-02 (with 0.56.30)
+- **Source (Simon, 0.56.25 installed):** *"just did a search for Adele which loaded quickly then I used one of the
+  similar artist links to go to Sam Smith and it loaded quick but the artwork took a long time to draw on screen"*;
+  *"they also were not playable links on mobile and had no service badges"*; on the Mac, the same page *"didn't load
+  instantly which it should as been searched a few minutes before, does have all playable and service badges"*. Then,
+  offered the fix: *"build it and then we can decide on when to populate the missing artwork"*.
+- **Measured first (rig over HTTP, scratchpad `coldprobe.py`, `revisit.py`, `stallprobe.py`, `stall2.py`,
+  `refail.py`):** `hide_unmatched` is 0 on the rig, so the first visit drew before the pools (Calum Scott: 6 tiles,
+  0 matched at 3.4 s, 3 matched 1.7 s later); reopening an artist is 0.06-0.21 s from the server at every interval to
+  2 minutes (James Arthur), so the Mac's slow open was most likely the server stalled by the phone's archive covers
+  (not provable after the fact: debug logging was off); archive covers stall the server (A2 `NO ARCHIVE COVER IS
+  FETCHED WHILE BROWSING` has the numbers); Qobuz covers do not.
+- **Changes:** A2 `A FIRST VISIT WAITS FOR QOBUZ AND TIDAL` and `NO ARCHIVE COVER IS FETCHED WHILE BROWSING`; A3
+  `LBF CLAIMS EVERY coverartarchive.org URL`. Browse.pm only (`POOL_WAIT_SHOWN`, the await block, `_typeIcon`,
+  `_caaHeld`, `_releaseItem`); CACHE_VERSION 0.56.26 in API/Sources/Browse.
+- **Asked about and answered, not built:** the community API hosts no images (its album covers are the same
+  archive.org files); MAI's album covers come from Last.fm (by album name, autocorrect on), Discogs (by name, 60 a
+  minute) and the same archive. Last.fm's and Deezer's hit rate on the 25 unmatched releases of Sam Smith, James
+  Arthur and Calum Scott was NOT measured: both probes were refused by the permission check (the Last.fm one needed
+  LBF's stored key decoded) **Measured later the same day through the server's own MAI** (no key
+  decoded): A3 `MAI'S COVERS ARE FOUND BY NAME`.
+- **Tests:** `t_chain.pl` §12 (9, new), `t_tilecover.pl` (24, new). Mutants (scratchpad `mutC11.py`): 19, all caught
+  (the first run's 3 `t_chain` catches were the suite dying on a missing timer; §12 now reports instead). **60 suites,
+  2,342 assertions, 0 failures**; `syntax_check.sh` (zsh) clean. zip sha1 `59b07e87b15ea37748f5d5766b35671a66109eaa`,
+  37 entries.
+- **Live check owed:** an artist never opened before (e.g. JP Cooper's similar artists), on the phone: tiles
+  playable and badged on the FIRST visit, page at most a few seconds slower; tiles with no Qobuz/TIDAL cover show the
+  release-type icon; Sam Smith's archive covers the phone already loaded still show; a ping during the visit stays
+  under a second (no archive.org fetch).
+
+### 0.56.25 (2026-10-02) — home page: "Find an artist" under the banner, the About header reads "Discography" — BUILT (sha 63adb392), INSTALLED 2026-10-02 (plugins page v0.56.25); carries 0.56.22-0.56.24 (none installed)
 - **Source (Simon), while 0.56.23 and 0.56.24 were building:** *"needs a header too"*, then *"the page title should be
   Discography not About Discography"*.
 - **Change:** A2 `THE SEARCH BOX SITS BETWEEN THE BANNER AND ABOUT`. `_rootView` puts the "Find an artist" header
@@ -3410,9 +3668,21 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   keeps `@GROUP_ORDER` unchanged. Order is fixed per build, so item_id walks stay deterministic.
 
 #### Material PR status (tracking kept HERE, not in `docs/material-PR-tile-strips.md`, which is paste-ready)
-- **APPROVED by Craig 2026-09-24; NOT merged yet** (upstream/master still 7a58840c4, no `header-strip`; its
-  ChangeLog's next section is 6.4.11). Release date unknown.
-- **WHEN IT SHIPS — Discography's one change:** replace the `Browse::_useStrips` TEST GATE (four-part 6.4.10.x
+- **MERGED 2026-09-27** (#1270, upstream commit 34743899d; upstream ChangeLog 6.4.11 item 5, "Let a plugin show a
+  row of tiles on a list page"). 6.4.11 NOT released as of 2026-10-02 (latest tag 6.4.10). The `_useStrips`
+  change below is now due before 6.4.11 ships.
+- **Second PR (#1276, `artist-link`) MERGED 2026-10-02** as upstream b652e87b1 (identical to fork 3b92941cc); not yet in
+  the 6.4.11 ChangeLog. Test build 6.4.10.9 from it (dev log 0.56.29). Discography sends it from 0.56.29.
+  Drafted earlier the same day as: **`docs/material-PR-artist-rows.md`** (a row of type `artist-link`
+  is an online artist: round image + the artist header on the page it opens). Fork branch `plugin-artist-rows`
+  off upstream/master 31514817c, one 4-line change in `browse-resp.js`, COMMITTED 3b92941cc and PUSHED to the fork
+  (SimonArnold002/lms-material) 2026-10-02 (Simon 'yes do that'); no PR opened, not built. Simon to ask
+  Craig first (he expects reluctance, since slimserver #1452 is the real fix). Route A (Sven's
+  favourites-link approach) planned in `docs/artist-rows-plan.md`. ON HOLD (Simon, 2026-10-02): no changes
+  until Craig answers; route A only if he rejects the PR.
+- (Superseded) APPROVED by Craig 2026-09-24; at the time not merged (upstream/master was 7a58840c4).
+- **DONE in 0.56.28 (built, not installed):** `_useStrips` accepts 6.4.11 and later plus the 6.4.10.x test builds.
+  Was: **WHEN IT SHIPS — Discography's one change:** replace the `Browse::_useStrips` TEST GATE (four-part 6.4.10.x
   only) with "version >= the release that carries it" (read the upstream ChangeLog / tag, do NOT assume 6.4.11),
   keeping four-part dev builds on. Until then a release Material user gets the plain list, whatever the layout
   settings say. Then a Discography build, and README/CHANGELOG at the main merge.

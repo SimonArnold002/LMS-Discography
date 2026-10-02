@@ -534,6 +534,59 @@ ok(!defined $CACHE{"dsc:rgfull:1:$RH"} && !defined $CACHE{"dsc:rgfast:1:$RH"} &&
     ok(scalar(($bioEv[0] // '') eq "exact Ladyhawke $LH"), "11: the exact route is asked with the page's own mbid");
 }
 
+# ---------------------------------------------------------------------------
+# 12. A COLD STREAMING POOL IS AWAITED WITH hide_unmatched OFF TOO (0.56.26).
+#     Field (Simon 2026-10-02, Sam Smith on a phone): the page drew before the
+#     services answered, so no tile could play, none had a badge, every cover
+#     was the archive's. Now the render waits for the pool, at most
+#     POOL_WAIT_SHOWN (6 s) with the pref off, POOL_WAIT_MAX (20 s) with it on;
+#     a warm pool waits for nothing.
+# ---------------------------------------------------------------------------
+{
+    no strict 'refs'; no warnings 'redefine';
+    my ($cold, @pending, @timers);
+    local *{'Plugins::Discography::Sources::peekPool'} = sub { { cold => $cold } };
+    local *{'Plugins::Discography::Sources::getCandidates'} = sub { push @pending, $_[4] };
+    local *{"${API}::getArtistCandidates"} = sub { $_[-1]->([]) };
+    local *{'Slim::Utils::Timers::setTimer'} = sub {
+        push @timers, [ int($_[1] - time() + 0.5), $_[2] ]; return;
+    };
+    my $cl = bless {}, 'T::Client';
+    my $open = sub {
+        my ($hide) = @_;
+        fresh(); $PREF{hide_unmatched} = $hide; @pending = (); @timers = ();
+        $B->can('_discographyView')->($cl, sub {}, { mbid => $LH, artist => 'Ladyhawke', artist_id => 7 });
+        flush();
+    };
+    my $poolTimer = sub { my ($s) = @_; my ($t) = grep { $_->[0] == $s } @timers; $t };
+    # Fire what was armed; a missing timer or pool call reports, never dies.
+    my $fire   = sub { my $t = $poolTimer->($_[0]); $t->[1]->() if $t; return $t ? 1 : 0 };
+    my $answer = sub { $pending[0]->() if @pending; return scalar @pending };
+
+    $cold = 1; $open->(0);
+    ok(scalar(@BUILT == 0 && @pending == 1),
+       '12: pref off, cold pool: the page waits for the services before drawing');
+    ok(scalar($poolTimer->(6)), '12: pref off: the wait is capped at 6 s');
+    ok(scalar(!$poolTimer->(20)), '12: pref off: not the 20 s cap');
+    ok(scalar($answer->() && @BUILT == 1), '12: pref off: the page draws when the services answer');
+    $fire->(6);
+    ok(scalar(@BUILT == 1), '12: pref off: the deadline after that draws nothing more');
+
+    $cold = 1; $open->(0);
+    ok(scalar($fire->(6) && @BUILT == 1),
+       '12: pref off: a service that never answers: the page draws at the deadline');
+    $answer->();
+    ok(scalar(@BUILT == 1), '12: pref off: and a late answer does not draw it twice');
+
+    $cold = 1; $open->(1);
+    ok(scalar(@BUILT == 0 && $poolTimer->(20) && !$poolTimer->(6)),
+       '12: pref on, cold pool: waits, capped at 20 s as before');
+
+    $cold = 0; $open->(0);
+    ok(scalar(@BUILT == 1 && !$poolTimer->(6) && !$poolTimer->(20)),
+       '12: control: a warm pool draws at once, no wait armed');
+}
+
 package T::Client; sub id { 'c1' }
 package main;
 

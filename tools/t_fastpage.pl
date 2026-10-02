@@ -765,5 +765,38 @@ section('8', sub {
        '8: not a Refresh (the first list failed, the browse instead): the two are not asked again');
 });
 
+section('9', sub {
+    # 9. WHICH GROUPS THE ARCHIVE HAS A COVER FOR (0.56.30): ListenBrainz's
+    #    caa_id, kept per artist whenever it answers, read by the page.
+    my $f = $A->can('_lbGroups');
+    my $KEY = 'dsc:caaflag:1:' . $ART;
+    my $reply = sub {
+        [ { artist_mbid => $ART, name => 'Radiohead', release_group => [
+            { mbid => id(1), name => 'G1', caa_id => 12345, caa_release_mbid => id(101) },
+            { mbid => id(2), name => 'G2', caa_id => undef, caa_release_mbid => undef },
+            { mbid => uc id(3), name => 'G3' },
+            { mbid => 'not-a-uuid', name => 'G4', caa_id => 9 },
+        ] } ]
+    };
+    cold(); $REPLY{$LBQ} = $reply->();
+    my $got; $f->($ART, sub { $got = shift });
+    my $fl = $CACHE{$KEY};
+    ok(ref $fl eq 'HASH' && ($fl->{ id(1) } // -1) == 1 && ($fl->{ id(2) } // -1) == 0 && ($fl->{ id(3) } // -1) == 0,
+       '9: kept { group => 1 with a caa_id, 0 without }, ids lower-cased');
+    ok(ref $fl eq 'HASH' && keys %$fl == 3, '9: an entry without a valid group id is left out');
+    ok(ref $got eq 'ARRAY' && @$got == 3, '9: the list itself is unchanged by it');
+    my $peek = $A->peekCoverFlags($ART);
+    ok(ref $peek eq 'HASH' && ($peek->{ id(2) } // -1) == 0, '9: peekCoverFlags reads them back');
+    ok(!defined $A->peekCoverFlags(id(77)) && !defined $A->peekCoverFlags(undef) && !defined $A->peekCoverFlags(''),
+       '9: another artist, or none -> undef (every group counts as maybe)');
+
+    cold(); $REPLY{$LBQ} = [ { artist_mbid => id(99), name => 'X', release_group => [ { mbid => id(1), name => 'G1', caa_id => 1 } ] } ];
+    $f->($ART, sub {});
+    ok(!exists $CACHE{$KEY}, '9: an answer for another artist keeps nothing');
+    cold(); $REPLY{$LBQ} = 'ERROR';
+    $f->($ART, sub {});
+    ok(!exists $CACHE{$KEY}, '9: a failed request keeps nothing');
+});
+
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

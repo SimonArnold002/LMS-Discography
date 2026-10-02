@@ -11,7 +11,7 @@
 # here through the REAL _sectionTiles / _sectionHeaderType / _stripsOn.
 #
 # Standalone, no LMS install needed:  perl tools/t_strips.pl
-# (re-runs itself once with a release Material version, where strips are off)
+# (re-runs itself once for each other Material version in %DRAWS)
 #
 use strict;
 use warnings;
@@ -83,7 +83,20 @@ my $ts  = $B->can('_sectionTiles');
 my $sht = $B->can('_sectionHeaderType');
 my $on  = $B->can('_stripsOn');
 my $ver = $ENV{T_MATERIAL_VER} // '6.4.10.5';
-my $patched = $ver =~ /^6\.4\.10\.\d+$/;
+# Which Material versions draw strips, written out rather than derived from the
+# rule under test: 6.4.11 is the first release with them (upstream ChangeLog,
+# #1270 merged 2026-09-27), and Simon's self-built 6.4.10.x test builds had
+# them. Each version is a child run (_useStrips caches its answer per process),
+# and every assertion below follows its row. The numeric rows (6.4.9 < 6.4.11,
+# 6.10.0 > 6.4.x) fail a string compare.
+my %DRAWS = (
+    '6.4.10.5' => 1, '6.4.10.8' => 1, '6.4.11' => 1, '6.4.11.1' => 1,
+    '6.4.12'   => 1, '6.5.0'    => 1, '6.10.0' => 1, '7.0.0'    => 1,
+    '6.4.10'   => 0, '6.4.9'    => 0, '6.4.9.1' => 0, '6.4.2'   => 0,
+    '6.3.0'    => 0, 'DEVELOPMENT' => 0, '' => 0,
+);
+die "t_strips: no expected answer for Material '$ver'\n" unless exists $DRAWS{$ver};
+my $patched = $DRAWS{$ver};
 
 # A client WITHOUT headers never gets strips, patched Material or not: plain
 # paging, so every tile stays reachable through Show more.
@@ -113,9 +126,9 @@ if ($patched) {
     ok(scalar(!@$emptyV && !@$emptyP && !@$emptyA), "[$ver] empty section: no rows");
 } else {
     my ($vis, $pg) = $ts->(undef, {}, 1, 'ALBUM', \@tiles);
-    ok(scalar(@$vis == 30 && @$pg >= 1), "[$ver] release Material: header client keeps the plain paged list");
-    ok(scalar($sht->(1, 'ALBUM') ne 'header-strip'), "[$ver] release Material: never sends header-strip");
-    ok(scalar(!$on->(1)), "[$ver] release Material: strips off");
+    ok(scalar(@$vis == 30 && @$pg >= 1), "[$ver] Material without strips: header client keeps the plain paged list");
+    ok(scalar($sht->(1, 'ALBUM') ne 'header-strip'), "[$ver] Material without strips: never sends header-strip");
+    ok(scalar(!$on->(1)), "[$ver] Material without strips: strips off");
 }
 
 # The layout settings (0.54.0): Singles follow layout_singles, everything else
@@ -156,21 +169,23 @@ if ($patched) {
 } else {
     local %T::Prefs::P = (layout_albums => 'tiles', layout_singles => 'tiles');
     ok(scalar($sht->(1, 'SINGLES') ne 'header-strip' && $sht->(1, 'ALBUMS') ne 'header-strip'),
-       "[$ver] release Material: tiles set, still no header-strip");
+       "[$ver] Material without strips: tiles set, still no header-strip");
     local %T::Prefs::P = (layout_albums => 'tiles', layout_singles => 'list');
     ok(scalar(join(',', map { $_->[0] } $B->can('_groupOrder')->(1)) eq 'ALBUMS,EPS,SINGLES,COMPILATIONS,LIVE,OTHER'),
-       "[$ver] release Material: type order unchanged");
+       "[$ver] Material without strips: type order unchanged");
 }
 
-# Re-run once against a release Material (strips must be off for everyone).
+# Re-run once per other version in %DRAWS: strips on or off for each as listed.
 if (!defined $ENV{T_MATERIAL_VER}) {
-    local $ENV{T_MATERIAL_VER} = '6.4.10';
-    local $ENV{T_CHILD} = 1;
-    my $out = `$^X "$0"`;
-    print $out;
-    $pass += () = $out =~ /^ok   - /mg;
-    $fail += () = $out =~ /^FAIL - /mg;
-    $fail++ if $? && $out !~ /^FAIL - /m;
+    for my $v (sort grep { $_ ne $ver } keys %DRAWS) {
+        local $ENV{T_MATERIAL_VER} = $v;
+        local $ENV{T_CHILD} = 1;
+        my $out = `$^X "$0"`;
+        print $out;
+        $pass += () = $out =~ /^ok   - /mg;
+        $fail += () = $out =~ /^FAIL - /mg;
+        $fail++ if $? && $out !~ /^FAIL - /m;
+    }
 }
 
 print "\n", ($fail ? "FAILED" : "PASS"), ": $pass passed, $fail failed\n" unless $ENV{T_CHILD};

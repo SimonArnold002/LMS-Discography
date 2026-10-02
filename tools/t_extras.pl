@@ -52,6 +52,7 @@ BEGIN {
 
     my $A = 'Plugins::Discography::API';
     *{"${A}::caaImage"}            = sub { 'caa' };
+    *{"${A}::peekCoverFlags"}      = sub { undef };   # ListenBrainz never answered: every group maybe
     *{"${A}::peekOfficial"}        = sub { undef };
     *{"${A}::peekReleaseMap"}      = sub { {} };
     *{"${A}::peekLocalReleaseMap"} = sub { {} };

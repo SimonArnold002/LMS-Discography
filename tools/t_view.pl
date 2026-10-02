@@ -39,6 +39,8 @@ BEGIN {
         return 'Singles & EPs' if $t eq 'PLUGIN_DISCOGRAPHY_SINGLES_EPS';
         return $t };
     *{'Plugins::Discography::Plugin::dbg'} = sub { };
+    # Section 8's tile-strip run (a child process: _useStrips caches its answer).
+    *{'Plugins::MaterialSkin::Plugin::getPluginVersion'} = sub { '6.4.10.8' } if $ENV{T_VIEW_STRIPS};
     for my $e (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Strings)) {
         push @{"${e}::ISA"}, 'Exporter';
     }
@@ -58,6 +60,7 @@ BEGIN {
     *{"${S}::peekMatches"}    = sub { my ($c, $artist, $title) = @_;
         { sections => $main::MATCH{$title} || [], resolved => 1 } };
     *{"${A}::caaImage"}           = sub { 'caa' };
+    *{"${A}::peekCoverFlags"}     = sub { undef };   # ListenBrainz never answered: every group maybe
     *{"${A}::peekOfficial"}       = sub { undef };
     *{"${A}::peekReleaseMap"}     = sub { {} };
     *{"${A}::peekLocalReleaseMap"} = sub { {} };
@@ -125,6 +128,25 @@ sub ids   { map { $_->{id} // () } @{ $_[0] } }
 sub has   { my ($items, $id) = @_; scalar grep { ($_->{id} // '') eq $id } @$items }
 sub togs  { scalar grep { ($_->{id} // '') =~ /^act:view/ } @{ $_[0] } }
 sub row   { my ($items, $id) = @_; (grep { ($_->{id} // '') eq $id } @$items)[0] }
+
+# Section 8 as tile strips (run by section 8 in a child process): a strip shows
+# STRIP_SIZE tiles of its full list and only those are queued; its header's own
+# page queues the rest.
+if ($ENV{T_VIEW_STRIPS}) {
+    my @wanted;
+    no warnings qw(redefine once);
+    local *Plugins::Discography::Covers::want = sub { push @wanted, $_[0] };
+    local *Plugins::Discography::API::caaImage = sub { "caa-$_[1]" };
+    my $items = build([ map { rg("Album $_", 'Album') } 1 .. 40 ]);
+    my ($hdr) = grep { ($_->{id} // '') eq 'sect:ALBUMS' } @$items;
+    ok(scalar($hdr && ($hdr->{type} // '') eq 'header-strip'), '8s: the Albums section is a tile strip');
+    ok(scalar(@wanted == 30), '8s: 40 albums in a strip of 30 -> 30 queued (got ' . scalar(@wanted) . ')');
+    @wanted = ();
+    $hdr->{url}->(undef, sub {});
+    ok(scalar(@wanted == 40), "8s: opening the strip's header queues all 40");
+    print "\n$pass passed, $fail failed\n";
+    exit($fail ? 1 : 0);
+}
 
 # 1. Albums view (the default).
 my $a = build(\@full);
@@ -247,6 +269,59 @@ for my $v (['albums', $tog2], ['singles', $tog]) {
     ok(scalar(!@bad), "7: $v->[0] view: every row's tap names its own id");
     my %seen; my @dup = grep { $seen{$_}++ } ids($p);
     ok(scalar(!@dup), "7: $v->[0] view: row ids are unique (" . join(',', @dup) . ')');
+}
+
+# 8. The covers a page SHOWS are queued for the fetch after the visit
+#    (0.56.27): the visible tiles of a paged section, not the ones behind
+#    "Show more"; a tile with its own cover queues nothing.
+{
+    my @wanted;
+    no warnings qw(redefine once);
+    local *Plugins::Discography::Covers::want = sub { push @wanted, $_[0] };
+    local *Plugins::Discography::API::caaImage = sub { "caa-$_[1]" };
+    my @many = map { rg("Album $_", 'Album') } 1 .. 35;
+    my $cov = { %{ cand('Covered', 'q-cov') }, _cover => 'https://static.qobuz.com/c.jpg' };
+    local %MATCH = (%MATCH, 'Covered' => [ { svc => 'Qobuz', items => [ $cov ] } ]);
+    my $items = build([ @many, rg('Covered', 'Album') ]);
+    my %shown = map { ($_->{_caaWant} // '') => 1 } grep { ref $_ eq 'HASH' && $_->{_caaWant} } @$items;
+    my $shownWant = grep { ref $_ eq 'HASH' && $_->{_caaWant} } @$items;
+    ok(scalar(@wanted == $shownWant && $shownWant >= 29 && $shownWant <= 30),
+       "8: 36 albums, 30 shown -> only the shown icon tiles queued ($shownWant, not 35)");
+    ok(scalar(!grep { !$shown{$_} } @wanted), '8: every queued cover is a tile on the page');
+    my $coveredMbid = (grep { $_->{title} eq 'Covered' } map { $_->{passthrough}[0]{rg} // () }
+                       grep { ref $_->{passthrough} eq 'ARRAY' } @$items)[0];
+    ok(scalar(!$coveredMbid || !grep { $_ eq "caa-$coveredMbid->{mbid}" } @wanted),
+       '8: the album with its own cover is not queued');
+    open my $fh, '<', "$FindBin::Bin/../Discography/Browse.pm" or die "Browse.pm: $!";
+    my $src = do { local $/; <$fh> };
+    ok(scalar($src =~ /\$hdr->\{url\}\s*=\s*sub \{ _wantCovers\(\\\@kids\);/),
+       "8: a strip header's own page queues its full list");
+    local $ENV{T_VIEW_STRIPS} = 1;
+    my $out = qx{"$^X" "$0" 2>&1};
+    ok(scalar($? == 0 && $out =~ /\b3 passed, 0 failed/), '8: as tile strips, only the strip\'s shown tiles are queued');
+    print map { "    | $_\n" } grep { /^(ok|FAIL)/ } split /\n/, $out;
+}
+
+# 9. ListenBrainz's cover flags reach the tiles (0.56.30): the page asks once
+#    for ITS artist, and a release flagged as having no archive cover keeps its
+#    icon and is not wanted; flagged or unlisted ones are wanted as before.
+{
+    my (@wanted, @asked);
+    no warnings qw(redefine once);
+    local *Plugins::Discography::Covers::want = sub { push @wanted, $_[0] };
+    local *Plugins::Discography::API::caaImage = sub { "caa-$_[1]" };
+    my @rgs = map { rg("Flag $_", 'Album') } 1 .. 6;
+    my %flags = (lc $rgs[0]{mbid} => 0, lc $rgs[1]{mbid} => 0, lc $rgs[2]{mbid} => 1);
+    local *Plugins::Discography::API::peekCoverFlags = sub { push @asked, $_[1]; \%flags };
+    my $items = build(\@rgs);
+    ok(scalar("@asked" eq 'artist-mbid'), "9: the flags are read once, for the page's own artist (got '@asked')");
+    my %w = map { $_ => 1 } @wanted;
+    ok(scalar(!$w{"caa-$rgs[0]{mbid}"} && !$w{"caa-$rgs[1]{mbid}"}), '9: the two flagged with no cover are not wanted');
+    ok(scalar($w{"caa-$rgs[2]{mbid}"} && $w{"caa-$rgs[3]{mbid}"} && $w{"caa-$rgs[5]{mbid}"} && @wanted == 4),
+       '9: the one flagged with a cover and the three unlisted are (' . scalar(@wanted) . ')');
+    my ($t0) = grep { ref $_ eq 'HASH' && ($_->{name} // '') eq 'Flag 1' } @$items;
+    ok(scalar($t0 && ($t0->{image} // '') !~ /^caa-/ && !exists $t0->{_caaWant}),
+       '9: a flagged-none tile shows its type icon and names nothing to fetch');
 }
 
 print "\n$pass passed, $fail failed\n";

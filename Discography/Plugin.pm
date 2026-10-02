@@ -183,6 +183,24 @@ sub initPlugin {
         1;
     } or $log->warn("could not register the artist image handler: $@");
 
+    # LBF's Cover Art Archive handler (0.56.27): every size of an archive cover
+    # cut from one 1200 px download (Covers::proxyHandler). The SAME pattern as
+    # LBF's, so LMS keeps one entry and either plugin's identical copy serves
+    # both. LBF's gate kept as it is: `useLocalImageproxy` is the image-proxy
+    # SELECTOR, truthy on every default install (LBF CLAUDE.md, "misleading,
+    # not broken"). Covers::init arms the 05:00 retry of failed covers.
+    require Plugins::Discography::Covers;
+    eval {
+        require Slim::Web::ImageProxy;
+        Slim::Web::ImageProxy->registerHandler(
+            match => qr/coverartarchive\.org/,
+            func  => \&Plugins::Discography::Covers::proxyHandler,
+        );
+        1;
+    } or $log->warn("could not register the archive cover handler: $@")
+        if preferences('server')->get('useLocalImageproxy');
+    Plugins::Discography::Covers::init();
+
     # HTTP-triggerable cache clear — bust an artist's cached MusicBrainz data
     # (resolution mbid + '' miss sentinel, release groups, bootleg map, band
     # members, bio, streaming candidates) WITHOUT the Material UI. This is the
