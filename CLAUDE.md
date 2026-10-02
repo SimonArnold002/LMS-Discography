@@ -147,6 +147,7 @@ because line numbers rot on the next edit.
 | Material's online-artist header only shows on wide screens | A3 | `ONLINE ARTISTS GET THE HEADER ON PHONES` |
 | Our page can give itself Material's artist header when opened from Material's own Discography action (library Artists view) | A3 | `A CUSTOM ACTION PAGE NEVER GETS THE HEADER` |
 | The C1 initials lift without any act literally named the abbreviation (plan's BTO row) | A3 | `THE INITIALS LIFT NEEDS AN ACT NAMED THE ABBREVIATION` |
+| A MusicBrainz-only act listed in search (0.56.37's Top Result) opens an empty page when hide_unmatched is on | A3 | `AN ACT ON NO SERVICE KEEPS ITS PAGE UNDER HIDE_UNMATCHED` |
 | An unsized proxy request for a tile's https cover redirects the device to the source, so a Discography archive cover never loads through (or stalls) the server | A3 | `LBF CLAIMS EVERY coverartarchive.org URL` |
 | Stage 2's five behaviour changes (a promo-only group hidden, the release map's index lag, a group with no releases listed shown, owned-album lookups after the render, so a render without the map (check failed or past the deadline) places them by title — the Esher Demos wait a visit, a small artist's spine refreshed by the read) — all deliberate | A2 | `STAGE 2 CHANGED FIVE BEHAVIOURS ON PURPOSE` |
 | Stage 3's five behaviour changes (a public search hides dead ends, merges alias rows, attaches by tag and searches the services under MB's name; a row lookup runs every pass; a count may be the community API's; one name lookup per new search term; a merge reads the act's full record first) — all kept | A2 | `STAGE 3 CHANGED FIVE BEHAVIOURS ON PURPOSE` |
@@ -161,6 +162,7 @@ because line numbers rot on the next edit.
 | Background work is not SENT while a page has any request waiting or out on ANY host, or while a page answer runs; a background request's TIMEOUT holds background work only (a 429 still holds everything) (0.56.11, the 18.8 s tap-after-search regression) | A2 | `THE SEARCH DOES NOT WAIT FOR ITS ROW CHECK` |
 | A result row that opens a MusicBrainz act sharing its name shows that act's description LAST on line2 (owned by library tag, unowned by the resolver's cached answer; untagged owned rows get none, never a name guess; only when MB has 2+ acts of that name) (0.56.12, Simon) | A2 | `THE SEARCH PAGE IS TOP RESULT, THEN ARTISTS` |
 | The search page is "Top Result" (one row, Local trumps) then "Artists" (same-name acts FIRST, then the other rows, then other spellings); no "Other artists with this name" section; `layout_search` split / all tiles; More on the Top Result heading opens that artist (0.56.10, Simon's design) | A2 | `THE SEARCH PAGE IS TOP RESULT, THEN ARTISTS` |
+| The ONE MusicBrainz act of the typed name is listed when no result row opens it (an act on no service and not owned: Jandek), as the Top Result unless something is owned or the typed name opens another act (C1's ELO), then under Artists (0.56.37, Part D step 1; Simon: "Top Result") | A2 | `THE ONE MUSICBRAINZ ACT NO ROW OPENS` |
 | MB's artist lookup listing only first-credited groups; omitting an empty `release-groups`; a combined `inc=` returning less; a 50-id `reid:` search being too long | A3 | `MEASURED FOR STAGE 1` |
 | A non-UUID album id tag spoiling a `reid:` batch | A3 | `LMS VALIDATES MB ID TAGS AT SCAN` |
 | Paging the `arid:` search as a complete list; the search carrying group aliases; the artist read's group list as incomplete under 25; the by-id search's URL or release lists being cut short | A3 | `MEASURED FOR STAGE 2` |
@@ -887,7 +889,8 @@ always with its reason, and those stay suppressed. The code a fix added is new a
      The Artists heading's More (tiles only) re-asks the search with `item:sect:ARTISTS` and gets the Artists rows
      alone (the row past `numScrollItems`).
   6. Nothing on the services or in the library: the "No artists found" line stays, any MusicBrainz acts follow
-     under Artists (no Top Result). The row count and order never depend on the setting (walk-stable).
+     under Artists (no Top Result), except the ONE act of the name, which is the Top Result (0.56.37, `THE ONE
+     MUSICBRAINZ ACT NO ROW OPENS`). The row count and order never depend on the setting (walk-stable).
   7. **A matched row says which act it opens** (0.56.12; `_stampDisambiguation`, `API::peekArtistMbid`; Simon: *"show
      the disambiguation when they are matched so the bees says its the 60's garage band etc"*): line2 ends with the
      MusicBrainz description of the act the row opens, from the same-name list the search already fetches (all of
@@ -895,6 +898,22 @@ always with its reason, and those stay suppressed. The code a fix added is new a
      cached answer for the name (what a tap opens). An owned row with no tag, or an owned collaboration, gets none:
      never a guess. Only when the list holds 2+ acts of that name. LAST on line2, after sources and album count, so
      "Local" survives when a long description is cut (offered to Simon the other way round; he did not ask for it).
+- **THE ONE MUSICBRAINZ ACT NO ROW OPENS** (0.56.37, resolver plan Part D step 1; `Browse::_loneMbAct`, the `@$cands
+  < 2` branch of `_withMbCandidates`, `_searchSections`' `$lead`; Simon 2026-10-02: *"With the current way it works do
+  we loose out on artists that are not in streaming?"*, then *"okay lets go for it"*, then **Top Result** when asked
+  where). Measured live on 0.56.36: "Jandek" (on MusicBrainz, on no service, not owned) showed Qobuz's "JanDeKid",
+  then "No artists found" once the row check dropped it; the same-name acts were listed only for 2+ acts (the gap
+  Hawkwind showed on 0.55.1). Now, when MusicBrainz has exactly ONE act of the name:
+  1. **It is listed unless a row opens it**: the owned act itself (`_ident_mbid`, tag or C2), an owned row of the
+     typed name with no identity, an unowned row the resolver's cached answer takes to it, or an unowned row named as
+     typed with no cached answer. Count 0 is never listed; an unknown count is shown and asked after the reply as
+     background work, as for the same-name acts.
+  2. **It is the Top Result** (Simon's pick over "under Artists"), every row found going under Artists and the "No
+     artists found" line gone, **unless** something is owned (Local trumps, as ever: it leads Artists) or the typed
+     name opens another act (C1: "ELO" opens the band, so the one act literally called ELO goes under Artists).
+  3. **No request before the reply**: the candidate list is the reply the typed query's own lookup fetched; the count
+     comes after. Its photo is by name (one act of the name, so the name-keyed photo is its own).
+  Pinned in `tools/t_searchflow.pl` §10 (21); 18 mutants caught (scratchpad `mutLone.py`).
 - **A RELEASE MUSICBRAINZ LISTS UNDER THE ARTIST COMES THROUGH, HOWEVER THE SERVICE CREDITS IT** (0.56.13;
   `Browse::_poolQuery`, `Sources::getCandidates` `query`, `_resolveWithJoints`, `_jointArtists`, `_appendJoint`,
   `_isMainCredit`, `_mainArtistAs`, `_mainArtistNamed`, Browse's extras `_joint` skip, API fold `$libCanon`; Simon,
@@ -1293,6 +1312,7 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 | Material shows an online artist's (or online album's) header only on wide screens, `wide>=WIDE_COVER` (650 px) | **WRONG** — ONLINE ARTISTS GET THE HEADER ON PHONES (read 2026-10-02, same sources) | `showDetailedSubtoolbar` also admits `stdItem>=STD_ITEM_MAI` (200), and the online types are 300-302, so the `WIDE_COVER` clause beside it is redundant: an online artist row with an image gets the header from 350 px wide (and 400 px tall), phones included. The header photo has square corners even for library artists; only list, grid and strip images are drawn round (`circular`). |
 | A Discography page opened from Material's own Discography action (the library Artists view: an artist's menu or its page's menu) can be given the artist header by something in OUR response | **WRONG** — A CUSTOM ACTION PAGE NEVER GETS THE HEADER (read 2026-10-02 in the 6.4.10.9 bundle = upstream master b652e87b1; Simon reported the missing header as a bug the same day) | Material opens an `lmsbrowse` custom action's page with `fetchItems(cmd, {cancache:false, id, title})` only: no `image`, no `stdItem` (`browse-page.js`, the `act.custom` branch of the current page's menu and `itemCustomAction`). `showDetailedSubtoolbar` reads `current.stdItem` or `current.altStdItem`, both from the TAPPED item; `altStdItem` is only ever copied from a row's own `stdItem` (`browse-functions.js`), never from a response. So no field, row type or response flag of ours can turn the header on for that page. Only a Material change can (drafted 2026-10-02, test build 6.4.10.10, "Material PR status"): e.g. a custom action that asks for it opens its page with the item's image and `STD_ITEM_ONLINE_ARTIST`, as an `artist-link` row does. Our own rows (search results, Also a member of, Similar artists) are unaffected. **Ways round it, checked the same day (Simon: "we sure we cant work around this issue witout another PR?"):** a `script` custom action firing Material's `browse` bus event types the page from its params (`artist_id:` first = a LIBRARY artist, with Material's own artist actions) but gives it NO image: Material takes a page image only from the tapped row or its own library album lists (`resp.image`), never from a plugin response, so still no header; calling `fetchItems` directly would mean reaching into Material's component tree (breaks on any refactor; not offered); a one-row stop-off page costs a tap (Material never opens a single row by itself). **The one route that works without a PR:** a row in LMS's artist info menu (Material's More on a library artist; Qobuz's "On Qobuz", TIDAL's "On TIDAL" live there): that response keeps each row's `type` (read live on Paul Weller), and Material's `artist-link` typing runs on every SlimBrowse row, so a Discography row of that type with the artist's photo opens our page WITH the header. One tap more than the menu entry (More, then Discography). Offered to Simon. |
 | The initials lift (resolver plan C1) should also run when NO act is literally named the abbreviation, the best-scoring alias act whose initials spell it winning (the plan's BTO row) | **WRONG** — THE INITIALS LIFT NEEDS AN ACT NAMED THE ABBREVIATION (measured 2026-10-02 on the PUBLIC API, scratchpad `c1replay.pl` / `c1score.py`, the real `_artistMbidByName` beside the rule, 356 names, 1,108 requests) | BTO already resolves Bachman–Turner Overdrive today (the alias pass), so it needs no lift. Lifting with no name-equal act breaks a working answer: OMD today opens Orchestral Manoeuvres in the Dark (its initials are "omitd", so it never qualifies) and the lift would take Of Mexican Descent (aka OMD, 79); CFB and KOW would go to obscure acts. With the stash's condition (at least one act NAMED the query, and the lifted act scoring above every one of them) those three drop out and nothing else changes: ELO, PIL, NIN, EBTG lift; ABC, TLC, HAIM, KLF, Bob, REM, GnR, SFA, OMD, BTO unchanged; 0 of the 73 short-named library album artists change (57 tagged); typing the initials of a library artist opens the owned act 13 -> 24 times of 269 (ADF, BBR, CCR, EBTG, ELO, KLO, MBV, MMJ, MSP, PCO, UMO), none lost. |
+| A MusicBrainz-only act listed in search (0.56.37, Jandek as the Top Result) opens an empty "No results" page when hide_unmatched is on, and records the 7-day empty verdict | **WRONG** — AN ACT ON NO SERVICE KEEPS ITS PAGE UNDER HIDE_UNMATCHED (measured live 2026-10-02 on 0.56.37, hide_unmatched = 1 on the rig) | A service that cannot identify the artist caches its pool as UNRESOLVED (`Sources::_cacheCands` `unresolved`), and `peekPool` does not count an unresolved pool as streaming checked, so `_buildList`'s visibility rule (`!$hideUnmatched || sections || !resolved`) shows every release and `$poolResolved` stays 0, so `markArtistEmpty` never runs. Jandek's page by mbid: bio + Albums (60), 78 rows, 0.64 s cold. The hide only bites an act a service DOES identify with nothing matching. |
 
 | Fetching the archive covers in the background at a gentle pace (2 in flight while browsing, 8 idle, after a 3 s grace) keeps the server responsive (0.56.27's design) | **WRONG** — AN ARCHIVE FETCH FREEZES THE SERVER WHATEVER THE PACE (measured on the rig 2026-10-02, scratchpad `thumbprobe.py`: a page then its thumbnails at the phone's 600 px, 6 at a time, a `version` ping every 50 ms) | **Ocean Colour Scene, first visit:** page 3.1 s, 32 thumbnails in 2.3 s, then the server FROZE 11.4, 4.4, 12.8 and 4.4 s within the next minute (35 s of 60). **Paul Weller, first visit:** page 5.5 s, its 60 thumbnails 13.4 s because the background had started while they loaded (Qobuz covers 1.4 s each against 0.3-0.6 s with the server free), then 32 s frozen in 45 s, worst 3.4 s. **Second visit:** page 0.08 s, 61 thumbnails in 1.65 s, no freeze. The loop is held until archive.org answers, so in-flight width does not spread it: up to ~4 s for a cover it has, 11-13 s for one it fails. Fixed in 0.56.30 (A2 `ARCHIVE COVERS ARE FETCHED AT 05:00`). LMS's image proxy DOES share one download per url (`ImageProxy.pm` `%queue`), so the four sizes were not the cost. |
 
@@ -2004,6 +2024,34 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   counterpart there.
 
 ## Development Log
+
+### 0.56.37 (2026-10-02) — Part D step 1: the one MusicBrainz act no row opens is listed (Jandek), as the Top Result — BUILT (sha 9bccc700), INSTALLED 2026-10-02, CHECKED LIVE (timing gate passed), COMMITTED + dev PUSHED 2026-10-02
+- **Source (Simon):** *"With the current way it works do we loose out on artists that are not in streaming?"* ->
+  measured live (Jandek, below) -> *"Lets commit and push what we have now before further changes. I am worried this
+  might add lag back in. At moment I am very surprised at how quick it is without a mirror."* (0eab541) -> *"okay
+  lets go for it"*; where it goes: **Top Result**.
+- **Change:** A2 `THE ONE MUSICBRAINZ ACT NO ROW OPENS`; `THE SEARCH PAGE IS TOP RESULT, THEN ARTISTS` item 6.
+  `Browse::_loneMbAct` (new), the `@$cands < 2` branch of `_withMbCandidates`, `_searchSections`' `$lead`.
+  CACHE_VERSION 0.56.37.
+- **Baseline on 0.56.36** (scratchpad `dprobe.py base0.56.36`, `dprobe_base.out`; each name twice): Jandek "No artists
+  found"; Hawkwind, Garth Brooks: a Qobuz row of the exact name; first replies 0.9-1.6 s (Qobuz), repeats 0.01-0.04
+  s; no MusicBrainz or community request before any reply bar one (Madness, a cold same-name lookup).
+- **Tests:** `t_searchflow.pl` 65 -> 86 (§10). 18 mutants caught (scratchpad `mutLone.py`; one, two acts read as one,
+  needed the helper's own contract pinned). 63 suites / 3,129 green; syntax_check clean; zip == tree.
+- **Live check after install** (and `dprobe.py after0.56.37`, run once cold, then again after 10 minutes for the
+  comparison with the baseline): 1. "Jandek": Jandek is the Top Result (Person · US), JanDeKid under Artists if Qobuz
+  still offers it; tapping opens his page. 2. Hawkwind, Garth Brooks, Madness, The Beatles, Radiohead, The Bees, Luna,
+  Bush, ELO: the same rows as the baseline. 3. No reply slower than the baseline's; no request added before a reply.
+- **CHECKED LIVE 2026-10-02** (scratchpad `dprobe_after0.56.37_cold.json`, `dprobe_after0.56.37_warm.json`): Jandek is
+  the Top Result (Person · US), JanDeKid under Artists on the first search and dropped after; his page by mbid opens
+  in 0.64 s cold with the bio and Albums (60), hide_unmatched ON (A3 `AN ACT ON NO SERVICE KEEPS ITS PAGE UNDER
+  HIDE_UNMATCHED`). The other nine: no MusicBrainz-act listing changed; the row differences are the background row
+  check and counts dropping junk rows and 0-release acts, as on 0.56.36. **Timing gate PASSED**, the second pass run
+  after the 10-minute search cache expired: first replies Hawkwind 1.00 -> 0.71 s, Madness 1.63 -> 0.83, The Beatles
+  1.10 -> 1.06, Radiohead 0.93 -> 0.87, The Bees 1.02 -> 0.97, Luna 1.41 -> 1.06, Bush 1.29 -> 1.09; Jandek, ELO, Garth
+  Brooks fast in both (0.02-0.12 s); no request before any reply. The cold pass right after the install (caches
+  emptied by the build) had ELO 2.4 s and Garth Brooks 3.0 s, its one request before the reply being the same-name
+  list emptied by the build, which every build does (not this change).
 
 ### 0.56.36 (2026-10-02) — C1, the initials lift: ELO, PIL, NIN, EBTG open the band — BUILT (sha 4305188f), INSTALLED 2026-10-02, CHECKED LIVE (Simon: *"works"*), COMMITTED + dev PUSHED 2026-10-02 with 0.56.31-0.56.35
 - **Source (Simon):** *"okay lets move on to C1"*, then *"we should be looking at alieses for this if no alias for

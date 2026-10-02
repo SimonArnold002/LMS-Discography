@@ -3,7 +3,7 @@
 
 **Status 2026-10-01: Part B BUILT; Part A in part; Part C APPROVED (Simon: "yes lets move forward"), C3 + C5 BUILT
 as 0.56.17 and CHECKED LIVE; its one open case (a non-Latin name opened cold) fixed in 0.56.18 (checked live; its 王菲 regression fixed in 0.56.19, checked live; the "Faye Wong" page's gap fixed in 0.56.20, checked live), C4 DECLINED in the ledger, C2 BUILT as 0.56.21 (measured
-beyond Simon's library first, below) and CHECKED LIVE, C1 BUILT as 0.56.36 and CHECKED LIVE; Part D next, not started.** Everything through
+beyond Simon's library first, below) and CHECKED LIVE, C1 BUILT as 0.56.36 and CHECKED LIVE; Part D step 1 (the one MusicBrainz act no row opens) BUILT as 0.56.37 and CHECKED LIVE (timing gate passed), the rest of Part D to be rewritten for approval.** Everything through
 0.56.25 is committed and pushed to `dev` (62e0813, 2026-10-02) and INSTALLED and CHECKED LIVE on the rig (2026-10-02: Muzz's biography and the home page); 0.56.26 (outside the plan: a first visit waits for Qobuz/TIDAL; no archive cover fetched while browsing) and 0.56.27 (outside the plan: the missing archive covers fetched after the visit, with LBF's resizing) 0.56.28 (tile strips on Material 6.4.11 and later), 0.56.29 (artist rows round, with Material's artist header; CHECKED LIVE) and 0.56.30 (archive covers at 05:00 only, never for a release with no cover) are committed and pushed to `dev` together (2026-10-02); 0.56.30 is INSTALLED on the rig (2026-10-02; no freeze after a first visit, measured; the 05:00 covers still to see). 0.56.31-0.56.36 are committed and pushed to `dev` together (2026-10-02): 0.56.31 (outside the plan: the home page's search gets a big title and a caption, Works best with moves to the top of the settings page, new About text) and 0.56.32 (outside the plan: the artist page's Options collapsed behind More options) were INSTALLED; 0.56.33 (the artist page's order) and 0.56.34 (our Material menu entry asks for an artist page; needs the Material change, PR #1278) were built only; 0.56.35 (Search back in Options, always visible) is INSTALLED with Material test build 6.4.10.10 and works; 0.56.36 (C1, the initials lift) is INSTALLED and CHECKED LIVE.
 - **Part C** (§5) was rewritten on 2026-10-01 from today's code and today's measurements: what is already done, what
   is left (C1 initials, C2 an owned artist with no MusicBrainz tag, C3 the same releases whichever name opened the
@@ -441,6 +441,18 @@ so the list shows only Qobuz's "JanDeKid". The background row check then drops t
 "No artists found". This is the same gap as Hawkwind on 0.55.1 (ledger, "Field (Simon): searching "Hawkwind" and
 "ELO" both failed"). A misspelt or partial name reaches only what the services' own search finds, because
 MusicBrainz acts are listed by exact name only.
+
+**Step 1, BUILT as 0.56.37 (2026-10-02; Simon "okay lets go for it", and "Top Result" for where):** the one
+MusicBrainz act of the typed name is listed when no result row opens it, as the Top Result unless something is owned
+or the typed name opens another act (ledger A2 `THE ONE MUSICBRAINZ ACT NO ROW OPENS`). No request before the reply.
+
+**The timing rule for every later step (Simon 2026-10-02: "I am worried this might add lag back in. At moment I am
+very surprised at how quick it is without a mirror"):** a step is measured with scratchpad `dprobe.py` before and
+after, on the public API, over the same names (Jandek, Hawkwind, ELO, Madness, The Beatles, Garth Brooks, Radiohead,
+The Bees, Luna, Bush). A reply slower than the baseline, or a request added before the reply, fails the step. The
+baseline on 0.56.36: first replies 0.9-1.6 s (the Qobuz search), repeats 0.01-0.04 s. Work that needs more requests
+(a misspelt or partial name matched on MusicBrainz) is asked after the reply, for the next search, as the row check
+and the counts are, or it is not built.
 
 ## 7. Order of work
 

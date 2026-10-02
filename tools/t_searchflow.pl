@@ -599,5 +599,145 @@ section('9', sub {
     ($CANDS, %RESOLVED) = (undef);
 });
 
+section('10', sub {
+    # -----------------------------------------------------------------------
+    # 10. THE ONE MUSICBRAINZ ACT NO ROW OPENS (0.56.37, resolver plan Part D
+    #     step 1). Measured live 2026-10-02: "Jandek" (on MusicBrainz, on no
+    #     service, not owned) showed Qobuz's "JanDeKid", then "No artists
+    #     found". Simon: such an act is the Top Result, unless something is
+    #     owned; a row that opens it already keeps it out, as before.
+    # -----------------------------------------------------------------------
+    no warnings 'redefine'; no strict 'refs';
+    local *{"${B}::_searchResultItems"} = $realItems;
+    local *{"${B}::_mbCandidateRow"}    = $realMbRow;
+    local *{"${B}::_sectionHeader"}     = $realHdr;
+    local *{"${B}::_useStrips"}         = sub { $STRIPS };
+    my $WJ = "\x{2060}";
+    my $label = sub {
+        my ($r) = @_;
+        return 'H:' . ($r->{name} =~ s/^PLUGIN_DISCOGRAPHY_//r) if ($r->{type} // '') =~ /^header|^text$/
+            && ($r->{name} // '') =~ /^PLUGIN_DISCOGRAPHY_(?:TOP_RESULT|ARTISTS_HDR|SAME_NAME)$/;
+        my $pt = ($r->{passthrough} || [])->[0] || {};
+        return 'MB:' . ($pt->{c_mbid} =~ s/^0*(\d+)-.*/$1/r) if $pt->{c_mbid};
+        return ($r->{name} // '') =~ s/$WJ//gr;
+    };
+    my $run = sub {
+        my ($q, $merged, $part) = @_;
+        my $out;
+        @WARMED = (); @WARM_BG = (); @PEEKED = ();
+        $realWith->('client', sub { $out = $_[0] }, '', $q, $merged, $part);
+        return join('|', map { $label->($_) } @{ ($out || {})->{items} || [] });
+    };
+    my $one = sub { [ { mbid => id($_[0]), name => $_[1], type => 'Person', country => 'US' } ] };
+    ($STRIPS, $LAYOUT) = (0, undef);
+
+    # Jandek: one act, the typed name opens it, the only row is a near miss.
+    $CANDS = $one->(1, 'Jandek');
+    %RESOLVED = ('jandek' => id(1));
+    %COUNT = ();
+    ok(scalar($run->('Jandek', [ { name => 'JanDeKid', sources => ['Qobuz'], _seq => 0 } ])
+              eq 'H:TOP_RESULT|MB:1|H:ARTISTS_HDR|JanDeKid'),
+       '10: the one act no row opens is the Top Result; the near miss goes under Artists');
+    ok(scalar("@WARMED" eq id(1) && "@WARM_BG" eq '1'),
+       '10: ... its count, not known yet, is asked as background work');
+    ok(scalar($run->('Jandek', []) eq 'H:TOP_RESULT|MB:1'),
+       '10: nothing else found -> the act alone as the Top Result, no "No artists found" line');
+    $COUNT{ id(1) } = 120;
+    ok(scalar($run->('Jandek', []) eq 'H:TOP_RESULT|MB:1' && !@WARMED),
+       '10: a known count is not asked again');
+    $COUNT{ id(1) } = 0;
+    ok(scalar($run->('Jandek', []) eq 'PLUGIN_DISCOGRAPHY_SEARCH_NONE'),
+       '10: an act MusicBrainz counts no releases for is not listed (as for the same-name acts)');
+    delete $COUNT{ id(1) };
+
+    # The tap and the heading open the act by its id.
+    ($STRIPS, $LAYOUT) = (1, undef);
+    my $out;
+    $realWith->('client', sub { $out = $_[0] }, '', 'Jandek', []);
+    my @items = @{ ($out || {})->{items} || [] };
+    my ($hdr) = grep { ($_->{name} // '') eq 'PLUGIN_DISCOGRAPHY_TOP_RESULT' } @items;
+    my $hp = ((($hdr || {})->{itemActions} || {})->{items} || {})->{fixedParams} || {};
+    ok(scalar(($hp->{mbid} // '') eq id(1) && ($hp->{artist} // '') eq 'Jandek'),
+       "10: the Top Result heading's More opens the act by its id");
+    my ($row) = grep { ((($_->{passthrough} || [])->[0] || {})->{c_mbid} // '') eq id(1) } @items;
+    ok(scalar($row && ((($row->{itemActions} || {})->{items} || {})->{fixedParams} || {})->{mbid} eq id(1)),
+       '10: ... and so does the tile');
+    {
+        # A photo needs MAI or a service; with neither every row has the icon.
+        local *{'Plugins::Discography::Sources::orderedAdapters'} = sub { ({ name => 'Qobuz' }) };
+        $realWith->('client', sub { $out = $_[0] }, '', 'Jandek', []);
+        ($row) = grep { ((($_->{passthrough} || [])->[0] || {})->{c_mbid} // '') eq id(1) }
+                 @{ ($out || {})->{items} || [] };
+        ok(scalar($row && ($row->{image} // '') =~ m{^imageproxy/dsc/artist/Jandek/}),
+           "10: ... which gets the act's photo (a name MusicBrainz has once), not the person icon");
+    }
+    ($STRIPS, $LAYOUT) = (0, undef);
+    ok(scalar($run->('Jandek', [ { name => 'JanDeKid', sources => ['Qobuz'], _seq => 0 } ], 'sect:ARTISTS')
+              eq 'JanDeKid'),
+       "10: the Artists heading's More answers the rows under Artists, not the Top Result");
+
+    # A row that opens the act keeps it out (no duplicate), as for 2+ acts.
+    $CANDS = $one->(2, 'Hawkwind');
+    %RESOLVED = ('hawkwind' => id(2));
+    ok(scalar($run->('Hawkwind', [ { name => 'Hawkwind', sources => ['Qobuz'], _seq => 0 } ])
+              eq 'H:TOP_RESULT|Hawkwind'),
+       '10: a service row the name resolver takes to the act -> not listed again');
+    %RESOLVED = ();
+    ok(scalar($run->('Hawkwind', [ { name => 'Hawkwind', sources => ['Qobuz'], _seq => 0 } ])
+              eq 'H:TOP_RESULT|Hawkwind'),
+       '10: ... an unresolved service row named as typed opens it too (the tap resolves that name)');
+    ok(scalar($run->('Hawkwind', [ { name => 'Hawkwind Zoo', sources => ['Qobuz'], _seq => 0 } ])
+              eq 'H:TOP_RESULT|MB:2|H:ARTISTS_HDR|Hawkwind Zoo'),
+       '10: ... an unresolved row of another name does not');
+    $CANDS = $one->(3, 'British Sea Power');
+    %RESOLVED = ('sea power' => id(3));
+    ok(scalar($run->('British Sea Power', [ { name => 'Sea Power', sources => ['Qobuz'], _seq => 0 } ])
+              eq 'H:TOP_RESULT|Sea Power'),
+       '10: a row of another name that the resolver takes to the act opens it');
+    $CANDS = $one->(4, 'Jandek');
+    ok(scalar($run->('Jandek', [ { name => 'Jandek', artist_id => 7, sources => ['Local'], _ident_mbid => id(4), _seq => 0 } ])
+              eq 'H:TOP_RESULT|Jandek'),
+       '10: the owned act itself (by tag) -> not listed');
+    ok(scalar($run->('Jandek', [ { name => 'Jandek', artist_id => 7, sources => ['Local'], _seq => 0 } ])
+              eq 'H:TOP_RESULT|Jandek'),
+       '10: an untagged owned row of the typed name opens the one act of it -> not listed');
+    %LIBMBID = (7 => id(5));
+    ok(scalar($run->('Jandek', [ { name => 'Jandek', artist_id => 7, sources => ['Local'], _seq => 0 } ])
+              eq 'H:TOP_RESULT|Jandek|H:ARTISTS_HDR|MB:4'),
+       "10: ... but one whose albums named ANOTHER act (C2) leaves it out of reach -> listed, under Artists");
+    %LIBMBID = ();
+
+    # Owned first: the act goes under Artists, the owned match stays on top.
+    $CANDS = $one->(6, 'Bush');
+    %RESOLVED = ('bush' => id(6));
+    ok(scalar($run->('Bush', [ { name => 'Kate Bush', artist_id => 9, sources => ['Local', 'Qobuz'], _seq => 0 },
+                               { name => 'Bushwick Bill', sources => ['Qobuz'], _seq => 1 } ])
+              eq 'H:TOP_RESULT|Kate Bush|H:ARTISTS_HDR|MB:6|Bushwick Bill'),
+       '10: something owned -> it stays the Top Result, the act leads Artists');
+
+    # The typed name opens ANOTHER act (C1: ELO is the band): not the Top Result.
+    $CANDS = $one->(7, 'ELO');
+    %RESOLVED = ('elo' => id(8), 'electric light orchestra' => id(8));
+    ok(scalar($run->('ELO', [ { name => 'Electric Light Orchestra', sources => ['Qobuz'], _seq => 0 } ])
+              eq 'H:TOP_RESULT|Electric Light Orchestra|H:ARTISTS_HDR|MB:7'),
+       '10: the typed name opens another act (the initials lift) -> the act goes under Artists');
+
+    # The helper's own contract: ONE act, never the first of several.
+    ok(scalar(!defined $B->can('_loneMbAct')->('Madness', [],
+              [ map { { mbid => id($_), name => 'Madness' } } 81 .. 82 ])),
+       '10: _loneMbAct answers nothing for two acts');
+
+    # CONTROLS: no act, or several (the same-name rules, unchanged).
+    $CANDS = [];
+    ok(scalar($run->('Jandek', [ { name => 'JanDeKid', sources => ['Qobuz'], _seq => 0 } ])
+              eq 'H:TOP_RESULT|JanDeKid' && !@PEEKED && !@WARMED),
+       '10: control: no MusicBrainz act -> the page as before, nothing looked up or asked');
+    $CANDS = [ map { { mbid => id($_), name => 'Madness', disambiguation => "act $_" } } 81 .. 82 ];
+    %COUNT = map { (id($_) => 5) } 81 .. 82;
+    ok(scalar($run->('Madness', []) eq 'PLUGIN_DISCOGRAPHY_SEARCH_NONE|H:ARTISTS_HDR|MB:81|MB:82'),
+       '10: control: two acts and nothing found -> "No artists found" then the acts, as before');
+    ($CANDS, %RESOLVED, %COUNT) = (undef);
+});
+
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

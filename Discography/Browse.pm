@@ -37,7 +37,7 @@ my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.36';
+use constant CACHE_VERSION => '0.56.37';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -3926,10 +3926,12 @@ sub _artistSearchView {
 # 0.56.10 they lead the Artists section rather than a section of their own
 # ("Other artists with this name"; Simon, 2026-10-01), see _searchSections.
 #
-# Listed only when MB has MORE THAN ONE artist by the name: a single candidate
-# is the act the streaming rows already lead to, and repeating it would just be
-# a duplicate row. The MB lookup is cached (14d), so this costs one request per
-# name and nothing on a repeat search.
+# Listed when MB has MORE THAN ONE artist by the name. A single candidate is
+# listed only when no result row opens it (0.56.37, _loneMbAct): it is usually
+# the act the rows already lead to, and repeating it would be a duplicate row,
+# but an act on no service and not owned (Jandek) had no way in at all. The MB
+# lookup is cached (14d), so this costs one request per name and nothing on a
+# repeat search; it is the reply the typed query's own lookup fetched.
 # ---------------------------------------------------------------------------
 sub _withMbCandidates {
     my ($client, $callback, $features, $q, $merged, $part) = @_;
@@ -4000,11 +4002,11 @@ sub _withMbCandidates {
     # The same-name acts and the differently spelled ones, both from
     # MusicBrainz; every way out lays the page out from these and the result
     # rows, built only then so they carry the descriptions stamped below.
-    my (@same, @distinct);
+    my (@same, @distinct, $lead);
     my $layout = sub {
         my @hits = @{ _searchResultItems($client, $merged, $features) };
         $reply->(_searchSections($client, $features, $q, $part,
-                                 scalar(@{ $merged || [] }), \@hits, \@same, \@distinct));
+                                 scalar(@{ $merged || [] }), \@hits, \@same, \@distinct, $lead));
     };
 
     Plugins::Discography::API->getArtistCandidates($q, sub {
@@ -4016,6 +4018,27 @@ sub _withMbCandidates {
         _stampDisambiguation($merged, $cands);
 
         if (@$cands < 2) {
+            # THE ONE ACT OF THIS NAME, WHEN NO ROW OPENS IT (0.56.37, resolver
+            # plan Part D step 1; see _loneMbAct). It leads as the Top Result
+            # unless something is owned (Simon, 2026-10-02: "Top Result"), and
+            # unless the typed name opens another act (C1's ELO): then it is an
+            # artist like the same-name ones. Its count, when not known yet, is
+            # asked after the reply as background work, as theirs is.
+            if (my $lone = _loneMbAct($q, $merged, $cands)) {
+                unless (defined Plugins::Discography::API->peekReleaseGroupCount($lone->{mbid})) {
+                    local $Plugins::Discography::API::NET_BG = 1;
+                    Plugins::Discography::API->warmCandidateCounts([ $lone ]);
+                }
+                my $row   = _mbCandidateRow($client, $lone, $features, 1);
+                my $typed = Plugins::Discography::API->peekArtistMbid($q);
+                my $owned = grep { $_->{artist_id} || grep { $_ eq 'Local' } @{ $_->{sources} || [] } }
+                            grep { ref $_ eq 'HASH' } @{ $merged || [] };
+                if (!$owned && (!defined $typed || lc $typed eq lc $lone->{mbid})) { $lead = $row }
+                else                                                              { @same = ($row) }
+                _dbg("artist search '$q': the one MB artist ($lone->{mbid}) is not a result row - listed"
+                    . ($lead ? ' as the top result' : ' under Artists'));
+                return $layout->();
+            }
             _dbg("artist search '$q': " . scalar(@$cands)
                 . ' MB same-name artist(s) — none listed');
             return $layout->();
@@ -4125,6 +4148,44 @@ sub _withMbCandidates {
     }, { query => $q, known => 1 });   # filterRowsWithContent
 }
 
+# THE ONE MUSICBRAINZ ACT OF THE TYPED NAME, WHEN NO RESULT ROW OPENS IT
+# (0.56.37, resolver plan Part D step 1). Field, measured live 2026-10-02:
+# "Jandek" is on MusicBrainz with a long discography, on no service and not
+# owned; the same-name acts were listed only for 2+ acts, so the search showed
+# Qobuz's "JanDeKid", then (the row check having dropped it) "No artists found".
+# The same gap as Hawkwind on 0.55.1 (CLAUDE.md, resolver plan Part D).
+#
+# Returns the candidate when $cands holds exactly ONE act and NO row opens it,
+# else undef. A row opens it when it is that act (an owned identity, by tag or
+# by its albums), when it is an owned row of this very name with no identity
+# (its page resolves the name, and MusicBrainz has one act of it), or when it is
+# an unowned row the name resolver's cached answer takes there; an unowned row
+# with no cached answer opens it only when it is named as typed (the tap resolves
+# that name). A count MusicBrainz has answered 0 for is never listed, as for the
+# same-name acts. Cache reads only: no request.
+sub _loneMbAct {
+    my ($q, $rows, $cands) = @_;
+    return undef unless ref $cands eq 'ARRAY' && @$cands == 1 && ref $cands->[0] eq 'HASH';
+    my $c = $cands->[0];
+    my $m = lc($c->{mbid} // '');
+    return undef unless length $m;
+    my $n = Plugins::Discography::API->peekReleaseGroupCount($m);
+    return undef if defined $n && !$n;
+    my $qn = Plugins::Discography::Sources::_norm($q);
+    for my $r (@{ $rows || [] }) {
+        next unless ref $r eq 'HASH';
+        return undef if lc($r->{_ident_mbid} // '') eq $m;
+        my $named = Plugins::Discography::Sources::_norm($r->{name} // '') eq $qn;
+        if ($r->{artist_id} || grep { $_ eq 'Local' } @{ $r->{sources} || [] }) {
+            return undef if $named && !$r->{_ident_mbid};
+            next;
+        }
+        my $opens = Plugins::Discography::API->peekArtistMbid($r->{name});
+        return undef if defined $opens ? lc $opens eq $m : $named;
+    }
+    return $c;
+}
+
 # THE SEARCH PAGE'S TWO SECTIONS (Simon, 2026-10-01). "Top Result" holds the
 # best-ranked row: an owned act when there is one (rankArtistHits: Local trumps),
 # its services merged onto that one row. "Artists" holds everything else in this
@@ -4144,11 +4205,18 @@ sub _withMbCandidates {
 #
 # Nothing found on the services or in the library ($found 0): `$hits` is the "No
 # artists found" line, kept as it was, with any MusicBrainz acts under Artists.
-# The row count and order do not depend on the setting, only the heading types,
-# so a positional walk sees the same rows either way.
+# EXCEPT the one act of the typed name that no row opens ($lead, 0.56.37; Simon,
+# 2026-10-02): it is the Top Result and every row found goes under Artists, the
+# line too is gone. The row count and order do not depend on the setting, only
+# the heading types, so a positional walk sees the same rows either way.
 sub _searchSections {
-    my ($client, $features, $q, $part, $found, $hits, $same, $distinct) = @_;
-    my ($top, @rest) = @{ $hits || [] };
+    my ($client, $features, $q, $part, $found, $hits, $same, $distinct, $lead) = @_;
+    # A MusicBrainz act no result row opens, leading (_withMbCandidates): the
+    # Top Result, and every row found goes under Artists. Then the "No artists
+    # found" line is never shown, since an artist was found.
+    my @hits = @{ $hits || [] };
+    if ($lead) { @hits = ($lead, ($found ? @hits : ())); $found = 1 }
+    my ($top, @rest) = @hits;
     my @artists = (@{ $same || [] }, ($found ? @rest : ()), @{ $distinct || [] });
     return \@artists if ($part // '') eq 'sect:ARTISTS';
 
