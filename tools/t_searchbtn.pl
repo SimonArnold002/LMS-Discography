@@ -125,23 +125,56 @@ ok(scalar((($srch[0] // {})->{line2} // '') eq "Local \x{00B7} Qobuz"), '2: line
 #    2026-10-02: "The search needs to be below the banner but above about
 #    discography", "needs a header too"). Material focuses an inline search box
 #    only as row 0 (browse-page.js `:focus="index==0 && !IS_MOBILE"`), so with
-#    its header above it the box is never focused on arrival: by his layout.
-my @order = ('<div>covers</div>', 'PLUGIN_DISCOGRAPHY_SEARCH_HDR', 'search', 'PLUGIN_DISCOGRAPHY_ABOUT_HDR');
-sub _shape { map { ($_->{type} // '') eq 'search' ? 'search' : ($_->{name} // '') } @_ }
+#    its title above it the box is never focused on arrival: by his layout.
+#    0.56.31 (Simon: "Search still feels to cramped in ... it needs space and to
+#    be more prominent"; he chose the big title): for a client that draws
+#    headers, a large title replaces the small header and a small grey line
+#    under the box names what a search covers; "Works best with" left the page
+#    for the settings page. A client without headers keeps 0.56.25's rows.
+sub _kind {
+    my ($r) = @_;
+    my $n = $r->{name} // '';
+    return 'search'  if ($r->{type} // '') eq 'search';
+    return 'title'   if $n =~ /^<div style='font-size:1\.5em;[^']*'>PLUGIN_DISCOGRAPHY_SEARCH_HDR<\/div>$/;
+    return 'caption' if $n =~ /^<div style='font-size:\.85em;opacity:\.7;[^']*'>MusicBrainz /;
+    return $n;
+}
+sub _shape { map { _kind($_) } @_ }
+my $L2 = "Local \x{00B7} Qobuz";
 {
     no warnings 'redefine'; no strict 'refs';
     local *{"${B}::_coverCollageRow"} = sub { { name => '<div>covers</div>', type => 'text' } };
     my @wb = @{ $B->can('_rootView')->(undef, 'hi')->{items} };
-    ok(scalar(join('|', (_shape(@wb))[0 .. 3]) eq join('|', @order)),
-       '5: banner, the "Find an artist" header, the search box, then the About section');
-    ok(scalar(($wb[1]{type} // '') =~ /^header/), '5: "Find an artist" is a real header for a header-capable client');
+    my @want = ('<div>covers</div>', 'title', 'search', 'caption', 'PLUGIN_DISCOGRAPHY_ABOUT_HDR');
+    ok(scalar(join('|', (_shape(@wb))[0 .. 4]) eq join('|', @want)),
+       '5: banner, the big "Find an artist" title, the search box, the grey caption, then the About section');
+    ok(scalar(@wb == 7), '5: seven rows: banner, title, box, caption, About header + its two paragraphs (no Works best with)');
+    ok(scalar(!grep { ($_->{name} // '') eq 'PLUGIN_DISCOGRAPHY_PLUGINS_HDR' || ($_->{name} // '') =~ /<div title='/ } @wb),
+       '5: no "Works best with" header or tile on the home page');
+    my ($title, $cap) = @wb[1, 3];
+    ok(scalar(($title->{type} // '') eq 'text' && !exists $title->{url} && !exists $title->{image}),
+       '5: the title is a dead text row (no url, no image), so Material draws its HTML');
+    ok(scalar(($title->{name} // '') =~ /font-size:1\.5em;font-weight:500;/),
+       '5: the title sets its own size and an explicit weight (Material draws text rows at 200)');
+    ok(scalar(($title->{name} // '') =~ /padding:20px /), '5: space above the title');
+    ok(scalar(($cap->{type} // '') eq 'text' && !exists $cap->{url} && !exists $cap->{image}),
+       '5: the caption is a dead text row');
+    ok(scalar(($cap->{name} // '') =~ /^<div style='[^']*'>MusicBrainz \x{00B7} \Q$L2\E<\/div>$/),
+       '5: the caption names MusicBrainz, then the sources in the order line2 gives them');
+    ok(scalar(($cap->{name} // '') =~ /padding:4px 0 24px/), '5: the caption leaves a gap before About');
     my @nh = @{ $B->can('_rootView')->(undef, '')->{items} };
-    ok(scalar(join('|', (_shape(@nh))[0 .. 3]) eq join('|', @order) && ($nh[1]{type} // '') eq 'text'),
-       '5: a client without headers gets the same order, the header as a text divider');
+    my @old = ('<div>covers</div>', 'PLUGIN_DISCOGRAPHY_SEARCH_HDR', 'search', 'PLUGIN_DISCOGRAPHY_ABOUT_HDR');
+    ok(scalar(join('|', (_shape(@nh))[0 .. 3]) eq join('|', @old) && ($nh[1]{type} // '') eq 'text'),
+       '5: a client without headers keeps the plain divider, the box, then About (no title, no caption)');
+    ok(scalar(!grep { _kind($_) =~ /^(?:title|caption)$/ } @nh), '5: ... and gets no HTML title or caption');
+    my ($iH)  = grep { _kind($wb[$_]) eq 'search' } 0 .. $#wb;
+    my ($iNH) = grep { _kind($nh[$_]) eq 'search' } 0 .. $#nh;
+    ok(scalar(defined $iH && defined $iNH && $iH == 2 && $iNH == 2),
+       '5: the box is the same row (third) for both clients, as before');
 }
 {
     my @rows = @{ $B->can('_rootView')->(undef, 'hi')->{items} };
-    ok(scalar(join('|', (_shape(@rows))[0 .. 2]) eq join('|', @order[1 .. 3])),
+    ok(scalar(join('|', (_shape(@rows))[0 .. 3]) eq join('|', 'title', 'search', 'caption', 'PLUGIN_DISCOGRAPHY_ABOUT_HDR')),
        '5: a library with no artwork: no banner, the rest in the same order');
 }
 {
@@ -149,9 +182,14 @@ sub _shape { map { ($_->{type} // '') eq 'search' ? 'search' : ($_->{name} // ''
     my $str = do { local $/; <$sf> };
     my ($a2) = $str =~ /^PLUGIN_DISCOGRAPHY_ABOUT_2\n\tEN\t([^\n]*)/m;
     ok(scalar(defined $a2 && $a2 =~ /^Search for any artist above,/), '5: the About text points UP at the search');
-    ok(scalar($str =~ /^PLUGIN_DISCOGRAPHY_SEARCH_HDR\n\tEN\tFind an artist$/m), '5: the header string is there');
+    ok(scalar($str =~ /^PLUGIN_DISCOGRAPHY_SEARCH_HDR\n\tEN\tFind an artist$/m), '5: the title string is there');
     ok(scalar($str =~ /^PLUGIN_DISCOGRAPHY_ABOUT_HDR\n\tEN\tDiscography$/m),
        '5: the About section is headed "Discography", not "About Discography" (0.56.25, Simon)');
+    my ($a1) = $str =~ /^PLUGIN_DISCOGRAPHY_ABOUT_1\n\tEN\t([^\n]*)/m;
+    ok(scalar(defined $a1 && index($a1, "Browse an artist's discography - albums, EPs, singles and compilations that are "
+        . "listed in MusicBrainz. Each release plays from your local library or, if available, your chosen streaming "
+        . "service. Each release displays with artwork, original release dates, reviews and biographies.") == 0),
+       "5: the About text opens with Simon's 0.56.31 wording");
 }
 
 print "\n$pass passed, $fail failed\n";

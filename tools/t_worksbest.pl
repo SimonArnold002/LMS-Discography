@@ -1,13 +1,14 @@
 #!/usr/bin/env perl
 #
-# REGRESSION TEST: the home page's "Works best with" section is ONE row holding a
-# strip of tiles (after 0.54.5).
+# REGRESSION TEST: "Works best with" is ONE strip of tiles (after 0.54.5), and
+# since 0.56.31 the SETTINGS page's first section, not the home page's last.
 #
-# Simon, 2026-09-24: five stacked status rows took too much of the screen. Now a
-# single dead text row whose HTML is a wrapping flex strip; each tile = the
-# plugin's badge + name + tick/cross, the role only as the tile's tooltip (his
-# pick), a not-installed plugin dimmed with a grey placeholder badge. Pinned
-# through the REAL _rootView.
+# Simon, 2026-09-24: five stacked status rows took too much of the screen. Now
+# one wrapping flex strip; each tile = the plugin's badge + name + tick/cross,
+# the role only as the tile's tooltip (his pick), a not-installed plugin dimmed
+# with a grey placeholder badge. Simon, 2026-10-02: "the works best with needs
+# to move to the settings page at the top". Pinned through the REAL
+# worksBestStrip, _rootView, Settings::beforeRender and settings.html.
 #
 # Standalone, no LMS install needed:  perl tools/t_worksbest.pl
 #
@@ -18,7 +19,7 @@ use FindBin;
 our %ENABLED;
 
 BEGIN {
-    for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
+    for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache Slim::Web::Settings
                   Slim::Utils::PluginManager Slim::Utils::Timers Slim::Utils::Strings
                   Slim::Control::Request Slim::Schema Slim::Web::HTTP
                   Slim::Networking::SimpleAsyncHTTP Slim::Utils::Misc
@@ -31,6 +32,7 @@ BEGIN {
     *{'Slim::Utils::Prefs::preferences'} = sub { bless {}, 'T::Null' };
     *{'Slim::Utils::Cache::new'}         = sub { bless {}, 'T::Null' };
     *{'Plugins::Discography::DB::store'} = sub { bless {}, 'T::Null' }; $INC{'Plugins/Discography/DB.pm'} = 1;
+    *{'Slim::Web::Settings::beforeRender'} = sub { };   # Settings.pm's base class (section 5)
     # Role strings with a quote in them, so the tooltip escaping is exercised.
     *{'Slim::Utils::Strings::cstring'}   = sub {
         my $t = $_[1];
@@ -79,25 +81,18 @@ sub ok {
     else           { $fail++; print "FAIL - $n\n" }
 }
 
-sub section {
-    my @items = @{ $B->can('_rootView')->(undef, 'hi')->{items} };
-    my ($h) = grep { ($items[$_]{name} // '') eq 'PLUGIN_DISCOGRAPHY_PLUGINS_HDR' } 0 .. $#items;
-    return (\@items, $h);
-}
+sub strip { $B->can('worksBestStrip')->(undef, @_) }
 # Split the strip's HTML into its tiles (each opens with a title attribute).
 sub tiles { my ($html) = @_; my @t = split /(?=<div title=')/, $html; shift @t; @t }
 
 %ENABLED = ('Plugins::MusicArtistInfo::Plugin' => 1, 'Plugins::MaterialSkin::Plugin' => 0);
-my ($items, $h) = section();
+my $html = strip() // '';
 
-# 1. One row, not five, and it is the page's last row.
-ok(scalar(defined $h), '1: the Works best with header is there');
-ok(scalar(defined $h && $h == $#$items - 1), '1: exactly ONE row follows the header (was five)');
-my $row = $items->[-1];
-ok(scalar(($row->{type} // '') eq 'text'), '1: that row is a dead text row');
-ok(scalar(!exists $row->{image} && !exists $row->{url}), '1: no image, no url (stays display-only)');
-my $html = $row->{name} // '';
-ok(scalar($html =~ /display:flex;flex-wrap:wrap/), '1: the tiles wrap (flex-wrap), one strip');
+# 1. One strip, its margin the caller's.
+ok(scalar($html =~ /^<div style='display:flex;flex-wrap:wrap;gap:12px 8px;margin:12px 8px 12px 16px'>/),
+   '1: one wrapping flex strip (default margin)');
+ok(scalar((strip('8px 0 4px') // '') =~ /^<div style='display:flex;flex-wrap:wrap;gap:12px 8px;margin:8px 0 4px'>/),
+   "1: the caller's margin is used");
 
 # 2. The tiles.
 my @t = tiles($html);
@@ -129,15 +124,38 @@ ok(scalar(($by{Tidal} // '') =~ m{^<div title='Streaming &#39;source&#39; \x{00B
 ok(scalar($html !~ /Streaming 'source'/), '3: no unescaped quote reaches the markup');
 ok(scalar(!grep { m{<div style='opacity:\.7'>} } @t), '3: no visible role line under the name');
 
-# 4. Material enabled flips its tile; nothing above the section moves.
+# 4. Material enabled flips its tile.
 %ENABLED = ('Plugins::MusicArtistInfo::Plugin' => 1, 'Plugins::MaterialSkin::Plugin' => 1);
-my ($items2, $h2) = section();
-my %by2 = map { my ($n) = /<div>([^<]*?) <span/; (($n // '') => $_) } tiles($items2->[-1]{name});
+my %by2 = map { my ($n) = /<div>([^<]*?) <span/; (($n // '') => $_) } tiles(strip());
 ok(scalar(($by2{'Material Skin'} // '') =~ m{&#10003;} && ($by2{'Material Skin'} // '') =~ m{src='/material/html/images/icon\.png'}),
    "4: Material enabled -> tick + the skin's own icon");
-ok(scalar($h2 == $h && join('|', map { $_->{name} // '' } @$items2[0 .. $h2])
-                   eq join('|', map { $_->{name} // '' } @$items[0 .. $h])),
-   '4: every row up to the header is unchanged');
+
+# 5. WHERE IT SHOWS (0.56.31): the settings page's first section, not the home page.
+{
+    my @home = @{ $B->can('_rootView')->(undef, 'hi')->{items} };
+    ok(scalar(!grep { ($_->{name} // '') eq 'PLUGIN_DISCOGRAPHY_PLUGINS_HDR' || ($_->{name} // '') =~ /<div title='/ } @home),
+       '5: the home page no longer carries it');
+    require "$FindBin::Bin/../Discography/Settings.pm";
+    my %p;
+    Plugins::Discography::Settings->beforeRender(\%p, undef);
+    ok(scalar(defined $p{dsc_works_best} && $p{dsc_works_best} eq strip('8px 0 4px')),
+       '5: beforeRender hands the settings page the same strip (settings margin)');
+    {
+        no warnings 'redefine'; no strict 'refs';
+        local *{"${B}::worksBestStrip"} = sub { die "probe failed\n" };
+        my %q;
+        my $ok = eval { Plugins::Discography::Settings->beforeRender(\%q, undef); 1 };
+        ok(scalar($ok && defined $q{dsc_works_best} && $q{dsc_works_best} eq '' && ref $q{dsc_types} eq 'ARRAY'),
+           '5: a failing strip leaves it empty and the rest of the page is still prepared');
+    }
+    my $tpl = do { local (@ARGV, $/) = ("$FindBin::Bin/../Discography/HTML/EN/plugins/Discography/settings.html"); <> };
+    my $iWorks = index($tpl, 'id="dsc_works_Header"');
+    my $iFirst = index($tpl, 'class="prefHead');
+    ok(scalar($iWorks > 0 && $iWorks == index($tpl, 'id=', $iFirst) && $iFirst < index($tpl, 'id="dsc_sources_Header"')),
+       '5: settings.html: "Works best with" is the first section, above Sources');
+    ok(scalar($tpl =~ /\[% IF dsc_works_best %\]\s*<div class="prefHead collapsableSection" id="dsc_works_Header">\[% "PLUGIN_DISCOGRAPHY_PLUGINS_HDR" \| string %\]<\/div>\s*<div id="dsc_works">\s*\[% dsc_works_best %\]\s*<\/div>\s*\[% END %\]/),
+       '5: settings.html: the section is the strip under its header, dropped when empty');
+}
 
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

@@ -110,8 +110,9 @@ because line numbers rot on the next edit.
 | Bio/review prose is LBF's parser, with FOUR deliberate divergences (cap, U+2028, duplicate names, 380 cut) and one row per block | A2 | `Bio and review prose is LBF's port` |
 | The Default / Classic web skins are NOT supported — a finding about how they render is void | A2 | `Default and Classic web skins are not supported` |
 | No badge on a Local-first tile, line2 still naming services, no badge on artist rows — all by design | A2 | `THE SERVICE BADGE NAMES THE SOURCE THAT PLAYS` |
-| Artist-page search is a button in Options that opens the home page (the extra tap is the design) | A2 | `SEARCH IS A BUTTON IN OPTIONS` |
-| "Works best with" tiles show no role line (tooltip only) | A2 | `IS ONE STRIP OF TILES` |
+| Artist-page search is a button IN OPTIONS that opens the home page (the extra tap is the design): "Search for another artist" with the search icon, always visible after the Albums switch, Options closed or open (0.56.35, Simon; 0.56.32-0.56.34 gave it its own section, reverted). The page reads Options, the bio, the releases | A2 | `SEARCH IS A BUTTON IN OPTIONS` |
+| The artist page's Options are collapsed: the Albums / Singles switch, Search (0.56.35) and the only-what-I-own row while that filter is ON stay out, sort / only-what-I-own / Refresh open in place under "More options", the bio Read more's way, kept for the same artist only (0.56.32, Simon) | A2 | `OPTIONS ARE COLLAPSED BEHIND MORE OPTIONS` |
+| "Works best with" tiles show no role line (tooltip only); since 0.56.31 the strip is the SETTINGS page's first section, not on the home page (Simon 2026-10-02) | A2 | `IS ONE STRIP OF TILES` |
 | Albums / Singles is a toggle row, not tabs; the Singles view hides bio/extras/links | A2 | `SINGLES IS A TRUE TAB` |
 | `extid` on our rows changing Material favourites | A3 | `Material's only other `extid` reader` |
 | Qobuz badge off-centre on tiles = our wrong icon | A3 | `badge off-centre on strip tiles` |
@@ -129,20 +130,23 @@ because line numbers rot on the next edit.
 | Anything that works only on a mirror, or skips work on the public API ("throttle-gated") — a DEFECT, not policy | top | `THE PUBLIC API IS WHAT WE WORK TO` |
 | Stage 1's six behaviour changes (empty verdict under an alias name, band lookup waiting, nothing cached on an unreadable read, no `rgcount` from the vetting, `reid:` index lag, an unindexed mirror's extra request) — all kept | A2 | `STAGE 1 CHANGED SIX BEHAVIOURS ON PURPOSE` |
 | The combined `artist:"X" OR alias:"X"` name query (analysis §A7 #4) as the resolver's name pass — DECLINED 2026-10-01 (resolver plan C4): it makes HAIM open Haïm; only the initials rule (C1) asks it, for short names | A2 | `A7 #4 IS DECLINED` |
+| A short name (2-5 letters) resolves to an act ALIASED that name whose own initials spell it, when it outscores every act NAMED it (one must exist): ELO = Electric Light Orchestra, not an act literally called ELO (0.56.36, resolver plan C1; Simon: aliases, "keep it simple"; alias alone and lifting with no act named it were measured and rejected). A page so reached is not a lesser same-name act | A2 | `THE INITIALS LIFT` |
 | A streaming copy credited under another of the artist's MusicBrainz names is judged as that name's own page would judge it; a copy credited under the page's own name exactly as before; library copies, the candidate index and the biography stay on the page's name (0.56.17, resolver plan C3) | A2 | `THE SAME RELEASES WHICHEVER NAME OPENED THE PAGE` |
 | A page whose name has no Latin letter (米津玄師, Кино) searches the services under MusicBrainz's PRIMARY ENGLISH alias first and its own name second; never the first Latin alias; a Latin page name searched as before (0.56.18); when the English name corroborates, the native one is asked too and the stronger entry wins, the other's albums kept beside it if it corroborates too (0.56.19, 王菲); the same for a Latin page name of such an artist ("Faye Wong", 0.56.20) | A2 | `A NON-LATIN NAME IS SEARCHED IN ENGLISH FIRST` |
 | A library artist with NO MusicBrainz tag opens the act its OWN albums name (up to 3 owned titles asked as `releasegroup:"T" AND artist:"Name"`, exact-title hits only, an act named as the library beats one whose name holds it, a title two same-named acts hold counts for neither, the first title agreeing with the name ends it); kept per library contributor (id + name), never under the name; a tag still wins, a miss keeps the name's answer (0.56.21, resolver plan C2; measured beyond Simon's library: 436 pretend libraries, 0 made wrong) | A2 | `AN UNTAGGED LIBRARY ARTIST IS NAMED BY ITS ALBUMS` |
 | Overruling a library tag that the owned albums' own release ids contradict (Rico: MusicBrainz's 2020 release of "That Man Is Forward" credits the album to the wrong Rico, so the files' MUSICBRAINZ_ALBUMARTISTID is the Dutch MC's while every MUSICBRAINZ_ARTISTID is Rico Rodriguez's) — DECLINED 2026-10-02 (Simon: *"if tags are wrong we should not try to work around them, garbage in garbage out. In this case MB is messed up"*). A tag is trusted, right or wrong; the fix is the tags or MusicBrainz | A2 | `A TAG IS TRUSTED, RIGHT OR WRONG` |
-| An act that is not the best-known one of its name gets its biography by its MusicBrainz id (the community API's answer for that mbid, accepted only when it names that mbid and a Wikidata page, read with MAI's Wikipedia reader), never by name; none when there is no such page; similar artists stay hidden (Last.fm, by name) (0.56.22, Muzz) | A2 | `A SHARED NAME'S BIOGRAPHY COMES BY ITS MBID` |
-| The home page reads: cover banner, "Find an artist" (header + search box), the About section headed "Discography" (0.56.25; was "About Discography"), Works best with; the box is therefore never focused on arrival (Material focuses only a first-row box, never on phones/tablets) — KEPT by Simon 2026-10-02 ("leave it"): do not propose moving the box back to row 0 or a Material focus change (0.56.24, Simon) | A2 | `THE SEARCH BOX SITS BETWEEN THE BANNER AND ABOUT` |
+| An act that is not the best-known one of its name gets its biography by its MusicBrainz id (the community API's answer for that mbid, accepted only when it names that mbid and a Wikidata page, read with MAI's Wikipedia reader), never by name; none when there is no such page; similar artists stay hidden (Last.fm, by name) (0.56.22, Muzz; CHECKED LIVE 2026-10-02) | A2 | `A SHARED NAME'S BIOGRAPHY COMES BY ITS MBID` |
+| The home page reads: cover banner, "Find an artist" as a LARGE TITLE (a text row; plain header for clients without headers), the search box, a small grey line naming what a search covers (MusicBrainz + the enabled sources), the About section headed "Discography" (0.56.25; was "About Discography"; its first paragraph Simon's 0.56.31 text). "Works best with" moved to the settings page (0.56.31). The box is never focused on arrival (Material focuses only a first-row box, never on phones/tablets) — KEPT by Simon 2026-10-02 ("leave it"): do not propose moving the box back to row 0 or a Material focus change (0.56.24, Simon; title + caption 0.56.31, his pick) | A2 | `THE SEARCH BOX SITS BETWEEN THE BANNER AND ABOUT` |
 | A first visit WAITS for a cold Qobuz/TIDAL pool whatever `hide_unmatched` says: at most 6 s with it off (`POOL_WAIT_SHOWN`), 20 s with it on (`POOL_WAIT_MAX`); reverses 0.44.8's "with the pref off, nothing waits" (0.56.26, Simon: tiles not playable, no badges, slow covers on a first visit) | A2 | `A FIRST VISIT WAITS FOR QOBUZ AND TIDAL` |
 | A tile with no source cover shows the Cover Art Archive cover ONLY when the server's image cache already holds it, else its release-type icon (and so does its release page) (0.56.26) | A2 | `NO ARCHIVE COVER IS FETCHED WHILE BROWSING` |
 | The missing archive covers are fetched AT 05:00 ONLY with LBF's resizing (`.jpg` url, every size from one 1200 px download, the four sizes in one turn): a page only records what it wants; at most 300 a night, newest first; a failure stays wanted, given up after 3 for 30 days; a group ListenBrainz flags as having no archive cover is never wanted; a helper process outside LMS DECLINED (0.56.30, Simon: *"okay do it"*, *"ignore the helper"*; was after the visit, 0.56.27) | A2 | `ARCHIVE COVERS ARE FETCHED AT 05:00` |
 | Background archive-cover fetching at a gentle pace (2 in flight while browsing) keeps the server responsive | A3 | `AN ARCHIVE FETCH FREEZES THE SERVER WHATEVER THE PACE` |
 | MAI or the community API as a quicker or better cover source for unmatched tiles | A3 | `MAI'S COVERS ARE FOUND BY NAME` |
-| Artist rows (search results, same-name, Also a member of, Similar artists) are `type => 'artist-link'` on Material >= 6.4.10.9 with a header client: round images + Material's artist header; pages opened from the artist page inherit the header (0.56.29, PR #1276) | A2 | `ARTIST ROWS ARE TYPED artist-link` |
+| Artist rows (search results, same-name, Also a member of, Similar artists) are `type => 'artist-link'` on Material >= 6.4.10.9 with a header client: round images + Material's artist header; pages opened from the artist page inherit the header, the home page included: judged fine by Simon (0.56.29, PR #1276; CHECKED LIVE 2026-10-02) | A2 | `ARTIST ROWS ARE TYPED artist-link` |
 | `type => 'artist'` on our rows (Sven's Qobuz) gives round images and Material's artist header | A3 | `TYPE ARTIST ADDS A PLAY ENTRY` |
 | Material's online-artist header only shows on wide screens | A3 | `ONLINE ARTISTS GET THE HEADER ON PHONES` |
+| Our page can give itself Material's artist header when opened from Material's own Discography action (library Artists view) | A3 | `A CUSTOM ACTION PAGE NEVER GETS THE HEADER` |
+| The C1 initials lift without any act literally named the abbreviation (plan's BTO row) | A3 | `THE INITIALS LIFT NEEDS AN ACT NAMED THE ABBREVIATION` |
 | An unsized proxy request for a tile's https cover redirects the device to the source, so a Discography archive cover never loads through (or stalls) the server | A3 | `LBF CLAIMS EVERY coverartarchive.org URL` |
 | Stage 2's five behaviour changes (a promo-only group hidden, the release map's index lag, a group with no releases listed shown, owned-album lookups after the render, so a render without the map (check failed or past the deadline) places them by title — the Esher Demos wait a visit, a small artist's spine refreshed by the read) — all deliberate | A2 | `STAGE 2 CHANGED FIVE BEHAVIOURS ON PURPOSE` |
 | Stage 3's five behaviour changes (a public search hides dead ends, merges alias rows, attaches by tag and searches the services under MB's name; a row lookup runs every pass; a count may be the community API's; one name lookup per new search term; a merge reads the act's full record first) — all kept | A2 | `STAGE 3 CHANGED FIVE BEHAVIOURS ON PURPOSE` |
@@ -431,10 +435,40 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   failure would open an empty page), the SAME exposure every list control has; that is covered by
   `The full `_discographyView` rebuild on every` (review 2026-09-24). A direct route that skips the rebuild
   (item:act:search -> _rootView in topLevel) was offered 2026-09-24; Simon's call pending.
+  **BACK IN OPTIONS since 0.56.35, always visible** (Simon 2026-10-02: *"I would like another layout chnage reverting
+  what we did. Lets put search back in options. It only needs icon though to move us to search page at moment we
+  have a header and what looks like a search box, it just needs icon to open search page"*; asked, he chose "always
+  visible" over behind More options): one row, "Search for another artist" (`PLUGIN_DISCOGRAPHY_SEARCH_ANOTHER`), the
+  search icon, after the Albums switch (and the filter row when on), before More options; no header of its own. The
+  page reads Options, the bio, the releases (the bio stays below Options, his 0.56.33 order). History: **its own
+  section in 0.56.32, at the TOP in 0.56.33-0.56.34** (Simon 2026-10-02: *"Search gets its own header again keep the
+  Albums swith visible all else hidden"*, then *"change Search in this page to say Search for Another Artist in the
+  header. Move biography down to be above albums so options are at top. Search is at top followed by options,
+  followed by bio, followed by releases"*): `_buildList` builds Search ("Search for another artist",
+  `PLUGIN_DISCOGRAPHY_SEARCH_ANOTHER_HDR`, the search icon, id `sect:FIND`), Options, the bio, then the releases; the
+  Singles & EPs tab has Search and Options, no bio. The header is sentence case, as every header here. Pinned in
+  `t_view.pl` §2 and §10.
 
-- **"WORKS BEST WITH" IS ONE STRIP OF TILES, THE ROLE ONLY A TOOLTIP** (`_rootView`, the `$status` tile
-  builder; Simon, 2026-09-24: the stacked rows took too much screen). No visible role line is the design,
-  not an omission; on a touch screen the role is simply not shown. Pinned in `tools/t_worksbest.pl`.
+- **OPTIONS ARE COLLAPSED BEHIND MORE OPTIONS** (0.56.32; `Browse::_buildList`'s `@optRows`, `_optionsToggleRow`,
+  `opt:more` / `opt:less`, `opts` in %lastCtx; Simon 2026-10-02: *"for our options on Discovery is it possible to
+  hide these like we do with text and open up if needed?"*, then *"keep the Albums swith visible all else hidden"*).
+  Closed: the Albums | Singles & EPs switch (the only way to Singles & EPs) and "More options". Open: the switch, sort,
+  only-what-I-own (when the user owns something), Refresh, "Fewer options". Rules:
+  1. **The only-what-I-own row stays out while its filter is ON**, closed or open (once, never twice): a filtered page
+     always says so and the way back out is one tap.
+  2. **Opened in place, the bio Read more's way:** a param-addressed tap sets or clears `opts`, the row's
+     `nextWindow => 'refresh'` re-fetches the page. Kept on a same-artist re-entry (topLevel's `$same` list, beside
+     `view`), so sort and the filter, which re-enter, keep it open; another artist starts closed.
+  3. **A stale tap** (a second window) on a hidden row misses `_findRow` and changes nothing, as a stale view toggle
+     does (`THE ARTIST PAGE'S ALBUMS | SINGLES SPLIT`).
+  Pinned in `t_view.pl` §10 (19 + the source check); 13 mutants all caught (scratchpad `mutOpts.py`).
+
+- **"WORKS BEST WITH" IS ONE STRIP OF TILES, THE ROLE ONLY A TOOLTIP** (`Browse::worksBestStrip`, the `$status`
+  tile builder; Simon, 2026-09-24: the stacked rows took too much screen). No visible role line is the design,
+  not an omission; on a touch screen the role is simply not shown. **On the SETTINGS page, first section, since
+  0.56.31** (Simon 2026-10-02: *"I feel the works best with needs to move to the settings page at the top"*): it
+  left the home page; `Settings::beforeRender` builds the same strip (`dsc_works_best`, reached at call time, a
+  failure drops the section and nothing else). Pinned in `tools/t_worksbest.pl`.
 
 - **THE ARTIST PAGE'S ALBUMS | SINGLES SPLIT IS ONE TOGGLE ROW, AND SINGLES IS A TRUE TAB** (`_viewToggleItem`,
   `act:view:<to>`, `$singlesTab`; Simon, 2026-09-24). Not real tabs: Material has no side-by-side layout for a
@@ -565,6 +599,31 @@ always with its reason, and those stay suppressed. The code a fix added is new a
      TTL clears it.
   6. **A mirror with an unbuilt search index costs one extra request per batch**: the search gives 0 hits, so
      every id falls back to the per-id lookup, with the same answers.
+- **THE INITIALS LIFT** (0.56.36, resolver plan C1; `API::_initialsLift`, `_liftFrom`, `_initials`,
+  `_initialsKey`, `_abbreviates`, the `$store` step of `_artistMbidByName`; Simon 2026-10-02: *"okay lets move on to
+  C1"*, then *"we should be looking at alieses for this if no alias for initials then we dont pass it, keep it
+  simple"*, then *"Okay"* to the three conditions below). For a SHORT name (2-5 letters once spaces and dots go),
+  after the usual passes settle, ONE combined query `artist:"X" OR alias:"X"` (limit 25) may replace the answer with
+  an act that meets ALL of:
+  1. **MusicBrainz lists X as its alias** (no alias, no lift).
+  2. **Its own name's initials spell X** (`_initials`: two or more words, not all single letters). Measured: an
+     alias alone moves Luna -> DJ Luna, Lamb -> Cainon Lamb, LUMP -> Lump200, Cast -> [theatre], Alfie -> THE ALFEE,
+     James -> Harry James, Bob -> B.o.B.
+  3. **An act NAMED X exists and it scores above every one of them** (strictly). A3 `THE INITIALS LIFT NEEDS AN ACT
+     NAMED THE ABBREVIATION`: with none, the alias pass already answers (BTO) and lifting broke OMD.
+  The best-scoring such act wins; its canonical name is stored (`_setMbName`). A failure of the combined query keeps
+  the answer the passes gave. Cost: one request per short name resolved by name, then cached with the answer (30
+  days). `MBID_CACHE_V` 2 -> 3 so older answers ("ELO" = the act named ELO) are not served (`keepCurrent` retires the
+  v2 rows at open). **The shared-name guard** (`sharesNameWithProminent[Async]`) answers "not shared" when the page's
+  act's stored canonical name abbreviates to the page's name (`_abbreviates`), so ELO keeps its bio, similar
+  artists and owned albums. NOT a marker of its own: a kv marker is emptied by every new build while the answer
+  (the kept `mbid` table) survives it, so the band would lose its bio after an update. Measured on the public API
+  2026-10-02 (scratchpad `c1replay.pl`, `c1score.py`): ELO, PIL, NIN, EBTG lift; ABC, TLC, HAIM, KLF, Bob, REM,
+  GnR, SFA, OMD, BTO unchanged; 0 of the 73 short-named library album artists change; typing the initials of a
+  library artist opens the owned act 13 -> 24 of 269, none lost; 15 open a different act known by those initials
+  instead of one literally named them (TMG: Ted Mulry Gang; the owned act has no such alias). Pinned in
+  `tools/t_initials.pl` (32); 15 mutants all caught (scratchpad `mutC1.py`).
+
 - **A7 #4 IS DECLINED** (was `A7 #4 IS HELD FOR THE RESOLVER`; `API::_artistMbidByName`; the combined
   `artist:"X" OR alias:"X"` query of `docs/mb-efficiency-and-community-api-analysis.md` §A7 #4; DEFERRED
   2026-09-29, Simon agreed; **DECLINED 2026-10-01** as item C4 of the resolver plan's Part C, which Simon
@@ -1065,6 +1124,16 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   box back at row 0, or a Material change focusing the first search box wherever it sits); Simon: *"leave it"*.
   Not a finding; do not re-propose. Pinned in `t_searchbtn.pl` §5 (7; header dropped, box above the banner and box
   after About all mutated and caught).
+  **0.56.31, THE SEARCH GETS THE SPACE** (Simon 2026-10-02: *"Search still feels to cramped in, as this is the main part of this page it needs space and to be more prominent"*; offered "big title" or "keep the header, add
+  space", he chose the big title). Material draws the box as its own full-width `<text-field>`; no plugin field
+  sizes or styles it, so the rows around it carry the weight. For a client that draws headers: `_searchTitleRow`
+  ("Find an artist" at 1.5em, weight 500 explicit because `.browse-text` sets 200, 20 px above), the box, then
+  `_searchCaptionRow` (small grey, "MusicBrainz · " + the sources in line2's order, `_searchSourceNames`; 24 px
+  below as the gap before About). A client without headers keeps the plain divider and no caption (that HTML
+  would show as text). The box stays the third row for both. "Works best with" left the page (A2 `IS ONE STRIP
+  OF TILES`). About's first paragraph is Simon's text with the plurals and punctuation tidied and his
+  "library if available in your chosen streaming service" read as "library or, if available, your chosen
+  streaming service" (asked, his pick). `t_searchbtn.pl` §5 now 21.
 
 - **A FIRST VISIT WAITS FOR QOBUZ AND TIDAL** (0.56.26; `Browse::_discographyView`'s await block, `POOL_WAIT_SHOWN`,
   `POOL_WAIT_MAX`, `Sources::peekPool`'s `cold`; Simon 2026-10-02 on Adele -> Sam Smith, phone: *"loaded quick but the
@@ -1159,7 +1228,8 @@ always with its reason, and those stay suppressed. The code a fix added is new a
 - **ARTIST ROWS ARE TYPED artist-link** (0.56.29; Simon after Craig merged PR #1276, 2026-10-02: *"lets add it to
   our local build so we can build and test the design"*). Search results, MusicBrainz same-name rows, Also a member
   of and Similar artists send `type => 'artist-link'` (`Browse::_artistRowType`), so Material draws them round and
-  gives the page they open its artist header; the bio stays first on the page. Route B of `docs/artist-rows-plan.md`;
+  gives the page they open its artist header; the bio stayed first on the page (until 0.56.33 put Search and Options
+  above it, Simon's order). Route B of `docs/artist-rows-plan.md`;
   route A (Sven's favourites link) NOT built and not needed. Rules:
   1. **Gated like `header-strip`:** a Material of at least 6.4.10.9 (Simon's test build of upstream b652e87b1; the
      release expected to be 6.4.11, not yet in its ChangeLog) AND a client that draws headers (`_wantHeaders`).
@@ -1171,9 +1241,11 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   4. **Known effects, deliberate (Material's own behaviour for an online artist's page, as on Qobuz/TIDAL):** rows on
      the artist page without their own link become 'artist category' rows, so Read more, a section's More and
      Search for an artist (our home page) open under the artist's header; the page opened from Material's own
-     Discography action, LBF or PFR has no header (the row that opened it is not ours).
+     Discography action, LBF or PFR has no header (the row that opened it is not ours). Simon hit the library-view case as a bug 2026-10-02: only a Material change can fix it (A3 `A CUSTOM ACTION PAGE NEVER GETS THE HEADER`).
   Pinned in `t_artistrows.pl` (351: a written-out table of 14 versions x the four REAL builders x header/no-header
   clients) and `t_strips.pl` (303); 13 mutants all caught.
+  **CHECKED LIVE 2026-10-02** with Material 6.4.10.9: round rows, the header with the bio first, no Play entry, and
+  the home page under an artist's header judged fine (Simon: *"all good for these can be closed"*). Rule 4's effects are therefore ACCEPTED.
 
 ### A3. DISPROVEN — a review WILL re-derive these from the code; each was measured
 
@@ -1219,6 +1291,8 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 | MAI (Last.fm, Discogs) or the community API is a quicker or better source for the covers of unmatched tiles than the Cover Art Archive | **WRONG for these tiles** — MAI'S COVERS ARE FOUND BY NAME (measured 2026-10-02, rig) | **Community API:** no images of its own; `/discography`'s `cover` is an archive.org url for 106 of Sam Smith's 112 groups (the full-size ORIGINAL, `archive.org/download/mbid-.../...jpg`, the host that stalls the server, larger than CAA's thumbnails); `/album/<t>/<a>/cover` the same. **MAI** (`["musicartistinfo","albumcovers","artist:..","album:.."]` on the server, MAI's own keys, nothing decoded): a cover for 15 of the 25 unmatched releases of Sam Smith, James Arthur and Calum Scott (Last.fm 9, Discogs 6, and CAA by release, archive.org again). Through the proxy, a ping every 50 ms: Discogs 0.28-0.47 s and Last.fm 0.06-10.0 s cold, neither stalling the server (worst ping 0.03 s); CAA 2.2-2.6 s, stalling 0.6-0.7 s. **But MAI looks covers up by NAME, and 3 of 3 checked were WRONG:** "Unholy (live version)" -> the studio "Unholy" cover, "Lay Me Down (Live from The BRITs)" -> the studio single's, "SOS (X Factor Performance)" -> a different James Arthur album. Unmatched tiles are mostly live, session and performance releases, exactly where a name lookup lands on the studio record. The archive cover by release-group mbid is the right cover. (Scratchpad `maicovers.py`, `maistall.py`, `covers/`.) |
 | Sending `type => 'artist'` on our artist rows (as Sven's Qobuz does) makes Material draw them round and give the page they open its artist header | **WRONG** — TYPE ARTIST ADDS A PLAY ENTRY (read 2026-10-02, Material upstream master 31514817c + the live 6.4.10.8 bundle) | Material types an app row as an artist ONLY from `metadata.type` (slimserver #1452, stalled, never sent by LMS 9.1.2/9.2) or a favourites link starting `qobuz://artist:` / `tidal://artist:` / `deezer://artist:` / `spotify:artist:` (`browse-resp.js`), and LMS forwards that link only on a PLAYABLE row (`XMLBrowser.pm` `_favoritesParams` inside `if ($isPlayable)`: `play`, `playlist`, or type `audio`/`playlist`). `type` itself is never read for that. Worse, `type=="artist"` puts the row in Material's play block, and `hasPlayableId` accepts our go action's `artist:` parameter (live: Adele's row is `go` `{"artist":"Adele","menu":1}`), so the row gains a Play entry that runs its go action. Sven's rows work because he ALSO sends `favorites_url` + `playlist =>` the same link (his comment says so), and his Qobuz 30.7.3.6 plays `qobuz://artist:` (top tracks); stock Qobuz 3.7.2 turns it into one broken track, TIDAL plays top tracks. Plan: `docs/artist-rows-plan.md`; the Material PR draft uses a NEW type, `artist-link`. |
 | Material shows an online artist's (or online album's) header only on wide screens, `wide>=WIDE_COVER` (650 px) | **WRONG** — ONLINE ARTISTS GET THE HEADER ON PHONES (read 2026-10-02, same sources) | `showDetailedSubtoolbar` also admits `stdItem>=STD_ITEM_MAI` (200), and the online types are 300-302, so the `WIDE_COVER` clause beside it is redundant: an online artist row with an image gets the header from 350 px wide (and 400 px tall), phones included. The header photo has square corners even for library artists; only list, grid and strip images are drawn round (`circular`). |
+| A Discography page opened from Material's own Discography action (the library Artists view: an artist's menu or its page's menu) can be given the artist header by something in OUR response | **WRONG** — A CUSTOM ACTION PAGE NEVER GETS THE HEADER (read 2026-10-02 in the 6.4.10.9 bundle = upstream master b652e87b1; Simon reported the missing header as a bug the same day) | Material opens an `lmsbrowse` custom action's page with `fetchItems(cmd, {cancache:false, id, title})` only: no `image`, no `stdItem` (`browse-page.js`, the `act.custom` branch of the current page's menu and `itemCustomAction`). `showDetailedSubtoolbar` reads `current.stdItem` or `current.altStdItem`, both from the TAPPED item; `altStdItem` is only ever copied from a row's own `stdItem` (`browse-functions.js`), never from a response. So no field, row type or response flag of ours can turn the header on for that page. Only a Material change can (drafted 2026-10-02, test build 6.4.10.10, "Material PR status"): e.g. a custom action that asks for it opens its page with the item's image and `STD_ITEM_ONLINE_ARTIST`, as an `artist-link` row does. Our own rows (search results, Also a member of, Similar artists) are unaffected. **Ways round it, checked the same day (Simon: "we sure we cant work around this issue witout another PR?"):** a `script` custom action firing Material's `browse` bus event types the page from its params (`artist_id:` first = a LIBRARY artist, with Material's own artist actions) but gives it NO image: Material takes a page image only from the tapped row or its own library album lists (`resp.image`), never from a plugin response, so still no header; calling `fetchItems` directly would mean reaching into Material's component tree (breaks on any refactor; not offered); a one-row stop-off page costs a tap (Material never opens a single row by itself). **The one route that works without a PR:** a row in LMS's artist info menu (Material's More on a library artist; Qobuz's "On Qobuz", TIDAL's "On TIDAL" live there): that response keeps each row's `type` (read live on Paul Weller), and Material's `artist-link` typing runs on every SlimBrowse row, so a Discography row of that type with the artist's photo opens our page WITH the header. One tap more than the menu entry (More, then Discography). Offered to Simon. |
+| The initials lift (resolver plan C1) should also run when NO act is literally named the abbreviation, the best-scoring alias act whose initials spell it winning (the plan's BTO row) | **WRONG** — THE INITIALS LIFT NEEDS AN ACT NAMED THE ABBREVIATION (measured 2026-10-02 on the PUBLIC API, scratchpad `c1replay.pl` / `c1score.py`, the real `_artistMbidByName` beside the rule, 356 names, 1,108 requests) | BTO already resolves Bachman–Turner Overdrive today (the alias pass), so it needs no lift. Lifting with no name-equal act breaks a working answer: OMD today opens Orchestral Manoeuvres in the Dark (its initials are "omitd", so it never qualifies) and the lift would take Of Mexican Descent (aka OMD, 79); CFB and KOW would go to obscure acts. With the stash's condition (at least one act NAMED the query, and the lifted act scoring above every one of them) those three drop out and nothing else changes: ELO, PIL, NIN, EBTG lift; ABC, TLC, HAIM, KLF, Bob, REM, GnR, SFA, OMD, BTO unchanged; 0 of the 73 short-named library album artists change (57 tagged); typing the initials of a library artist opens the owned act 13 -> 24 times of 269 (ADF, BBR, CCR, EBTG, ELO, KLO, MBV, MMJ, MSP, PCO, UMO), none lost. |
 
 | Fetching the archive covers in the background at a gentle pace (2 in flight while browsing, 8 idle, after a 3 s grace) keeps the server responsive (0.56.27's design) | **WRONG** — AN ARCHIVE FETCH FREEZES THE SERVER WHATEVER THE PACE (measured on the rig 2026-10-02, scratchpad `thumbprobe.py`: a page then its thumbnails at the phone's 600 px, 6 at a time, a `version` ping every 50 ms) | **Ocean Colour Scene, first visit:** page 3.1 s, 32 thumbnails in 2.3 s, then the server FROZE 11.4, 4.4, 12.8 and 4.4 s within the next minute (35 s of 60). **Paul Weller, first visit:** page 5.5 s, its 60 thumbnails 13.4 s because the background had started while they loaded (Qobuz covers 1.4 s each against 0.3-0.6 s with the server free), then 32 s frozen in 45 s, worst 3.4 s. **Second visit:** page 0.08 s, 61 thumbnails in 1.65 s, no freeze. The loop is held until archive.org answers, so in-flight width does not spread it: up to ~4 s for a cover it has, 11-13 s for one it fails. Fixed in 0.56.30 (A2 `ARCHIVE COVERS ARE FETCHED AT 05:00`). LMS's image proxy DOES share one download per url (`ImageProxy.pm` `%queue`), so the four sizes were not the cost. |
 
@@ -1292,7 +1366,7 @@ Discography/
 ├── Browse.pm       # artist rows typed `artist-link` on Material >= 6.4.10.9 + header clients (`_artistRowType`, `_materialAtLeast`, 0.56.29); topLevel ($VAR guard, %lastCtx stash+expand flags+page counts+visibility snapshot); app-root view (_rootView: _coverCollageRow responsive random-album-cover banner, "Find an artist" header + search box (0.56.24), About prose, "Works best with" as ONE strip of plugin tiles (badge + name + tick/cross, role as tooltip) w/ badgeSrc imageproxy normaliser); global artist search (_searchRow type=search item in the app root ONLY; the artist page's Options carries _searchButtonRow `act:search`, which opens _rootView; go action overridden w/ search:__TAGGEDINPUT__ fixedParams -> topLevel search-param dispatch GATED on item_id being absent, so a positional walk still reaches the row's own coderef; _artistSearchView w/ 10-min merged cache, only written when every source settled OK (the row check runs every time); `_distinctTitles` gives a repeated result name invisible word joiners so Material shows each (0.56.4); owned acts split by identity say how many albums they open on; the list is SERVICE-first, laid out by `_searchSections` as Top Result + Artists (MusicBrainz same-name acts first, then the other rows, then other spellings; `layout_search` split / all tiles on a strip-capable Material; the MusicBrainz-first redo is not in the code, see `THE SEARCH LIST IS MUSICBRAINZ-FIRST`), _searchResultRow name-drills, _mbCandidateRow mbid-drills); grouped list (bio header, Options/type/library-extras sections, Albums / Singles view toggle _viewToggleItem `act:view:<to>` (Singles view = EPs + Singles, a true tab; per-player ctx `view`), sort+Refresh, release sections as tile strips on a strip-capable Material (`header-strip`, `_useStrips`/`_stripsOn`, layout_albums/layout_singles), service badge via row `extid` (`_extid`), _pageSection 30-at-a-time Show more/less, "Also a member of" band links + "Similar artists" name-drill links w/ artist-photo thumbnails, both second-load, similar deduped against bands by _dropBandDupes — Material keys app rows by TITLE, so a repeated name loses a row); artist artwork resolver (artistImageProxy handler for `imageproxy/dsc/artist/<name>`: MAI local files -> MAI online picture w/ Deezer placeholder HEAD probe -> live service photo -> person icon, verdict cached 30d); tile covers (`_releaseItem`: the source's cover, else the archive cover only when the image proxy already holds it, `_caaHeld`, else the type icon, `_typeIcon`, 0.56.26; an icon tile names its archive url in `_caaWant` and `_wantCovers` queues the shown ones for `Covers`, 0.56.27); a cold streaming pool awaited on every first visit, at most `POOL_WAIT_SHOWN` 6 s with hide_unmatched off (0.56.26); release detail (review w/ inline expand, version rows w/ Show-other-versions toggle, MB links); `_poolOpts` (the streaming lookup's options, one helper for the artist page and the release page) and `_otherNames` (the artist's other MusicBrainz names, cache only), both 0.56.17; _proseRow avatar-column indent; bio/review prose ported from LBF (_cleanBio HTML->structure, _bioParagraphs heading/bullet/paragraph parser, _proseBlock one styled row per block, _proseSection shared collapse/expand shape, _cleanProse the one fetch-side entry point)
 ├── API.pm          # Async MusicBrainz (base = mb_base_url pref, mirror-aware _mbBase; EVERY request, MusicBrainz and the community API's `hosted` bucket, through the one `_netGet` queue): artist MBID (library tag first, MB search score>=90; `_nameSearch` shares one `artist:"q"` reply between the resolver, the same-name set and the search), paginated release-group browse (the artist page skips it under 25 groups: `getReleaseGroups(read => 1)` takes the spine from the artist read), url-rels links; the artist page's first list (0.56.7: `_fastSpine` from ListenBrainz `_lbGroups` + the community `_hostedDisco`, `completeArtist` in the background, `promoteCompleted` on a fresh entry; `_pastCap` keeps a Refresh's groups past the cap (0.56.8); `_cmExtra` leaves the community's merged-away ids out; `_officialLater` the bootleg check's rest after the draw (`PREDRAW_RGID_MAX`); `_browseGroups` / `_officialById` the browse and by-id check, shared); filterRowsWithContent (the search's row check; since 0.56.9 the search runs it `known`: decided from the cache, `_rowKey` / `_rememberRow`, the full check after the reply as background work, `$NET_BG` inherited through answers, `_netPromote`; `_rowBatch`: the typed query's reply, then one combined search that also proves pass 1's unproven answers (0.56.6), then the community API by name for the rest (`_hostedByName`, 0.56.5), the resolver only where it cannot decide; proven answers written for the page (`_rememberProven`); counts community API first (`_hostedCount`); then the dead-end/empty-verdict row filter + alias fold, then the 0.51.3 tag attach: a kept row with no artist_id is claimed by its resolved mbid — AFTER the fold, so survivor choice is unchanged; among several tagged contributors the one OWNING the most albums wins, and an id another kept row already carries is never handed to a second row); peekOfficial/warmOfficial + _isOfficial (bootleg filter: the page's groups asked BY ID from the release-group search, `rgid:A OR …`, `RGID_BATCH_MAX` 100 to a request -> {rg=>official?} + {release=>rg} + edition titles, fail-open; its callback says done / 'busy' / 'failed'); peekLocalReleaseMap/warmLocalReleases (release->rg for the owned albums the bootleg check did not place, AFTER the render: one `reid:` OR-search per 50 ids, `REL_BATCH_MAX`, then the per-id lookup for whatever it leaves out); _readArtist (ONE `artist/<id>?inc=aliases+artist-rels+release-groups` read behind warmArtistAliases, warmBandMembers AND the page's spine, fills aliases, MB name, bands, collaboration candidates and, under 25 groups (`ARTIST_RG_LIST_MAX`), the spine, sorted by group id; a caller arriving mid-flight waits on it); _rgEntry/_pruneAliases (one spine entry / the alias prune, shared by the browse and the read); peekBands/warmBandMembers (member-of-band); _vetCollabs (one `inc=artist-rels+release-groups` lookup per candidate: size test + has-releases in one reply); CAA image URLs; caching
 ├── Sources.pm      # Source engine: Q/T/D adapters (artist-FIRST candidate fetch, per-adapter query_enc, shared _renderAlbums + _albumArray envelope unwrap), Local pseudo-source (sync albums query, db:album.id play; localAlbums resolves IDENTITY FIRST — localArtistsByMbid/localArtistIdsByMbid read the library's own Contributor.musicbrainz_id tag, ALL matching contributors, before the name ladder; an explicit artist_id still outranks both UNLESS it performs on no album and the page builder opts in via `Browse::_idFallback` — then tag, then name, name never on a shared-name page); localTracks (the track-link pool: Various Artists compilation tracks ONLY, performance roles checked on the per-role ids from `tags:S` because `titles` ignores role_id, same empty-id fallback gated on owning no album), matcher (fleet-synced), matchesFor/peekPool+peekMatches/claimedLocalIds (`_otherNamesFor`: a copy credited under another of the artist's MusicBrainz names is judged under that name, 0.56.17), LL favurl handshake; global artist search (searchArtists parallel per-service artist-type legs + Local CLI leg, cb(\%bySvc, \%failed) — the 2nd arg names services that ERRORED/TIMED OUT, since a failure settles as an empty list and callers must not persist an incomplete set; mergeArtistHits pure norm-keyed dedupe/rank + relevance gate vs the typed query, rows carry the service's own artist photo); artistImage/_svcArtistImage/isPlaceholderImage (live per-service artist photo via each plugin's OWN url builder, priority order; an exact-name photo ends the walk, a token-subset photo is only a fallback when NO service knows the exact name, and an exact entity without a photo vetoes it; Deezer placeholders in both forms, md5('') and the empty `/images/artist//` hash; 30d cache); serviceStatus takes an OPTIONAL pre-built adapters list (omitted = probe); randomAlbumCovers (app-root banner, sort:random — measured ~20ms/2900 albums, cheap); splitOwnedByIdentity (one search result per owned MusicBrainz identity, 0.50.0; a same-name identity found only on the main act's albums merges into it, 0.56.5, via `_albumsFor`)
-├── Settings.pm     # Web settings: source priorities (detection), view options (type checkboxes->CSV), release page, integration
+├── Settings.pm     # Web settings: "Works best with" first (0.56.31, `Browse::worksBestStrip` via `dsc_works_best`), source priorities (detection), view options (type checkboxes->CSV), release page, integration
 ├── DB.pm           # the plugin's OWN SQLite store, <cachedir>/discography.db (takes over the file LMS kept for the old cache namespace; migration 1 drops LMS's `cache` table). store(CACHE_VERSION) answers get/set/remove like Slim::Utils::Cache, so no call site changed. Tables: kv (every cache family; emptied when CACHE_VERSION changes, as the LMS namespace was), mbid (artist name -> artist mbid `dsc:mbid:`, owned release -> release group `dsc:rel2rg:`; NOT emptied by a build), artist (one row per artist mbid: canonical name `dsc:mbname:` + aliases `dsc:alias:`, each with its own key version, time and expiry — LBF's shape; NOT emptied by a build), meta (cache_version); all routed by key prefix. expires_at is an absolute epoch computed in Perl, 0 = never. Expired rows swept at open AND every 6h on a timer (PFR's kvSweep lesson); rows of an old key version in the kept tables retired at open (keepCurrent, fed by API's own key builders). Degrade-never-die. Suite: tools/t_db.pl
 ├── install.xml     # <extension> + <optionsURL>; version lives here; repo.xml (repo root) points at the dev zip
 ├── strings.txt     # PLUGIN_DISCOGRAPHY_* UI strings
@@ -1931,6 +2005,141 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
+### 0.56.36 (2026-10-02) — C1, the initials lift: ELO, PIL, NIN, EBTG open the band — BUILT (sha 4305188f), INSTALLED 2026-10-02, CHECKED LIVE (Simon: *"works"*), COMMITTED + dev PUSHED 2026-10-02 with 0.56.31-0.56.35
+- **Source (Simon):** *"okay lets move on to C1"*, then *"we should be looking at alieses for this if no alias for
+  initials then we dont pass it, keep it simple"*, then *"Okay"* to building it with three conditions: the act has the
+  typed letters as an alias, its own name's initials spell them, and it outscores an act literally named them.
+- **Change:** A2 `THE INITIALS LIFT` (the rule, the cost, the shared-name guard). `API.pm`: `_initials`,
+  `_initialsKey`, `_liftFrom`, `_abbreviates`, `_initialsLift`; the `$store` step of `_artistMbidByName` asks the lift
+  before saving (the old `$store` is `$save`); `sharesNameWithProminent[Async]` answer "not shared" when the stored
+  canonical name abbreviates to the page's name. `MBID_CACHE_V` 2 -> 3. CACHE_VERSION 0.56.36.
+- **Measured before building** (public API, scratchpad `c1replay.pl` / `c1score.py`): A2 and A3 `THE INITIALS LIFT
+  NEEDS AN ACT NAMED THE ABBREVIATION`. **Measured after building** (the built `_artistMbidByName`, public API,
+  scratchpad `c1check.py`): the same answer as predicted for 87 of 87 (14 list names, 73 short-named library album
+  artists); only ELO, PIL, NIN, EBTG change.
+- **Tests:** `t_initials.pl` NEW (32: the three conditions each alone, the best score winning, the stored canonical
+  name, the failed query, the guard reading the stored name, a long name never asked). `t_fold.pl` keys via
+  `_mbidKey`; `t_namesearch.pl` ignores the combined query. 15 mutants caught (scratchpad `mutC1.py`). 63 suites /
+  3,108 green; syntax_check clean; zip == tree.
+- **Live check after install:**
+  1. Search "ELO", "PIL", "NIN", "EBTG": the band is the Top Result (Local where owned).
+  2. Open ELO: the page has Electric Light Orchestra's bio, similar artists and owned albums.
+  3. ABC, HAIM, Luna, OMD: unchanged.
+
+### 0.56.35 (2026-10-02) — Search back in Options, always visible ("Search for another artist"); the page reads Options, bio, releases — BUILT (sha bff794ae), INSTALLED 2026-10-02 with Material 6.4.10.10, WORKS (Simon: *"that works"*), COMMITTED + dev PUSHED 2026-10-02
+- **Source (Simon):** *"I would like another layout chnage reverting what we did. Lets put search back in options. It
+  only needs icon though to move us to search page at moment we have a header and what looks like a search box, it
+  just needs icon to open search page."* Asked where in Options -> **always visible**.
+- **Change:** A2 `SEARCH IS A BUTTON IN OPTIONS` (back in Options) and `OPTIONS ARE COLLAPSED BEHIND MORE OPTIONS`
+  (Search is one of the rows that stay out). `_buildList`: the "Search for another artist" section (`sect:FIND`) is
+  gone; `_searchButtonRow` is the Options row after the switch (and the filter row when on), before More options;
+  it reads `PLUGIN_DISCOGRAPHY_SEARCH_ANOTHER` ("Search for another artist"; the header string `..._HDR` renamed).
+  Order: Options, the bio, the releases. CACHE_VERSION 0.56.35.
+- **Tests:** `t_view.pl` 71 (§2, §10 rewritten: Search in every closed/open/filter/owned/albums-only row list, no
+  search section, Options first, the row's label and icon). 5 mutants caught (scratchpad `mutSearchOpt.py`). 62
+  suites / 3,074 green; syntax_check clean; zip == tree (38 files).
+- **Live check after install:** an artist page reads Options (the Albums switch, "Search for another artist" with
+  the search icon, More options), the bio, the releases; Search opens the search page; with More options open,
+  Search stays where it is.
+
+### 0.56.34 (2026-10-02) — our Material menu entry asks for an artist page (`type => 'artist'`), for the header from the library Artists view — BUILT (sha 6f90f255), never installed (0.56.35 carries it), COMMITTED + dev PUSHED 2026-10-02
+- **Source (Simon):** *"So we cannot not just chnage our custom action to add its an artist look up?"*, *"why does it
+  work in more menu then"*, *"show me what needs to change in material"*, then *"lets do a test build of both"*.
+- **Change:** `Plugin::_materialAction`'s `lmsbrowse` carries `type => 'artist'`. Read only by a Material with the
+  custom-action change ("Material PR status": branch `plugin-artist-actions`, test build 6.4.10.10); older Material
+  reads only the title and the command, so it is ignored there. CACHE_VERSION 0.56.34.
+- **Tests:** `t_material_actions.pl` 40 -> 41 (the field; fails without it, checked). 62 suites / 3,074 green;
+  syntax_check clean; zip == tree (38 files).
+- **Live check after installing BOTH (Material 6.4.10.10 first, then a FULL refresh of Material on the device):**
+  1. Library > Artists > an artist > "…" > Discography: Material's artist header (photo + name) with the page below.
+  2. The same from an artist row's own menu in the Artists list.
+  3. Search results and Similar artists: unchanged (round, header).
+  4. Other custom actions (e.g. Listen Later, View Booklet): unchanged.
+
+### 0.56.33 (2026-10-02) — the artist page: Search first ("Search for another artist"), then Options, then the bio, then the releases — BUILT (sha bcdfc148), never installed (0.56.35 carries it), COMMITTED + dev PUSHED 2026-10-02
+- **Source (Simon, on 0.56.32's report):** *"we sure we cant work around this issue witout another PR? I would also
+  changge Search in this page to say Search for Another Artist in the header. Move biography down to be above albums
+  so options are at top. Search is at top followed by options, followed by bio, followed by releases"*. First built
+  as a same-number rebuild of 0.56.32 (sha 07fd2266) on the WRONG belief that 0.56.32 was not installed; Simon: *"it
+  was installed please bump"* -> 0.56.33. (The build rule says ASK whether to bump; not asked.)
+- **The workaround:** A3 `A CUSTOM ACTION PAGE NEVER GETS THE HEADER` (its survey): the only no-PR route is a row in
+  the artist info menu (More); offered, not built.
+- **Change:** A2 `SEARCH IS A BUTTON IN OPTIONS` (its own section, at the top, "Search for another artist").
+  `_buildList` order: Search (`sect:FIND`, `SEARCH_ANOTHER_HDR` "Search for another artist"), Options, the bio, the
+  releases. CACHE_VERSION 0.56.33.
+- **Tests:** `t_view.pl` 68 -> 71 (§10: the page order and the header string; §2: the Singles tab has Search then
+  Options). 3 mutants caught (scratchpad `mutOrder.py`). 62 suites / 3,073 green; syntax_check clean; zip == tree
+  (38 files).
+- **Live check after install (phone):**
+  1. An artist page, top to bottom: "Search for another artist" (the search button), Options (the Albums switch and
+     "More options"), the bio, then the releases.
+  2. Singles & EPs tab: Search then Options, no bio.
+
+### 0.56.32 (2026-10-02) — the artist page's Options collapse behind "More options"; Search gets its own section after Options — BUILT (sha 7fd9cb55), INSTALLED 2026-10-02, COMMITTED + dev PUSHED 2026-10-02
+- **Source (Simon, 0.56.31 installed):** *"found two bugs ... Entering from the Artist views doesnt load the revised
+  layout. Also this build of material seems to not be rendering the scroll bars correclty not sure if thats us
+  though. Also for our options on Discovery is it possible to hjide these like we do with text and open up if
+  needed?"* Asked (AskUserQuestion): bug 1 = **the artist page opened from Material's library Artists view has no
+  header**; scroll bars = **everywhere**, then *"it might be window size isssue I may need to flag it to Craig"*,
+  *"it may be latest Chrome as that just aupdated"*; Options = *"Search gets its own header again keep the Albums
+  swith visible all else hidden"*.
+- **Bug 1, measured, not ours:** A3 `A CUSTOM ACTION PAGE NEVER GETS THE HEADER`. First replayed the other reading
+  over HTTP (an artist page's "Search for an artist" tap, from Adele by name and Paul Weller from the library): the
+  new home page both times. Fix = a Material change (custom action pages opened with the item's image and the
+  online-artist type); NOT drafted yet.
+- **Scroll bars, not ours:** Material's code between the rig's previous test build (6.4.10.8, `plugin-tile-strips`
+  44827f665) and 6.4.10.9 (b652e87b1) changes nothing about scrolling (an AudioMuse mixer, shift+arrow shortcuts,
+  a dialog fix, emblems); Simon sees it on Material's own pages too and suspects the Chrome update. His to raise
+  with Craig.
+- **Change:** A2 `OPTIONS ARE COLLAPSED BEHIND MORE OPTIONS` (new) and `SEARCH IS A BUTTON IN OPTIONS` (its own
+  section; moved to the top in 0.56.33). `_buildList`: `@optRows` closed/open, `_optionsToggleRow` (`opt:more` / `opt:less`), the "Find an
+  artist" section (`sect:FIND`) after Options; topLevel keeps `opts` for the same artist. Strings `MORE_OPTIONS`
+  ("More options"), `FEWER_OPTIONS` ("Fewer options"). CACHE_VERSION 0.56.32.
+- **Tests:** `t_view.pl` 49 -> 68 (§10: closed and open rows in order, the search section's place and header, the
+  taps through `_listItemDispatch` incl. stale ones, the filter row with the filter on and with owned albums, an
+  albums-only artist, the same-artist keep; §2: the Singles tab keeps Options and the search section). 13 mutants
+  all caught (scratchpad `mutOpts.py`). 62 suites / 3,070 green; syntax_check clean; zip == tree (38 files).
+- **Live check after install (phone):**
+  1. An artist page: Options shows the Albums switch and "More options"; "Find an artist" is its own section below.
+  2. More options opens sort, only-what-I-own (an artist you own) and Refresh in place, with "Fewer options" last;
+     sorting keeps them open; Fewer options closes them.
+  3. Another artist opens with them closed.
+  4. With only-what-I-own ON, its row stays visible while closed.
+  5. Singles & EPs tab: the same Options and Find an artist.
+
+### 0.56.31 (2026-10-02) — the home page's search gets the space: a big title, a caption, Works best with moved to settings — BUILT (sha 2d846bba), INSTALLED 2026-10-02, COMMITTED + dev PUSHED 2026-10-02
+- **Source (Simon):** *"before we move to next stage in the plan want to make the search page better. I love our
+  header but its layout isnt right. Search still feels to cramped in, as this is the main part of this page it needs
+  space and to be more prominent. I feel the works best with needs to move to the settings page at the top"*, plus
+  new text for the Discography section. Asked two things (AskUserQuestion): the layout (big title / keep the header
+  and add space) -> **big title**; his sentence "plays from your local library if available in your chosen streaming
+  service" -> **"library or, if available, your chosen streaming service"**.
+- **Measured first (Material source, 6.4.10.9 = upstream master):** the inline search row is Material's own
+  full-width `<text-field>` with the row's title as its label (`browse-page.js`); line2 is never shown and nothing
+  in the row sizes it. A plain text row's HTML is drawn at the same left edge as the box, at
+  `--std-font-size` weight 200 (`style.css` `.browse-text`), 48 px minimum.
+- **Change:** A2 `THE SEARCH BOX SITS BETWEEN THE BANNER AND ABOUT` (0.56.31 paragraph) and `IS ONE STRIP OF
+  TILES`. `Browse::_rootView`: header clients get `_searchTitleRow`, the box, `_searchCaptionRow`; others keep the
+  divider. `worksBestStrip` (the tile builder, moved out of `_rootView`, margin from the caller);
+  `_searchSourceNames` shared by line2 and the caption. `Settings::beforeRender` sets `dsc_works_best`;
+  `settings.html` shows it as the first section, inside `[% IF %]`. `strings.txt` `ABOUT_1`:
+  "Browse an artist's discography - albums, EPs, singles and compilations that are listed in MusicBrainz. Each
+  release plays from your local library or, if available, your chosen streaming service. ..." (rest unchanged).
+  CACHE_VERSION 0.56.31.
+- **Tests:** `t_searchbtn.pl` §5 rewritten (37 in all: order for both clients, title and caption rows, gap, no
+  Works best with, the box still third, the new text); `t_worksbest.pl` 22 (the strip through `worksBestStrip`,
+  its margin, and §5: off the home page, handed to settings by `beforeRender`, a failure empties only it, first
+  section of `settings.html` inside `IF`). 17 mutants all caught (scratchpad `mutHome.py`). 62 suites / 3,051
+  green; syntax_check clean; zip == tree (38 files).
+- **Live check after install (phone and Mac):**
+  1. Discography's home page: banner, then "Find an artist" large with space above, the box, a small grey line
+     (on the rig "MusicBrainz · Local · Qobuz": TIDAL's priority is 0 there, read live 2026-10-02), a gap, then
+     Discography with the new first paragraph.
+  2. No Works best with on that page.
+  3. Settings > Discography: Works best with is the first section, tiles as before (ticks for the installed
+     services, MAI and Material).
+  4. A search from the box still lists results.
+
 ### 0.56.30 (2026-10-02) — archive covers fetched at 05:00 only, and never for a release with no cover — BUILT (sha a3c35e97), INSTALLED 2026-10-02, check 1 MEASURED LIVE, COMMITTED + dev PUSHED 2026-10-02
 - **Source (Simon):** *"it still seems a bit slow at loading the thumbnails thouogh when we have show all not just what
   you can play we need to optomise this some more"*. Measured (A3 `AN ARCHIVE FETCH FREEZES THE SERVER WHATEVER THE
@@ -1961,11 +2170,13 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   0.5 s, and ZERO stalls in the 40 s after (0.56.27: Ocean Colour Scene froze 35 s of the next 60). Checks 2 and 3
   await the 05:00 run.
 
-### 0.56.29 (2026-10-02) — artist rows round, with Material's artist header — BUILT (sha 35dd66c6), INSTALLED 2026-10-02 with Material 6.4.10.9, WORKS on screen (Simon, after a full refresh of Material), COMMITTED + dev PUSHED 2026-10-02 (with 0.56.30); carries 0.56.26-0.56.28
+### 0.56.29 (2026-10-02) — artist rows round, with Material's artist header — BUILT (sha 35dd66c6), INSTALLED 2026-10-02 with Material 6.4.10.9, WORKS on screen (Simon, after a full refresh of Material), CHECKED LIVE 2026-10-02, COMMITTED + dev PUSHED 2026-10-02 (with 0.56.30); carries 0.56.26-0.56.28
 - **Live, 2026-10-02:** the server serves Material 6.4.10.9 (`material.min.js?r=6.4.10.9`, `artist-link` in the
   bundle) and 0.56.29 sends `artist-link` on the search rows (Adele: top result + 18 artist rows) and on Sam Smith's
   Also a member of / Similar artists. Simon first saw no change: the device was still running the old Material until
-  a FULL refresh (no service worker involved). Then: *"works"*. The rest of the live list below still to report.
+  a FULL refresh (no service worker involved). Then: *"works"*. Later the same day, on the header with the bio first,
+  no Play entry on artist rows and our home page under an artist's header (items 2, 4, 5 below): *"all good for these can be closed"*. Item 6
+  (release pages, strips, Default skin unchanged) was not reported separately.
 - **Source (Simon):** Craig merged PR #1276 (`artist-link`, upstream b652e87b1, identical to fork commit 3b92941cc)
   the same day it was drafted: *"merged into master all ready whoop so lets add it to our local build so we can build
   and test the design"*.
@@ -2061,7 +2272,7 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   release-type icon; Sam Smith's archive covers the phone already loaded still show; a ping during the visit stays
   under a second (no archive.org fetch).
 
-### 0.56.25 (2026-10-02) — home page: "Find an artist" under the banner, the About header reads "Discography" — BUILT (sha 63adb392), INSTALLED 2026-10-02 (plugins page v0.56.25); carries 0.56.22-0.56.24 (none installed)
+### 0.56.25 (2026-10-02) — home page: "Find an artist" under the banner, the About header reads "Discography" — BUILT (sha 63adb392), INSTALLED 2026-10-02 (plugins page v0.56.25), CHECKED LIVE 2026-10-02; carries 0.56.22-0.56.24 (none installed)
 - **Source (Simon), while 0.56.23 and 0.56.24 were building:** *"needs a header too"*, then *"the page title should be
   Discography not About Discography"*.
 - **Change:** A2 `THE SEARCH BOX SITS BETWEEN THE BANNER AND ABOUT`. `_rootView` puts the "Find an artist" header
@@ -2071,8 +2282,8 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 - **Tests:** `t_searchbtn.pl` §5 rewritten (7); three wrong layouts mutated, all caught. **59 suites, 2,309
   assertions, 0 failures**; `syntax_check.sh` (zsh) clean. zip sha1 `63adb392378cf3f11ae17577e0506bad092f3b20`, 37 entries; CACHE_VERSION 0.56.25.
   0.56.24 (the header alone, sha 090dc468) was built and never handed over.
-- **Live check owed:** as 0.56.22's, with the home page reading banner, Find an artist, Discography (the About
-  text), Works best with.
+- **Live check DONE 2026-10-02:** as 0.56.22's, with the home page reading banner, Find an artist, Discography (the About
+  text), Works best with. Simon, on Muzz's biography and the home page: *"all good for these can be closed"*.
 
 ### 0.56.23 (2026-10-02) — the home page's search box goes under the banner (superseded by 0.56.24) — BUILT (sha 9ccacd36), never installed
 - **Source (Simon), on 0.56.22:** *"The search needs to be below the banner but above about discogrpahy"*.
@@ -2097,7 +2308,7 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   mutants (scratchpad `mutC10.py`): 19 caught, 1 equivalent (above). **59 suites, 2,309 assertions, 0 failures**;
   `syntax_check.sh` (zsh) clean. zip sha1 `3c8efed71a748fd4ebc9f4099ec2e3d1ba7ae715`, 37 entries; CACHE_VERSION
   0.56.22.
-- **Live check owed:** Muzz (opened from the library) shows the band's biography ("Muzz is an American band based
+- **Live check DONE via 0.56.25 (Simon, 2026-10-02: Muzz's biography and the home page *"all good for these can be closed"*):** Muzz (opened from the library) shows the band's biography ("Muzz is an American band based
   in New York City"); Jack's Cardiff biography unchanged; MUZZ the producer's page unchanged; the home page opens
   with the cursor in the search box on the Mac (not on a phone), the box above the banner and About.
 
@@ -3671,6 +3882,19 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 - **MERGED 2026-09-27** (#1270, upstream commit 34743899d; upstream ChangeLog 6.4.11 item 5, "Let a plugin show a
   row of tiles on a list page"). 6.4.11 NOT released as of 2026-10-02 (latest tag 6.4.10). The `_useStrips`
   change below is now due before 6.4.11 ships.
+- **Third PR (#1278, custom-action artist pages) OPEN since 2026-10-02:** an
+  `lmsbrowse` custom action with `"type":"artist"` opens its page as an online artist's (`STD_ITEM_ONLINE_ARTIST` +
+  the artist's photo: the item's image, or the current page's on Material's own artist page), so Discography opened
+  from the library Artists view gets the header (A3 `A CUSTOM ACTION PAGE NEVER GETS THE HEADER`). Branch
+  `plugin-artist-actions` off upstream/master b652e87b1 in `/Users/simona/Documents/GitHub/lms-material`: `customactions.js` (`customActionPage`, 12 lines) + the two `fetchItems` calls in `browse-page.js`
+  (`currentAction`, `itemCustomAction`). Test build **6.4.10.10** (`mkrel.py 6.4.10.10 --nocheck` on a `git archive`
+  + the two files, scratchpad `matbuild10`; zip `/Users/simona/Documents/GitHub/lms-material/lms-material-6.4.10.10.zip`,
+  sha1 8cf317d2; both call sites and the helper checked in `material.min.js`). Discography sends the field from
+  0.56.34. INSTALLED on the rig with Discography 0.56.35; Simon: *"that works"*, then *"draft the PR"*. PR text:
+  **`docs/material-PR-artist-actions.md`** (paste-ready). COMMITTED d82a637be on `plugin-artist-actions` and
+  PUSHED to the fork (SimonArnold002/lms-material) 2026-10-02 (Simon: *"yes"*). **PR #1278 OPENED by Simon 2026-10-02**
+  (https://github.com/CDrummond/lms-material/pull/1278), open. Until it ships, the header from the library Artists
+  view needs the 6.4.10.10 test build; Discography sends the field regardless (ignored by older Material).
 - **Second PR (#1276, `artist-link`) MERGED 2026-10-02** as upstream b652e87b1 (identical to fork 3b92941cc); not yet in
   the 6.4.11 ChangeLog. Test build 6.4.10.9 from it (dev log 0.56.29). Discography sends it from 0.56.29.
   Drafted earlier the same day as: **`docs/material-PR-artist-rows.md`** (a row of type `artist-link`

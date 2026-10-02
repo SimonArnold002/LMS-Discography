@@ -1,12 +1,13 @@
 # Round artist images and Material's artist header — plan
 
-**Status (2026-10-02): ROUTE B BUILT in 0.56.29** (not installed). Craig merged the PR the same day (#1276,
+**Status (2026-10-02): ROUTE B BUILT in 0.56.29, INSTALLED with Material 6.4.10.9 and CHECKED LIVE** (Simon: header
+with the bio first, no Play entry, the home page under the header all fine). Craig merged the PR the same day (#1276,
 upstream b652e87b1). Route A below was not built and is kept for reference only.
 
 ## Goal
 
 The rows that open an artist page show a round image, and the page they open gets Material's
-artist header (the photo and name at the top), as Qobuz and TIDAL artists do. The bio stays first
+artist header (the photo and name at the top), as Qobuz and TIDAL artists do. (Since 0.56.33 Options sits above the bio, Simon's order.) The bio stays first
 on the page and nothing else on the page changes.
 
 The rows: search result tiles (Top Result, Artists), the MusicBrainz same-name rows, Also a

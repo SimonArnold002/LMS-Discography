@@ -37,7 +37,7 @@ my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.30';
+use constant CACHE_VERSION => '0.56.36';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -980,7 +980,8 @@ sub topLevel {
         # the section "Show more" rows refresh the TOP view too. The visibility
         # snapshot is still reset — the refreshed render is a complete,
         # consistent new tree. `view` (the Albums | Singles toggle) is the same
-        # class again: its refresh re-issues the artist's own command.
+        # class again: its refresh re-issues the artist's own command. So is
+        # `opts` (More options / Fewer options, 0.56.32).
         my $prev = $lastCtx{ _cid($client) };
         my $same = $prev
             && ($prev->{artist_id} // '') eq ($artistId // '')
@@ -991,7 +992,7 @@ sub topLevel {
             features => $features,
             $same ? ( bio  => $prev->{bio}, rev => $prev->{rev},
                       ver  => $prev->{ver}, page => $prev->{page},
-                      view => $prev->{view} ) : (),
+                      view => $prev->{view}, opts => $prev->{opts} ) : (),
         };
     }
     elsif ($walking && (my $ctx = $lastCtx{ _cid($client) })) {
@@ -2556,7 +2557,8 @@ sub _buildList {
     my %bucket;
     push @{ $bucket{ _groupOf($_->[0]) } }, $_ for @render;
 
-    # Artist bio at the very top (the phase-2 artist-view vision, list-native):
+    # Artist bio, after Options and before the releases (0.56.33, Simon; it was
+    # the page's first section, the phase-2 artist-view vision):
     # summary + the same refresh-toggle inline expand the review uses. Awaited
     # in _discographyView, so its row count is fixed for the whole visit.
     # Rows come from _proseSection (LBF's parser — headings, bullets, paragraphs).
@@ -2607,23 +2609,46 @@ sub _buildList {
         { id => 'sect:BIO', itemActions => _listItemActions($opts, 'sect:BIO') }) if @bioRows;
     @bioRows = () if $singlesTab;    # a true tab: Options + Singles only
 
-    # Search rides here too, as a BUTTON that opens its own page (Simon,
-    # 2026-09-24): after any artist browse the app re-opens on that artist (the
-    # %lastCtx model), so the Apps-view search would be unreachable without it,
-    # but an inline search box got lost among the page's other rows, and
-    # Material draws it inline or as a popup depending on the page's size.
-    # The local-only toggle is offered whenever the user owns anything by this
-    # artist (or the filter is already on, so there is always a way back out).
+    # OPTIONS, COLLAPSED (0.56.32; Simon 2026-10-02: "is it possible to hide
+    # these like we do with text and open up if needed?", then "keep the Albums
+    # switch visible all else hidden"). The Albums | Singles switch stays out:
+    # it is the only way to Singles & EPs. Sort, the local-only filter and
+    # Refresh sit behind "More options", which opens them in place the way the
+    # bio's Read more does (`opts` in %lastCtx: kept while the same artist is
+    # re-entered, reset by another artist), and "Fewer options" closes them.
+    # The local-only row stays out while its filter is ON, so a filtered page
+    # always says so and the way back out is one tap. The local-only toggle is
+    # offered whenever the user owns anything by this artist.
+    # SEARCH IS BACK IN OPTIONS (0.56.35; Simon 2026-10-02: "Lets put search back
+    # in options. It only needs icon though to move us to search page", then
+    # "always visible"): one row with the search icon, after the switch, shown
+    # closed or open. 0.56.32-0.56.34 gave it its own section and header. The
+    # button opens the home page (0.54.4: after any artist browse the app
+    # re-opens on that artist, the %lastCtx model, so the Apps-view search would
+    # be unreachable without it; an inline box got lost among the page's rows
+    # and Material drew it inline or as a popup with the page's size).
+    my $optsOpen = $lastCtx{ _cid($client) }{opts};
     my @optRows = (($hasAlbums && $hasSingles) ? (_viewToggleItem($client, $opts, $view)) : (),
-                   _sortToggleItem($client, $opts),
-                   ((@$local || $localOnly) ? (_localOnlyToggleItem($client, $opts)) : ()),
-                   _refreshItem($client, $opts, $mbid),
+                   ($localOnly ? (_localOnlyToggleItem($client, $opts)) : ()),
                    _searchButtonRow($client, $opts));
-    my @items = (@bioRows,
+    if ($optsOpen) {
+        push @optRows, _sortToggleItem($client, $opts),
+                       ((@$local && !$localOnly) ? (_localOnlyToggleItem($client, $opts)) : ()),
+                       _refreshItem($client, $opts, $mbid),
+                       _optionsToggleRow($client, $opts, 0);
+    }
+    else {
+        push @optRows, _optionsToggleRow($client, $opts, 1);
+    }
+
+    # The page's order (Simon 2026-10-02): Options at the top, then the bio, then
+    # the releases.
+    my @items = (
         _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_OPTIONS', $useH,
             IMG_BASE . 'dsc-opt_MTL_icon_tune.png', \@optRows,
             { id => 'sect:OPT', itemActions => _listItemActions($opts, 'sect:OPT') }),
-        @optRows);
+        @optRows,
+        @bioRows);
 
     # Which groups the archive has a cover for, once per page (API::peekCoverFlags).
     my $coverFlags = Plugins::Discography::API->peekCoverFlags($mbid);
@@ -3329,7 +3354,7 @@ sub _searchRow {
     my $features = $opts->{features} // '';
     # line2 names what the search actually covers (the enabled sources, in
     # priority order — same names the result rows use).
-    my @srcs = map { $_->{name} } Plugins::Discography::Sources::orderedSources();
+    my @srcs = _searchSourceNames();
     return {
         name        => cstring($client, 'PLUGIN_DISCOGRAPHY_SEARCH'),
         type        => 'search',
@@ -3343,9 +3368,32 @@ sub _searchRow {
     };
 }
 
-# The artist page's way into search (Simon, 2026-09-24): a plain button that
-# opens the plugin's HOME page (_rootView: banner, Find an artist, About, Works
-# best with), rather than the search box sitting among the artist page's rows.
+# "More options" / "Fewer options" on the artist page (0.56.32): opens or
+# closes the hidden Options rows in place, the bio Read more's way (a
+# param-addressed tap, the flag in %lastCtx, then Material re-fetches the page).
+sub _optionsToggleRow {
+    my ($client, $opts, $open) = @_;
+    my $id = $open ? 'opt:more' : 'opt:less';
+    return {
+        name        => cstring($client, $open ? 'PLUGIN_DISCOGRAPHY_MORE_OPTIONS' : 'PLUGIN_DISCOGRAPHY_FEWER_OPTIONS'),
+        type        => 'link',
+        image       => IMG_BASE . ($open ? 'dsc-ver_MTL_icon_unfold_more.png' : 'dsc-pg_MTL_icon_unfold_less.png'),
+        nextWindow  => 'refresh',
+        id          => $id,
+        itemActions => _listItemActions($opts, $id),
+        url         => sub {
+            my ($c, $cb) = @_;
+            if ($open) { $lastCtx{ _cid($c) }{opts} = 1 }
+            else       { delete $lastCtx{ _cid($c) }{opts} }
+            $cb->({ items => [] });
+        },
+    };
+}
+
+# The artist page's way into search (Simon, 2026-09-24; reads "Search for
+# another artist" since 0.56.35, an Options row again): a plain button that
+# opens the plugin's HOME page (_rootView: banner, Find an artist, About),
+# rather than the search box sitting among the artist page's rows.
 # The home page is small, so Material draws its box inline (on a big artist
 # page it went popup; see CLAUDE.md, "renders inline OR as a click-to-popup").
 # The tap is param-addressed (item:act:search, the Refresh row's route); the
@@ -3356,7 +3404,7 @@ sub _searchButtonRow {
     my ($client, $opts) = @_;
     my $features = $opts->{features} // '';
     return {
-        name        => cstring($client, 'PLUGIN_DISCOGRAPHY_SEARCH'),
+        name        => cstring($client, 'PLUGIN_DISCOGRAPHY_SEARCH_ANOTHER'),
         type        => 'link',
         image       => MENU_SEARCH,
         id          => 'act:search',
@@ -3400,13 +3448,11 @@ sub _coverCollageRow {
     return { name => $html, type => 'text' };
 }
 
-# The app-root view — album-cover banner, search, about, and a live
-# plugin-status list, in the artist view's own visual language:
-# _sectionHeader dividers (real headers under Material w/ features:hi, text
-# dividers elsewhere), _proseRow indent for the about text, MTL/_svg icons
-# throughout. Status rows are type 'text' + image: XMLBrowser styles text
-# rows itemNoAction, so they render as dead one-liner rows with the plugin's
-# icon — a status readout, not a control.
+# The app-root view: album-cover banner, search, About, in the artist view's own
+# visual language (_sectionHeader dividers, real headers under Material with
+# features:hi and text dividers elsewhere; _proseRow indent for the about text).
+# "Works best with" is no longer here: it is the settings page's first section
+# (0.56.31, worksBestStrip).
 sub _rootView {
     my ($client, $features) = @_;
     my $useH = _wantHeaders($features);
@@ -3430,14 +3476,33 @@ sub _rootView {
     # as the list's FIRST row, on a computer (browse-page.js `<text-field
     # :focus="index==0 && !IS_MOBILE">`, read in the 6.4.10.8 the rig serves),
     # and a header is a row. So here it is never focused on arrival.
+    #
+    # THE SEARCH IS THE PAGE'S MAIN PART (0.56.31; Simon, 2026-10-02: "Search
+    # still feels to cramped in, as this is the main part of this page it needs
+    # space and to be more prominent", then chose the big title). Material draws
+    # the box as its own full-width text field (browse-page.js `<text-field>`),
+    # which no plugin field sizes or styles, so the space and weight come from
+    # the rows around it: a large title in place of the small section header,
+    # and under the box a small grey line naming what a search covers (the row's
+    # line2, which Material's inline box never shows), padded to leave a gap
+    # before About. Material draws a text row's HTML at the box's own left edge
+    # in weight 200 (style.css `.browse-text`), so the title sets its own size
+    # and weight. Header clients only: any other keeps the plain divider and no
+    # caption. Either way the box is the second row after the banner, where it
+    # was.
     my @search = ( _searchRow($client, { features => $features }) );
-    push @items,
-        _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_SEARCH_HDR', $useH, MENU_SEARCH, \@search),
-        @search;
+    if ($useH) {
+        push @items, _searchTitleRow($client), @search, _searchCaptionRow();
+    }
+    else {
+        push @items,
+            _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_SEARCH_HDR', $useH, MENU_SEARCH, \@search),
+            @search;
+    }
 
     # --- About ---
-    # The second prose row carries bottom padding: a visual gap before the
-    # next section, "Works best with" (Simon: the sections butted together).
+    # Text: Simon, 2026-10-02 (ABOUT_1 rewritten in 0.56.31; ABOUT_2 unchanged).
+    # The second prose row keeps its bottom padding, the page's end now.
     # Padding INSIDE the row keeps the item count/shape untouched (walk stability).
     my @about = (
         _proseRow(cstring($client, 'PLUGIN_DISCOGRAPHY_ABOUT_1')),
@@ -3447,16 +3512,53 @@ sub _rootView {
         _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_ABOUT_HDR', $useH, ICON, \@about),
         @about;
 
-    # --- Works best with (live detection) ---
-    # ONE dead text row holding a strip of tiles (Simon, 2026-09-24: five
-    # stacked rows took too much of the screen). Each tile is the plugin's OWN
+    return { items => \@items };
+}
+
+# The home page's search title (0.56.31): "Find an artist", large, with space
+# above it. A dead text row (no image, no url), so Material draws its HTML as
+# is; the size and weight are explicit because `.browse-text` sets weight 200.
+sub _searchTitleRow {
+    my ($client) = @_;
+    return {
+        name => "<div style='font-size:1.5em;font-weight:500;line-height:1.3;padding:20px 0 2px'>"
+              . _escHtml(cstring($client, 'PLUGIN_DISCOGRAPHY_SEARCH_HDR')) . '</div>',
+        type => 'text',
+    };
+}
+
+# The services a search covers, in priority order, as the result rows name
+# them (the search row's line2).
+sub _searchSourceNames {
+    return map { $_->{name} } Plugins::Discography::Sources::orderedSources();
+}
+
+# The small grey line under the home page's search box (0.56.31): MusicBrainz,
+# which every search asks, then the enabled sources. Its bottom padding is the
+# gap before About.
+sub _searchCaptionRow {
+    my $names = join(" \x{00B7} ", 'MusicBrainz', _searchSourceNames());
+    return {
+        name => "<div style='font-size:.85em;opacity:.7;padding:4px 0 24px'>" . _escHtml($names) . '</div>',
+        type => 'text',
+    };
+}
+
+# "WORKS BEST WITH" (0.56.31: the settings page's first section, Simon
+# 2026-10-02: "the works best with needs to move to the settings page at the
+# top"; was the home page's last section). Returns the strip's HTML, one block;
+# $margin is the strip's CSS margin. Settings::beforeRender calls it.
+sub worksBestStrip {
+    my ($client, $margin) = @_;
+    $margin //= '12px 8px 12px 16px';
+    # ONE strip of tiles (Simon, 2026-09-24: five stacked rows took too much of
+    # the screen). Each tile is the plugin's OWN
     # icon as a badge over its name and a green tick (installed) or muted cross;
     # the role ("Streaming source", ...) is the tile's hover tooltip only (his
     # pick). The strip wraps (flex-wrap), so a phone gets two lines and a wider
     # screen one. A not-installed plugin has no local logo to serve, so its tile
     # shows a grey placeholder and the whole tile is dimmed. Ticks/crosses are
-    # HTML entities (the no-non-ASCII-literals rule). These are the LAST rows on
-    # the page, so 5 -> 1 moves no row above them (positional walks unaffected).
+    # HTML entities (the no-non-ASCII-literals rule).
     # Badge src normalisation (0.42.1, field): _pluginDataFor('icon') is not
     # always a relative path — MAI returns a FULL REMOTE URL (herger.net
     # mai.svg), which a blind '/' prefix mangled into '/https://...' (broken
@@ -3514,15 +3616,8 @@ sub _rootView {
     push @tiles, $status->('Material Skin', $mat,
         'PLUGIN_DISCOGRAPHY_ROLE_MATERIAL',
         $mat ? '/material/html/images/icon.png' : undef);
-    my @plugins = ({ type => 'text', name =>
-        "<div style='display:flex;flex-wrap:wrap;gap:12px 8px;margin:12px 8px 12px 16px'>"
-      . join('', @tiles) . '</div>' });
-    push @items,
-        _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_PLUGINS_HDR', $useH,
-            IMG_BASE . 'dsc-opt_MTL_icon_tune.png', \@plugins),
-        @plugins;
-
-    return { items => \@items };
+    return "<div style='display:flex;flex-wrap:wrap;gap:12px 8px;margin:$margin'>"
+         . join('', @tiles) . '</div>';
 }
 
 # Legacy positional entry (classic web skin walk): same view, text from

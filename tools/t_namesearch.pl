@@ -160,7 +160,9 @@ sub q_for {   # the URL prefix of a quoted artist-field search (no limit)
     my ($name, $base) = @_;
     return ($base // $MB_BASE) . Plugins::Discography::API::_nameQuery('artist', $name, 0);
 }
-sub nsearch { scalar grep { index($_, 'artist?query=artist%3A%22') >= 0 } @QUERIES }
+# The name searches only: not the initials lift's combined `artist:"X" OR alias:"X"`
+# (0.56.36), which a short name like "La's" ("las") asks once after its answer.
+sub nsearch { scalar grep { index($_, 'artist?query=artist%3A%22') >= 0 && index($_, '%20OR%20alias%3A') < 0 } @QUERIES }
 
 # A "Genesis" reply of 30 entries. Positions 1-8 hold NO act named exactly
 # Genesis; the top hit is "The Genesis" (score 100, one extra token, so the

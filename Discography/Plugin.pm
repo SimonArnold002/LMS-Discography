@@ -341,6 +341,13 @@ our $REGISTERED = 0;
 # rebuilds render real ones.
 # "Discography", not "Full Discography" — streaming-gated matching means we
 # can't promise completeness (hide_unmatched drops what we can't play).
+# type => 'artist' (0.56.34): asks Material to open the page as an online
+# artist's, so a library artist's page gets the round artist header and photo
+# as one opened from our `artist-link` rows does (Simon 2026-10-02, the library
+# Artists view had no header). Material reads it only once Simon's custom-action
+# change is in (test build 6.4.10.10, branch plugin-artist-actions); an older
+# Material reads only the title and the command, so the field is ignored there
+# (ledger A3 `A CUSTOM ACTION PAGE NEVER GETS THE HEADER`).
 sub _materialAction {
     return {
         title => 'Discography',
@@ -348,6 +355,7 @@ sub _materialAction {
         lmsbrowse => {
             command => [ 'discography', 'items' ],
             params  => [ 'artist_id:$ARTISTID', 'artist:$TITLE', 'menu:discography', 'features:hi' ],
+            type    => 'artist',
         },
     };
 }

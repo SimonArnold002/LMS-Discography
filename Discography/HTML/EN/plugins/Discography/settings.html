@@ -1,5 +1,12 @@
 [% PROCESS settings/header.html %]
 
+[% IF dsc_works_best %]
+<div class="prefHead collapsableSection" id="dsc_works_Header">[% "PLUGIN_DISCOGRAPHY_PLUGINS_HDR" | string %]</div>
+<div id="dsc_works">
+	[% dsc_works_best %]
+</div>
+[% END %]
+
 <div class="prefHead collapsableSection" id="dsc_sources_Header">[% "PLUGIN_DISCOGRAPHY_SETTINGS_SOURCES" | string %]</div>
 <div id="dsc_sources">
 

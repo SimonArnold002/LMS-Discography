@@ -1,7 +1,8 @@
 package Plugins::Discography::Settings;
 
-# Settings page: source priorities (Local + streaming, with detection),
-# discography-view options, release-page mode, integration toggles.
+# Settings page: "Works best with" (the plugins it uses, detected), source
+# priorities (Local + streaming, with detection), discography-view options,
+# release-page mode, integration toggles.
 
 use strict;
 use base qw(Slim::Web::Settings);
@@ -133,6 +134,16 @@ sub beforeRender {
     # Local is rendered as its own always-present row.
     require Plugins::Discography::Sources;
     $params->{dsc_services} = Plugins::Discography::Sources::serviceStatus();
+
+    # "Works best with", the page's first section (0.56.31; Simon 2026-10-02:
+    # "the works best with needs to move to the settings page at the top"; was
+    # the home page's last section). The same strip, Browse::worksBestStrip.
+    # Reached at call time (no sibling `use`); if it fails the template drops
+    # the section and the rest of the page renders as before.
+    $params->{dsc_works_best} = eval {
+        require Plugins::Discography::Browse;
+        Plugins::Discography::Browse::worksBestStrip($client, '8px 0 4px');
+    } // '';
 
     # Checked-state map for the type checkboxes.
     my %on = map { $_ => 1 } split /\s*,\s*/, ($prefs->get('show_types') // '');

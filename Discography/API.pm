@@ -56,7 +56,7 @@ my $prefs = preferences('plugin.discography');
 # first module to call DB->store() sets it and later calls are ignored.
 # tools/syntax_check.sh asserts all three agree and match install.xml.
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.30';
+use constant CACHE_VERSION => '0.56.36';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 # The families DB.pm keeps across builds, by their CURRENT key prefix, so rows
 # written under an older key version are retired at open. Taken from the key
@@ -781,8 +781,10 @@ sub autodetectMirror {
 # offers a Refresh that clears the miss immediately (clearArtistMbid).
 # Bumped when RESOLUTION SEMANTICS change, not just the cached shape: v2 adds
 # the exact-name preference, and a v1 entry may hold a confidently wrong artist
-# (Bush -> Kate Bush) that would otherwise persist for 30 days.
-use constant MBID_CACHE_V => 2;
+# (Bush -> Kate Bush) that would otherwise persist for 30 days. v3 (0.56.36):
+# the initials lift (_initialsLift), so a v2 "ELO" still holding the act
+# literally named ELO goes now rather than in 30 days.
+use constant MBID_CACHE_V => 3;
 sub _mbidKey {
     my $k = 'dsc:mbid:' . MBID_CACHE_V . ':' . lc($_[0] // '');
     utf8::encode($k) if utf8::is_utf8($k);
@@ -1194,6 +1196,102 @@ sub _nameSearch {
     return;
 }
 
+# ---------------------------------------------------------------------------
+# THE INITIALS LIFT (0.56.36, resolver plan C1; Simon 2026-10-02: "we should be
+# looking at alieses for this if no alias for initials then we dont pass it,
+# keep it simple"). The exact-name preference (0.44.14) opens an act LITERALLY
+# named what was asked for, so an abbreviation opened an obscure act of that
+# name: "ELO" a Korean singer, "PIL" a Danish Pil. For a SHORT name (2-5
+# letters once spaces and dots go) the resolver asks one combined query,
+# `artist:"X" OR alias:"X"`, and takes an act instead when ALL of:
+#   1. MusicBrainz lists X as one of its ALIASES (no alias, no lift);
+#   2. its own name's initials spell X (_initials) -- without this, an alias
+#      alone moved Luna -> DJ Luna, Lamb -> Cainon Lamb, Cast -> [theatre];
+#   3. an act NAMED X exists, and this one scores above every such act -- with
+#      no act named X the resolver's own alias pass already answers (BTO), and
+#      lifting there broke OMD (-> Of Mexican Descent).
+# The best-scoring act wins. Measured on the PUBLIC API 2026-10-02 (ledger A3
+# `THE INITIALS LIFT NEEDS AN ACT NAMED THE ABBREVIATION`): ELO, PIL, NIN, EBTG
+# lift; ABC, TLC, HAIM, KLF, Bob, REM, GnR, SFA, OMD, BTO unchanged; none of the
+# library's 73 short-named album artists changes.
+# The shared-name guard must not call a lifted band the lesser act of a name it
+# is not literally called (_abbreviates).
+# ---------------------------------------------------------------------------
+
+# The initials of a multi-word name ("Electric Light Orchestra" -> "elo"), or ''
+# when there is no initialism to speak of: a one-word name, or a name that is
+# already single letters ("B.o.B", "R.E.M.") -- an abbreviation, not a name
+# spelled out; letting it lift made "Bob" open B.o.B (the 0.57.0 stash, measured).
+sub _initials {
+    my @w = split ' ', _nameKey($_[0]);
+    return '' unless @w >= 2 && grep { length > 1 } @w;
+    return join '', map { substr($_, 0, 1) } @w;
+}
+
+# The lift's key: the name folded with spaces dropped, when it is 2-5 letters;
+# '' otherwise (no lift is asked for).
+sub _initialsKey {
+    (my $k = _nameKey($_[0])) =~ s/ //g;
+    return (length($k) >= 2 && length($k) <= 5) ? $k : '';
+}
+
+# Which act of a combined reply the rule lifts, or undef. Pure (tools/t_initials.pl).
+sub _liftFrom {
+    my ($name, $arts) = @_;
+    my $key = _initialsKey($name) or return undef;
+    my $want = _nameKey($name);
+    my ($named, $top, @alias) = (0, 0);
+    for my $art (@{ ref $arts eq 'ARRAY' ? $arts : [] }) {
+        next unless ref $art eq 'HASH' && $art->{id} && !$MB_SPECIAL_ARTIST{ lc $art->{id} };
+        my $score = $art->{score} // 0;
+        if (_nameKey($art->{name}) eq $want) {
+            $named = 1;
+            $top = $score if $score > $top;
+            next;
+        }
+        next unless grep { ref $_ eq 'HASH' && _nameKey($_->{name} // '') eq $want }
+                    @{ ref $art->{aliases} eq 'ARRAY' ? $art->{aliases} : [] };
+        push @alias, $art if _initials($art->{name}) eq $key;
+    }
+    return undef unless $named;
+    my ($best) = sort { ($b->{score} // 0) <=> ($a->{score} // 0) }
+                 grep { ($_->{score} // 0) > $top } @alias;
+    return $best;
+}
+
+# Does $mbid's own name abbreviate to $name ("Electric Light Orchestra" for
+# "ELO")? Then the page is that band, not a lesser act sharing the name ELO.
+# Read from MB's canonical name (peekArtistName: the kept artist table, written
+# by the lift itself), NOT a marker of its own: a kv marker is emptied by every
+# new build while the name's answer (the kept mbid table) survives it, so the
+# band would lose its bio again after an update.
+sub _abbreviates {
+    my ($name, $mbid) = @_;
+    my $key = _initialsKey($name) or return 0;
+    return 0 unless $mbid;
+    my $canon = __PACKAGE__->peekArtistName($mbid);
+    return (defined $canon && _initials($canon) eq $key) ? 1 : 0;
+}
+
+# _initialsLift($name, sub($art|undef)): one combined query for a short name.
+# Any failure answers undef, so the resolver keeps the answer it had.
+sub _initialsLift {
+    my ($class, $name, $cb) = @_;
+    return $cb->(undef) unless _initialsKey($name);
+    my $q = 'artist:"' . $name . '" OR alias:"' . $name . '"';
+    utf8::encode($q) if utf8::is_utf8($q);
+    (my $safe = $q) =~ s/([^A-Za-z0-9])/sprintf("%%%02X",ord($1))/ge;
+    _netGet(_mbBase() . 'artist?query=' . $safe . '&fmt=json&limit=25',
+        sub {
+            my $data = eval { from_json(shift->content) };
+            my $arts = (!$@ && ref $data eq 'HASH' && ref $data->{artists} eq 'ARRAY') ? $data->{artists} : [];
+            $cb->(_liftFrom($name, $arts));
+        },
+        sub { $cb->(undef) },
+        timeout => 12);
+    return;
+}
+
 # $fetch: how many entries the shared first pass asks for when it has to send
 # (NAME_FETCH on a page or a search, 8 otherwise). The resolver reads the first
 # 8 whatever it fetched; the extra entries are for the same-name set that comes
@@ -1272,11 +1370,29 @@ sub _artistMbidByName {
     # the public retry available (and only once, guarded by $isFallback).
     my $mirror = !_mbThrottled();
 
-    my $store = sub {
+    my $save = sub {
         my ($mbid) = @_;
         eval { $cache->set($cacheKey, $mbid, $mbid ? MBID_FOUND_TTL : MBID_EMPTY_TTL); 1 }
             or $log->warn("artist-mbid cache set failed: $@");
         $onDone->($mbid || undef);
+    };
+    # The initials lift (above), last, on whatever the passes settled on.
+    my $store = sub {
+        my ($mbid) = @_;
+        $class->_initialsLift($name, sub {
+            my ($art) = @_;
+            if ($art && lc $art->{id} ne lc($mbid // '')) {
+                my $lifted = lc $art->{id};
+                _dbg("MB artist search '$name': initials lift - '" . ($art->{name} // '?')
+                    . "' ($lifted, aka '$name') over " . ($mbid || 'nothing'));
+                # Its canonical name, kept: the page's name, and what
+                # _abbreviates reads for the shared-name guard.
+                $mbNameMem{$lifted} = $art->{name} if defined $art->{name};
+                _setMbName($lifted, $art->{name});
+                $mbid = $lifted;
+            }
+            $save->($mbid);
+        });
     };
 
     # A ZERO-RELEASE ARTIST IS NOT AN ANSWER — but it is a fallback of last
@@ -1981,6 +2097,9 @@ sub _sharesDecision {
 sub sharesNameWithProminent {
     my ($class, $name, $mbid) = @_;
     return 0 unless $mbid;
+    # A band whose name abbreviates to this one is the name's main act, not a
+    # lesser one sharing it (ELO is not one of the acts named "ELO").
+    return 0 if _abbreviates($name, $mbid);
     my $cands = $class->peekArtistCandidates($name) or return 0;
     return _sharesDecision($cands, $name, $mbid);
 }
@@ -1991,6 +2110,7 @@ sub sharesNameWithProminentAsync {
     my ($class, $name, $mbid, $cb) = @_;
     $cb ||= sub {};
     return $cb->(0) unless $mbid && defined $name && length $name;
+    return $cb->(0) if _abbreviates($name, $mbid);    # see sharesNameWithProminent
     if (my $c = $class->peekArtistCandidates($name)) {
         return $cb->(_sharesDecision($c, $name, $mbid));
     }

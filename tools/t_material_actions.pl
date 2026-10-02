@@ -143,6 +143,8 @@ ok(join('|', @{ $OURS->{lmsbrowse}{params} })
        eq 'artist_id:$ARTISTID|artist:$TITLE|menu:discography|features:hi',
    '1: all four params, menu:discography and features:hi included');
 ok(!exists $OURS->{lmscommand}, '1: an lmsbrowse action, not an lmscommand');
+ok(($OURS->{lmsbrowse}{type} // '') eq 'artist',
+   '1: lmsbrowse type "artist": Material (6.4.10.10+) opens the page as an online artist, with the header');
 ok(Plugins::Discography::Plugin::_isOurAction($OURS), '1: the cleanup recognises our own action');
 
 # ===================================================================================

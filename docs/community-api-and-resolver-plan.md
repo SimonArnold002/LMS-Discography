@@ -3,8 +3,8 @@
 
 **Status 2026-10-01: Part B BUILT; Part A in part; Part C APPROVED (Simon: "yes lets move forward"), C3 + C5 BUILT
 as 0.56.17 and CHECKED LIVE; its one open case (a non-Latin name opened cold) fixed in 0.56.18 (checked live; its 王菲 regression fixed in 0.56.19, checked live; the "Faye Wong" page's gap fixed in 0.56.20, checked live), C4 DECLINED in the ledger, C2 BUILT as 0.56.21 (measured
-beyond Simon's library first, below) and CHECKED LIVE, C1 next; Part D not started.** Everything through
-0.56.25 is committed and pushed to `dev` (62e0813, 2026-10-02) and INSTALLED on the rig (2026-10-02; its Muzz biography and home page live check still owed); 0.56.26 (outside the plan: a first visit waits for Qobuz/TIDAL; no archive cover fetched while browsing) and 0.56.27 (outside the plan: the missing archive covers fetched after the visit, with LBF's resizing) 0.56.28 (tile strips on Material 6.4.11 and later), 0.56.29 (artist rows round, with Material's artist header) and 0.56.30 (archive covers at 05:00 only, never for a release with no cover) are committed and pushed to `dev` together (2026-10-02); 0.56.30 is INSTALLED on the rig (2026-10-02; no freeze after a first visit, measured; the 05:00 covers still to see).
+beyond Simon's library first, below) and CHECKED LIVE, C1 BUILT as 0.56.36 and CHECKED LIVE; Part D next, not started.** Everything through
+0.56.25 is committed and pushed to `dev` (62e0813, 2026-10-02) and INSTALLED and CHECKED LIVE on the rig (2026-10-02: Muzz's biography and the home page); 0.56.26 (outside the plan: a first visit waits for Qobuz/TIDAL; no archive cover fetched while browsing) and 0.56.27 (outside the plan: the missing archive covers fetched after the visit, with LBF's resizing) 0.56.28 (tile strips on Material 6.4.11 and later), 0.56.29 (artist rows round, with Material's artist header; CHECKED LIVE) and 0.56.30 (archive covers at 05:00 only, never for a release with no cover) are committed and pushed to `dev` together (2026-10-02); 0.56.30 is INSTALLED on the rig (2026-10-02; no freeze after a first visit, measured; the 05:00 covers still to see). 0.56.31-0.56.36 are committed and pushed to `dev` together (2026-10-02): 0.56.31 (outside the plan: the home page's search gets a big title and a caption, Works best with moves to the top of the settings page, new About text) and 0.56.32 (outside the plan: the artist page's Options collapsed behind More options) were INSTALLED; 0.56.33 (the artist page's order) and 0.56.34 (our Material menu entry asks for an artist page; needs the Material change, PR #1278) were built only; 0.56.35 (Search back in Options, always visible) is INSTALLED with Material test build 6.4.10.10 and works; 0.56.36 (C1, the initials lift) is INSTALLED and CHECKED LIVE.
 - **Part C** (§5) was rewritten on 2026-10-01 from today's code and today's measurements: what is already done, what
   is left (C1 initials, C2 an owned artist with no MusicBrainz tag, C3 the same releases whichever name opened the
   page, C4 §A7 #4 decided, C5 two smaller gaps), and the live list. Approved the same day; built in §5.4's order.
@@ -290,6 +290,17 @@ never opens B.o.B (measured in September); the search already shows the owned R.
   first search or name-entered page of such a name on the public API.
 - **Before it ships:** replay the rule over the library's album artists through the real code. September's
   "changes none of the 1,117" was measured on the mirror with the stashed code.
+- **MEASURED 2026-10-02 on the PUBLIC API** (scratchpad `c1replay.pl`: the real `_artistMbidByName` beside the
+  rule; 356 names, 1,108 requests): the BTO row above is WRONG on two counts (ledger A3 `THE INITIALS LIFT NEEDS AN
+  ACT NAMED THE ABBREVIATION`). BTO resolves today (the alias pass), and lifting where no act is named the query
+  breaks OMD (Orchestral Manoeuvres in the Dark -> Of Mexican Descent). With the stash's condition, an act NAMED the
+  query must exist: ELO, PIL, NIN, EBTG lift; every unchanged name above stays; 0 of the 73 short-named library album
+  artists change; the initials of 269 library artists open the owned act 13 -> 24 times (none lost); 15 more open a
+  different act known by those initials instead of one literally named them (TMG: Ted Mulry Gang, BOC: Blue Öyster
+  Cult; the owned act has no such alias on MusicBrainz).
+- **BUILT as 0.56.36 (2026-10-02), INSTALLED and CHECKED LIVE the same day** with that rule (ledger A2 `THE INITIALS LIFT`). Replayed through the BUILT
+  `_artistMbidByName` on the public API: the predicted answer for 87 of 87 (the 14 list names and the 73 short-named
+  library album artists); only ELO, PIL, NIN, EBTG change.
 
 **C2. An owned artist whose files carry no MusicBrainz artist tag.** BUILT as 0.56.21 with the revised rules below
 (CLAUDE.md A2 `AN UNTAGGED LIBRARY ARTIST IS NAMED BY ITS ALBUMS`); the built code replayed on both populations:
@@ -422,6 +433,14 @@ The ledger decision `THE SEARCH LIST IS MUSICBRAINZ-FIRST` stands (Simon: "searc
 discography then streaming to make matches"); it is not in the code since the revert. Rebuilt on Parts B and C:
 rows are the ranked MusicBrainz acts, service and library rows join them by resolved mbid (now available on
 public too), owned acts first.
+
+**Still true on 0.56.36 (measured live 2026-10-02):** an act MusicBrainz knows under a name no other act has, on no
+service and not owned, is missing from the search. "Jandek" resolves to 61a21fb6 on MusicBrainz, but
+`_withMbCandidates` lists MusicBrainz acts only when two or more share the name (`@$cands < 2` -> "none listed"),
+so the list shows only Qobuz's "JanDeKid". The background row check then drops that row, so the next search shows
+"No artists found". This is the same gap as Hawkwind on 0.55.1 (ledger, "Field (Simon): searching "Hawkwind" and
+"ELO" both failed"). A misspelt or partial name reaches only what the services' own search finds, because
+MusicBrainz acts are listed by exact name only.
 
 ## 7. Order of work
 

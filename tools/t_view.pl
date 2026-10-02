@@ -177,7 +177,9 @@ ok(scalar(!has($s, 'sect:ALBUMS') && !has($s, 'sect:LIVE')),
    '2: Singles view hides every other release section');
 ok(scalar(!has($s, 'sect:BIO') && !has($s, 'sect:BANDS') && !has($s, 'sect:SIMILAR') && !has($s, 'sect:STREAM')),
    '2: Singles view is a true tab: no bio, extras or links');
-ok(scalar(has($s, 'sect:OPT') && has($s, 'act:refresh') && has($s, 'act:search')), '2: Options is still there');
+ok(scalar(has($s, 'sect:OPT') && has($s, 'opt:more') && has($s, 'act:search') && !has($s, 'sect:FIND')),
+   '2: Options (collapsed, with Search) is still there');
+ok(scalar((ids($s))[0] eq 'sect:OPT'), '2: Options first on the Singles tab too');
 my $tog2 = row($s, 'act:view:albums');
 ok(scalar($tog2 && $tog2->{name} eq 'Showing Singles & EPs (tap for Albums)'), '2: toggle now reads "Showing Singles & EPs (tap for Albums)"');
 ok(scalar(($tog2->{image} // '') =~ /release-single/), "2: the toggle's icon shows the current view");
@@ -322,6 +324,111 @@ for my $v (['albums', $tog2], ['singles', $tog]) {
     my ($t0) = grep { ref $_ eq 'HASH' && ($_->{name} // '') eq 'Flag 1' } @$items;
     ok(scalar($t0 && ($t0->{image} // '') !~ /^caa-/ && !exists $t0->{_caaWant}),
        '9: a flagged-none tile shows its type icon and names nothing to fetch');
+}
+
+# 10. OPTIONS COLLAPSED (0.56.32; Simon 2026-10-02: hide the options "like we do
+#     with text and open up if needed", "keep the Albums switch visible all else
+#     hidden"), SEARCH BACK IN OPTIONS, ALWAYS VISIBLE (0.56.35: "Lets put search
+#     back in options. It only needs icon though to move us to search page").
+#     Through the REAL _buildList and _listItemDispatch, the bio Read more's
+#     mechanics.
+{
+    no warnings 'redefine'; no strict 'refs';
+    local *{"${B}::_discographyView"} = sub { my ($c, $cb) = @_; $cb->({ items => build(\@full) }) };
+    my $tap = sub { my $got; $B->can('_listItemDispatch')->(undef, sub { $got = shift }, { %$opts }, $_[0]); $got };
+    my $SORT  = 'plugins/Discography/html/images/dsc-sort_MTL_icon_sort.png';
+    my $LOCAL = 'plugins/Discography/html/images/dsc-lib_MTL_icon_library_music.png';
+    # The rows between the Options header and the next header, by id or image.
+    my $optKinds = sub {
+        my ($items) = @_;
+        my @i = @$items;
+        my ($o) = grep { ($i[$_]{id} // '') eq 'sect:OPT' } 0 .. $#i;
+        return () unless defined $o;
+        my @k;
+        for my $r (@i[$o + 1 .. $#i]) {
+            last if ($r->{type} // '') =~ /^header/;
+            push @k, ($r->{image} // '') eq $SORT ? 'sort' : ($r->{image} // '') eq $LOCAL ? 'local'
+                   : ($r->{id} // '') =~ /^act:view:/ ? 'view' : ($r->{id} // '?');
+        }
+        return @k;
+    };
+    $tap->('opt:less');                                  # start closed, whatever ran before
+    $tap->('act:view:albums');                           # ... and on Albums (section 7 leaves Singles)
+    my $p = build(\@full);
+    ok(scalar(join(',', $optKinds->($p)) eq 'view,act:search,opt:more'),
+       '10: closed: Options shows the Albums switch, Search, then More options (got ' . join(',', $optKinds->($p)) . ')');
+    ok(scalar(!has($p, 'act:refresh') && !grep { ($_->{image} // '') eq $SORT } @$p),
+       '10: closed: sort and Refresh are hidden');
+    my $more = row($p, 'opt:more');
+    ok(scalar($more && ($more->{name} // '') eq 'PLUGIN_DISCOGRAPHY_MORE_OPTIONS' && ($more->{nextWindow} // '') eq 'refresh'
+              && ($more->{itemActions}{items}{fixedParams}{item} // '') eq 'opt:more'),
+       '10: More options opens in place (nextWindow refresh) by its own id');
+    # The page's order (Simon 2026-10-02): Options at the top, then the bio, then
+    # the releases; no separate search section (0.56.35).
+    my @ids = ids($p);
+    my $at = sub { my ($re) = @_; (grep { $ids[$_] =~ $re } 0 .. $#ids)[0] };
+    my ($iO, $iM, $iB, $iR) = map { $at->($_) }
+        (qr/^sect:OPT$/, qr/^opt:more$/, qr/^sect:BIO$/, qr/^sect:(?:ALBUMS|SINGLES|EPS)$/);
+    ok(scalar(defined $iO && $iO == 0 && !has($p, 'sect:FIND')), '10: Options is the page\'s first section; no search section');
+    ok(scalar(defined $iM && defined $iB && $iB > $iM && defined $iR && $iR > $iB), '10: then the bio, then the releases');
+    my $srch = row($p, 'act:search');
+    ok(scalar(($srch->{name} // '') eq 'PLUGIN_DISCOGRAPHY_SEARCH_ANOTHER' && ($srch->{type} // '') eq 'link'
+              && ($srch->{image} // '') =~ /dsc-find_MTL_icon_search\.png$/),
+       '10: the Search row reads "Search for another artist" with the search icon, a plain link');
+    {
+        my $str = do { local (@ARGV, $/) = ("$FindBin::Bin/../Discography/strings.txt"); <> };
+        ok(scalar($str =~ /^PLUGIN_DISCOGRAPHY_SEARCH_ANOTHER\n\tEN\tSearch for another artist$/m),
+           '10: the row string reads "Search for another artist"');
+    }
+
+    my $got = $tap->('opt:more');
+    ok(scalar(ref $got eq 'HASH' && !@{ $got->{items} || [] }), '10: the More options tap answers empty (the refresh re-renders)');
+    $p = build(\@full);
+    ok(scalar(join(',', $optKinds->($p)) eq 'view,act:search,sort,act:refresh,opt:less'),
+       '10: open: the switch, Search, sort, Refresh, then Fewer options (got ' . join(',', $optKinds->($p)) . ')');
+    ok(scalar(!has($p, 'opt:more') && has($p, 'act:search')), '10: open: no More options; Search still there');
+    $p = build(\@full);
+    ok(scalar(has($p, 'act:refresh')), '10: it stays open on the next render of the same page');
+    $tap->('opt:more');
+    ok(scalar(has(build(\@full), 'act:refresh') && !has(build(\@full), 'opt:more')), '10: a second More options tap changes nothing');
+
+    $got = $tap->('opt:less');
+    ok(scalar(ref $got eq 'HASH'), '10: the Fewer options tap answers');
+    ok(scalar(join(',', $optKinds->(build(\@full))) eq 'view,act:search,opt:more'), '10: Fewer options closes them again');
+    $tap->('opt:less');
+    ok(scalar(join(',', $optKinds->(build(\@full))) eq 'view,act:search,opt:more'), '10: a stale Fewer options tap changes nothing');
+
+    # The only-what-I-own filter ON: its row stays out (closed AND open), once.
+    my $lb = sub { $B->can('_buildList')->(undef, { %$opts, local_only => 1 }, 'artist-mbid', \@full, 'A bio paragraph.', []) };
+    ok(scalar(join(',', $optKinds->($lb->())) eq 'view,local,act:search,opt:more'),
+       '10: with the filter on, closed: the switch, the filter row (the way back out), More options');
+    $tap->('opt:more');
+    ok(scalar(join(',', $optKinds->($lb->())) eq 'view,local,act:search,sort,act:refresh,opt:less'),
+       '10: with the filter on, open: the filter row once, not twice');
+    $tap->('opt:less');
+
+    # The user owns something by the artist, filter off: the filter row is one
+    # of the hidden ones (offered when open, not when closed).
+    my $own = sub { $B->can('_buildList')->(undef, { %$opts }, 'artist-mbid', \@full, 'A bio paragraph.',
+                       [ { name => 'Kid A', id => 9, _svc => 'Local', _albumid => 9, _candArtist => 'Radiohead' } ]) };
+    ok(scalar(join(',', $optKinds->($own->())) eq 'view,act:search,opt:more'), '10: owned, filter off, closed: the filter row is hidden');
+    $tap->('opt:more');
+    ok(scalar(join(',', $optKinds->($own->())) eq 'view,act:search,sort,local,act:refresh,opt:less'),
+       '10: owned, filter off, open: sort, the filter row, Refresh');
+    $tap->('opt:less');
+
+    # An artist with no Singles: no switch, only More options.
+    my $one = $B->can('_buildList')->(undef, { %$opts }, 'artist-mbid', [ rg('OK Computer', 'Album') ], undef, []);
+    ok(scalar(join(',', $optKinds->($one)) eq 'act:search,opt:more'), '10: an albums-only artist: Search and More options');
+}
+# The open state is kept on a same-artist re-entry (sort and the filter re-enter;
+# so does Material's refresh after the tap) and dropped for another artist: the
+# one line in topLevel's $same branch (source check, as section 5).
+{
+    open my $fh, '<', "$FindBin::Bin/../Discography/Browse.pm" or die $!;
+    my $src = do { local $/; <$fh> };
+    ok(scalar($src =~ /\$same \? \([^)]*opts\s*=>\s*\$prev->\{opts\}[^)]*\) : \(\)/s),
+       '10: a same-artist fresh entry keeps the open state; another artist starts closed');
 }
 
 print "\n$pass passed, $fail failed\n";

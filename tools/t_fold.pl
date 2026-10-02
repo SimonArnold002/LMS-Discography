@@ -344,7 +344,7 @@ ok(!$API->peekArtistEmpty(undef), 'no mbid is never "empty"');
 #    (0.43.2), so the recovered mbid is what lets a clear-by-name reach them.
 # ---------------------------------------------------------------------------
 %CACHE = ();
-my $nameKey = 'dsc:mbid:2:luke bushell';
+my $nameKey = Plugins::Discography::API::_mbidKey('Luke Bushell');   # the real key (v3 since 0.56.36)
 $CACHE{$nameKey} = $MBID;
 $API->markArtistEmpty($MBID, 'Luke Bushell');
 my ($cleared, $used) = $API->clearArtistCache(name => 'Luke Bushell');
