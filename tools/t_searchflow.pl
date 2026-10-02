@@ -34,6 +34,7 @@ our (%RESOLVED, @PEEKED); # section 9: the name resolver's cached answers, and w
 our %LIBMBID;             # section 9: the album lookup's kept answers, by library id (C2)
 our ($FUZZY, @FUZZY_ASKED); # section 11: the closest names MusicBrainz answers, and who asked
 our @CANDS_ASKED;           # section 12: the names the same-name acts were asked for
+our (%ENREAD, @ALIASES);    # section 13: the artist read's English names / aliases, by mbid
 
 BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
@@ -86,7 +87,8 @@ BEGIN {
         return $_[2]->([ map { +{ %$_ } } @$main::CANDS ]) if $main::CANDS;
         $_[2]->([ map { { mbid => main::id($_), name => 'Genesis' } } 1 .. 3 ]);
     };
-    *{"${A}::peekArtistAliases"} = sub { [] };
+    *{"${A}::peekArtistAliases"} = sub { @main::ALIASES ? [ @main::ALIASES ] : [] };
+    *{"${A}::peekArtistEnglishName"} = sub { $main::ENREAD{ $_[1] // '' } };
     *{"${A}::warmCandidateCounts"} = sub {
         my ($class, $cands, $cb) = @_;
         push @main::WARMED, map { $_->{mbid} } @{ $cands || [] };
@@ -917,6 +919,114 @@ section('12', sub {
        '12: rows all dropped -> nothing found; among the closest names, Various Artists by name or by id is dropped too');
     ok(scalar("@WARMED" eq id(2)), '12: ... and only the kept name has its count asked');
     ($CANDS, $FUZZY) = (undef, undef);
+});
+
+section('13', sub {
+    # -----------------------------------------------------------------------
+    # 13. A NAME WITH NO LATIN LETTER IS TITLED WITH ITS ENGLISH ONE (0.56.42;
+    #     Simon: "display the default from MB but with english translation as
+    #     well", then "In the title"). Measured on 0.56.41: 宇多田ヒカル's row
+    #     read "aka Cubic U", 坂本龍一's "aka R.S." (the first alias), Qobuz's
+    #     王菲 and КИНО rows no English at all. The English name is MB's primary
+    #     English alias, from the search reply (`en`) or the artist read's cache.
+    #     Display only: a tap opens the real name.
+    # -----------------------------------------------------------------------
+    no warnings 'redefine'; no strict 'refs';
+    local *{"${B}::_searchResultItems"} = $realItems;
+    local *{"${B}::_mbCandidateRow"}    = $realMbRow;
+    local *{"${B}::_sectionHeader"}     = $realHdr;
+    local *{"${B}::_useStrips"}         = sub { 0 };
+    local *{'Plugins::Discography::Sources::orderedAdapters'} = sub { ({ name => 'Qobuz' }) };
+    my $WJ = "\x{2060}";
+    my $fx  = sub { ((($_[0]{itemActions} || {})->{items} || {})->{fixedParams} || {}) };
+    my $mb  = sub { $realMbRow->('client', $_[0], '', 1) };
+
+    # Its own act rows (the same-name acts, the lone act, the closest names).
+    @ALIASES = ('Cubic U'); %ENREAD = ();
+    my $r = $mb->({ mbid => id(1), name => "宇多田ヒカル", en => 'Hikaru Utada',
+                    disambiguation => 'Japanese-American singer-songwriter', type => 'Person' });
+    ok(scalar($r->{name} eq "宇多田ヒカル (Hikaru Utada)"), '13: an act row: "宇多田ヒカル (Hikaru Utada)"');
+    ok(scalar(($r->{line2} // '') eq "Japanese-American singer-songwriter \x{00B7} Person"),
+       '13: ... and no "aka Cubic U" (the first alias is another spelling): the description as before');
+    ok(scalar($fx->($r)->{artist} eq "宇多田ヒカル" && $fx->($r)->{mbid} eq id(1)
+              && ($r->{passthrough}[0]{c_name} // '') eq "宇多田ヒカル"),
+       '13: ... a tap opens the real name and mbid');
+    ok(scalar(($r->{image} // '') !~ /Hikaru/), '13: ... its photo is looked up by the real name');
+    # LMS hands names over as CHARACTERS; the literals above are UTF-8 bytes.
+    my $chars = "宇多田ヒカル"; utf8::decode($chars);
+    $r = $mb->({ mbid => id(1), name => $chars, en => 'Hikaru Utada' });
+    ok(scalar($r->{name} eq "$chars (Hikaru Utada)" && $fx->($r)->{artist} eq $chars),
+       '13: ... the same with the name in characters, as LMS hands it');
+    %ENREAD = (id(2) => 'Ryuichi Sakamoto'); @ALIASES = ('R.S.');
+    $r = $mb->({ mbid => id(2), name => "坂本龍一" });
+    ok(scalar($r->{name} eq "坂本龍一 (Ryuichi Sakamoto)" && ($r->{line2} // '') !~ /aka/),
+       '13: no English name in the reply -> the artist read\'s (cache), and no "aka R.S."');
+    %ENREAD = (); @ALIASES = ('Ryuichi');
+    $r = $mb->({ mbid => id(3), name => "坂本龍一" });
+    ok(scalar($r->{name} eq "坂本龍一" && ($r->{line2} // '') =~ /^aka Ryuichi/),
+       '13: no English name anywhere -> the name alone, and the aka as before');
+    $r = $mb->({ mbid => id(4), name => "宇多田ヒカル", en => "宇多田光" });
+    ok(scalar($r->{name} eq "宇多田ヒカル"), '13: an "English" name with no Latin letter is not added');
+    @ALIASES = ('Tony Madness');
+    $r = $mb->({ mbid => id(5), name => 'Madness', en => 'Madness Crew' });
+    ok(scalar($r->{name} eq 'Madness' && ($r->{line2} // '') =~ /^aka Tony Madness/),
+       '13: control: a Latin name is never retitled, and keeps its aka (the name its records sell under)');
+    @ALIASES = ();
+
+    # Result rows from the services and the library, through the real search page.
+    my $out;
+    my $run = sub {
+        my ($q, $merged) = @_;
+        $out = undef; @WARMED = ();
+        $realWith->('client', sub { $out = $_[0] }, '', $q, $merged);
+        return [ map { [ ($_->{name} // '') =~ s/$WJ//gr, $fx->($_)->{artist} // '' ] }
+                 grep { ($_->{type} // '') ne 'text' && ($_->{name} // '') !~ /^PLUGIN_/ }
+                 @{ ($out || {})->{items} || [] } ];
+    };
+    my $names = sub { join('|', map { $_->[0] } @{ $_[0] }) };
+    ($STRIPS, $LAYOUT, %COUNT, %LIBMBID) = (0, undef);
+    $CANDS = [ { mbid => id(11), name => "王菲", en => 'Faye Wong', disambiguation => 'Chinese singer-songwriter & actress' },
+               { mbid => id(12), name => "王菲", disambiguation => 'Taiwan singer and actor' } ];
+    %COUNT = (id(11) => 30, id(12) => 3);
+    %RESOLVED = (lc("王菲") => id(11));
+    my $got = $run->("王菲", [ { name => "王菲", sources => ['Qobuz'], _seq => 0 } ]);
+    ok(scalar($got->[0][0] eq "王菲 (Faye Wong)" && $got->[0][1] eq "王菲"),
+       '13: Qobuz\'s 王菲 (the act it opens, by the resolver\'s answer, is Faye Wong) -> "王菲 (Faye Wong)", opening "王菲"');
+    ok(scalar($names->($got) =~ /\|王菲$/), '13: ... the other act of the name has no English name: titled as before');
+
+    # The same act, but the English name only in the artist read's cache.
+    $CANDS = [ { mbid => id(21), name => "КИНО" } ];
+    %RESOLVED = (lc("КИНО") => id(21)); %ENREAD = (id(21) => 'Kino'); %COUNT = (id(21) => 20);
+    $got = $run->("Кино", [ { name => "КИНО", sources => ['Qobuz'], _seq => 0 } ]);
+    ok(scalar($got->[0][0] eq "КИНО (Kino)"), '13: Qobuz\'s КИНО -> "КИНО (Kino)" (the artist read\'s cache)');
+
+    # The library: by its tag; an untagged owned row gets nothing (its page resolves by name).
+    %ENREAD = (id(31) => 'Kenshi Yonezu'); $CANDS = []; %RESOLVED = (lc("米津玄師") => id(31));
+    $got = $run->("米津玄師", [ { name => "米津玄師", artist_id => 7, sources => ['Local'], _ident_mbid => id(31), _seq => 0 } ]);
+    ok(scalar($got->[0][0] eq "米津玄師 (Kenshi Yonezu)"), '13: an owned row by its library tag -> titled');
+    $got = $run->("米津玄師", [ { name => "米津玄師", artist_id => 7, sources => ['Local'], _seq => 0 } ]);
+    ok(scalar($got->[0][0] eq "米津玄師"), '13: an owned row with no tag -> as before (never a name guess)');
+    @PEEKED = ();
+    $got = $run->('Kenshi Yonezu', [ { name => 'Kenshi Yonezu', sources => ['Qobuz'], _seq => 0 } ]);
+    ok(scalar($got->[0][0] eq 'Kenshi Yonezu'), '13: control: a Latin row name is never retitled');
+    ok(scalar(!grep { $_ eq 'Kenshi Yonezu' } @PEEKED), '13: ... and costs no lookup of the act it opens');
+
+    # A cached row (the 10-minute search list) is stamped afresh on every search.
+    my $cachedRow = { name => "王菲", sources => ['Qobuz'], _seq => 0 };
+    $CANDS = [ { mbid => id(11), name => "王菲", en => 'Faye Wong' } ]; %RESOLVED = (lc("王菲") => id(11));
+    %COUNT = (id(11) => 30); %ENREAD = ();
+    $run->("王菲", [ $cachedRow ]);
+    $CANDS = [ { mbid => id(11), name => "王菲" } ];
+    $got = $run->("王菲", [ $cachedRow ]);
+    ok(scalar($got->[0][0] eq "王菲"), '13: a cached row keeps no English name a later search no longer has');
+
+    # The one act of the name as the Top Result (0.56.37), from the reply's English name.
+    $CANDS = [ { mbid => id(31), name => "米津玄師", en => 'Kenshi Yonezu' } ]; %ENREAD = ();
+    %COUNT = (id(31) => 40);
+    $got = $run->("米津玄師", []);
+    ok(scalar($got->[0][0] eq "米津玄師 (Kenshi Yonezu)" && $got->[0][1] eq "米津玄師"),
+       '13: the one act no row opens, as the Top Result -> "米津玄師 (Kenshi Yonezu)", opening "米津玄師"');
+    ($CANDS, %RESOLVED, %COUNT, %ENREAD) = (undef);
 });
 
 print "\n$pass passed, $fail failed\n";

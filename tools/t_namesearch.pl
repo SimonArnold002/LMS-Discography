@@ -438,5 +438,40 @@ section('11', sub {
        '11: two name searches (mirror + public), where there were four');
 });
 
+# ---------------------------------------------------------------------------
+# 12. EACH ACT KEEPS MUSICBRAINZ'S PRIMARY ENGLISH NAME (0.56.42), from the
+#     reply the set already asks for: the search row titles a name with no Latin
+#     letter with it. The aliases as the public search returned them for
+#     宇多田ヒカル (2026-10-02): three locale-en aliases come before the PRIMARY one.
+# ---------------------------------------------------------------------------
+section('12', sub {
+    cold();
+    my $name = 'Utada';   # the reply's own name; the alias rule is what is pinned
+    $REPLY{ q_for($name) } = { count => 3, artists => [
+        { id => id(50), name => $name, score => 100, aliases => [
+        { name => 'Utada',        locale => 'en', primary => undef },
+        { name => 'Cubic U',      locale => 'en', primary => undef },
+        { name => 'Utada Hikaru', locale => 'en_PH', primary => JSON::XS::true },
+        { name => 'Hikaru Utada', locale => 'en', primary => undef, type => 'Legal name' },
+        { name => 'Hikaru Utada', locale => 'en', primary => JSON::XS::true },
+        { name => 'U3053', locale => 'ja', primary => JSON::XS::true },
+    ] },
+        { id => id(51), name => $name, score => 80, aliases => [ { name => 'Utada Ensemble', locale => 'en', primary => undef } ] },
+        { id => id(52), name => $name, score => 70 },
+    ] };
+    my $got;
+    $API->getArtistCandidates($name, sub { $got = $_[0] });
+    flush();
+    my %by = map { $_->{mbid} => $_ } @{ $got || [] };
+    ok(scalar(($by{ id(50) }{en} // '') eq 'Hikaru Utada'),
+       '12: the PRIMARY locale-en alias, not the first en alias (Utada, Cubic U), not en_PH, not a non-primary legal name');
+    ok(scalar(!exists $by{ id(51) }{en} && !exists $by{ id(52) }{en}),
+       '12: no primary English alias, or no aliases: no `en` at all');
+    my ($key) = grep { /^dsc:acand:/ } keys %CACHE;
+    ok(scalar(($key // '') =~ /^dsc:acand:8:/ && ($CACHE{$key}[0]{en} // '') eq 'Hikaru Utada'),
+       '12: kept under the v8 key (a v7 set has no English names), the English name with it');
+    ok(scalar(@QUERIES == 1), '12: ... from the one request the set already made');
+});
+
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

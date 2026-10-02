@@ -56,7 +56,7 @@ my $prefs = preferences('plugin.discography');
 # first module to call DB->store() sets it and later calls are ignored.
 # tools/syntax_check.sh asserts all three agree and match install.xml.
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.41';
+use constant CACHE_VERSION => '0.56.42';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 # The families DB.pm keeps across builds, by their CURRENT key prefix, so rows
 # written under an older key version are retired at open. Taken from the key
@@ -2083,7 +2083,9 @@ sub _candKey {
     # addiction") and collides with what v5 stored for the mark-less spelling —
     # a set computed while the two counted as different names. Same reason as
     # the v2 -> v3 bump, one mark along.
-    my $k = 'dsc:acand:7:' . _nameKey($name);
+    # v8 (0.56.42): each entry keeps MusicBrainz's primary English name (`en`),
+    # which a v7 set lacks; read for 14 days it would show no English name.
+    my $k = 'dsc:acand:8:' . _nameKey($name);
     utf8::encode($k) if utf8::is_utf8($k);
     return $k;
 }
@@ -3858,6 +3860,21 @@ sub peekArtistEnglishName {
     return $en;
 }
 
+# The same name from a SEARCH reply's entry (0.56.42): MusicBrainz's artist
+# search carries every alias with its locale and primary flag, as the artist
+# read does (measured 2026-10-02 on the public API: 宇多田ヒカル lists Utada,
+# Hikki and Cubic U, all locale en, before the primary "Hikaru Utada"). So the
+# search rows get it from the request they already make. undef when none.
+sub _primaryEnglish {
+    my ($aliases) = @_;
+    for my $al (@{ ref $aliases eq 'ARRAY' ? $aliases : [] }) {
+        next unless ref $al eq 'HASH' && ($al->{locale} // '') eq 'en' && $al->{primary};
+        my $n = $al->{name};
+        return $n if defined $n && length $n;
+    }
+    return undef;
+}
+
 my %nameRefetched;   # one recovery fetch per artist per plugin run -- see below
 
 sub warmArtistAliases {
@@ -3902,7 +3919,8 @@ sub warmArtistAliases {
 use constant FUZZY_MAX => 3;
 
 sub _fuzzyKey {
-    my $k = 'dsc:fuzzy:1:' . lc($_[0] // '');
+    # v2 (0.56.42): the names keep MusicBrainz's primary English name (`en`).
+    my $k = 'dsc:fuzzy:2:' . lc($_[0] // '');
     utf8::encode($k) if utf8::is_utf8($k);
     return $k;
 }
@@ -3950,9 +3968,10 @@ sub _fuzzyPick {
     @near = sort { $a->[0] <=> $b->[0] || ($b->[1]{score} // 0) <=> ($a->[1]{score} // 0) } @near;
     splice @near, FUZZY_MAX if @near > FUZZY_MAX;
     return [ map { my $x = $_->[1];
+                   my $en = _primaryEnglish($x->{aliases});
                    +{ mbid => lc $x->{id}, name => $x->{name}, score => $x->{score} // 0,
                       disambiguation => $x->{disambiguation}, country => $x->{country},
-                      type => $x->{type} } } @near ];
+                      type => $x->{type}, (defined $en ? (en => $en) : ()) } } @near ];
 }
 
 sub fuzzyArtists {
@@ -4071,6 +4090,9 @@ sub getArtistCandidates {
                     # sent them; this used to keep only the mbid and score,
                     # which is fine for picking a winner and useless for
                     # showing a user the alternatives.
+                    # The primary English name (0.56.42): the search row shows
+                    # it beside a name with no Latin letter (Browse::_titleWithEnglish).
+                    my $en = _primaryEnglish($a->{aliases});
                     push @out, {
                         mbid  => lc $a->{id},
                         name  => $a->{name},
@@ -4078,6 +4100,7 @@ sub getArtistCandidates {
                         disambiguation => $a->{disambiguation},
                         country        => $a->{country},
                         type           => $a->{type},
+                        (defined $en ? (en => $en) : ()),
                     };
                 }
                 @out = sort { $b->{score} <=> $a->{score} } @out;

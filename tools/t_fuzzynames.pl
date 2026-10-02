@@ -227,5 +227,14 @@ cold();
 ok(scalar($ask->('  ') eq '' && defined $got && !@URLS), '4: a blank name: no request');
 ok(scalar(defined($ask->('!!')) && defined $got), '4: a name of marks alone answers (it does not die)');
 
+# --- 5. the English name (0.56.42) -----------------------------------------
+my $EN = [ { id => '1', name => 'Utada', score => 100, aliases => [
+               { name => 'Cubic U', locale => 'en' }, { name => 'Hikaru Utada', locale => 'en', primary => 1 } ] },
+           { id => '2', name => 'Utadu', score => 90 } ];
+my $picks = Plugins::Discography::API::_fuzzyPick('Utda', $EN);
+ok(scalar(($picks->[0]{en} // '') eq 'Hikaru Utada' && !exists $picks->[1]{en}),
+   "5: each pick keeps MusicBrainz's primary English name when it has one (the search row titles a non-Latin name with it)");
+ok(scalar(Plugins::Discography::API::_fuzzyKey('x') =~ /^dsc:fuzzy:2:/), '5: kept under the v2 key (v1 names have none)');
+
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

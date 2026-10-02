@@ -37,7 +37,7 @@ my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.41';
+use constant CACHE_VERSION => '0.56.42';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -4059,8 +4059,10 @@ sub _withMbCandidates {
         $cands ||= [];
 
         # Every MusicBrainz act of this name, BEFORE the filters below drop the
-        # owned ones: a result row that opens one of them says which it is.
+        # owned ones: a result row that opens one of them says which it is, and
+        # its English name when its own has no Latin letter.
         _stampDisambiguation($merged, $cands);
+        _stampEnglish($merged, $cands);
 
         if (@$cands < 2) {
             # THE ONE ACT OF THIS NAME, WHEN NO ROW OPENS IT (0.56.37, resolver
@@ -4363,6 +4365,44 @@ sub _stampDisambiguation {
     return;
 }
 
+# THE ENGLISH NAME OF THE ACT A RESULT ROW OPENS, for a row named with no Latin
+# letter (0.56.42; Simon, 2026-10-02: "display the default from MB but with
+# english translation as well", then "In the title"). The same act as
+# _stampDisambiguation finds, by the same rule (an owned row by its tag, an
+# unowned one by the resolver's cached answer, an owned untagged one nothing),
+# but for any act, not only a shared name: 王菲 on Qobuz reads "王菲 (Faye Wong)".
+# The name is MusicBrainz's primary English alias, from this search's reply
+# ($cands) or the artist read's cache. Cache reads only: no request.
+sub _stampEnglish {
+    my ($rows, $cands) = @_;
+    my %en = map { (lc $_->{mbid} => $_->{en}) }
+             grep { ref $_ eq 'HASH' && $_->{mbid} && defined $_->{en} } @{ $cands || [] };
+    for my $r (@{ $rows || [] }) {
+        next unless ref $r eq 'HASH';
+        delete $r->{_en};
+        next if Plugins::Discography::Sources::_norm($r->{name} // '') =~ /[a-z]/;
+        my $owned = $r->{artist_id}
+            || grep { $_ eq 'Local' } @{ $r->{sources} || [] };
+        my $mbid  = $r->{_ident_mbid}
+            || ($owned ? undef : Plugins::Discography::API->peekArtistMbid($r->{name}));
+        next unless $mbid;
+        my $e = $en{ lc $mbid } // Plugins::Discography::API->peekArtistEnglishName($mbid);
+        $r->{_en} = $e if defined $e && length $e;
+    }
+    return;
+}
+
+# "<name> (<English name>)" for a name with no Latin letter and an English name
+# that has one; otherwise the name as it is. DISPLAY ONLY: what a row opens (its
+# params, passthrough, photo) keeps the real name.
+sub _titleWithEnglish {
+    my ($name, $en) = @_;
+    return $name unless defined $name && length $name && defined $en && length $en;
+    return $name if Plugins::Discography::Sources::_norm($name) =~ /[a-z]/
+                 || Plugins::Discography::Sources::_norm($en) !~ /[a-z]/;
+    return "$name ($en)";
+}
+
 # A search heading: _sectionHeader's, made a tile-row heading when $strip. A
 # tile-row heading keeps its actions in Material (unlike header-basic), so it is
 # given a param-addressed one; without it, the More would walk by position.
@@ -4411,6 +4451,12 @@ sub _mbCandidateRow {
     # the most recognisable thing on the row — and it explains why a row named
     # "Madness" leads to a catalogue filed elsewhere.
     my $alias = (@{ Plugins::Discography::API->peekArtistAliases($cand->{mbid}) || [] })[0];
+    # A name with no Latin letter is titled with its English one (0.56.42), from
+    # the search reply or the artist read; then no "aka": the first alias is
+    # often another spelling (宇多田ヒカル's is "Cubic U", 坂本龍一's "R.S.").
+    my $title = _titleWithEnglish($cand->{name},
+        $cand->{en} // Plugins::Discography::API->peekArtistEnglishName($cand->{mbid}));
+    undef $alias if $title ne ($cand->{name} // '');
 
     my @bits = grep { defined && length }
                ($cand->{disambiguation}, $cand->{type}, $cand->{country});
@@ -4424,7 +4470,7 @@ sub _mbCandidateRow {
         (length($features // '') ? (features => $features) : ()),
     );
     return {
-        name        => $cand->{name},
+        name        => $title,
         type        => _artistRowType($features),
         line2       => $line2,
         # _artistImg is keyed by NAME. For an act whose spelling is UNIQUE
@@ -4488,7 +4534,7 @@ sub _searchResultRow {
         (length($features // '') ? (features => $features)     : ()),
     );
     return {
-        name        => $name,
+        name        => _titleWithEnglish($name, $hit->{_en}),
         type        => _artistRowType($features),
         # For a same-name split act, use LMS's OWN artist icon (folder art):
         # `_img` when LMS holds art, a neutral person icon when it knows the act

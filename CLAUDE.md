@@ -167,6 +167,7 @@ because line numbers rot on the next edit.
 | A search that finds NOTHING (no row, no act of the name) lists up to 3 of the closest names MusicBrainz knows (one fuzzy request, about +1 s, only then): under Artists below "No artists found", never the Top Result; picked by edit distance (2, or 1 for 4 letters or fewer, "the" dropped, a swap = 1 edit), then score (0.56.38, Part D step 2; Simon: "okay") | A2 | `NOTHING FOUND: THE CLOSEST NAMES` |
 | An owned track on a VA compilation makes Local only a SINGLE of its title (never an album, EP or compilation named after the song), and only the first same-titled single; that tile says "from <album>". An Appearances row says MusicBrainz's type (Album / Soundtrack, Compilation), from the release lookup's own reply (0.56.39; Simon, Ella Fitzgerald) | A2 | `A TRACK LINKS ITS SINGLE ONCE` |
 | Various Artists / Various Composers / LMS's own name for them / MB's special entities are never one artist: a search for one is one line saying so, nothing asked; their rows are dropped from every search and from the closest names; their page (by name, by a special library tag or mbid) is that line + Search for another artist, nothing asked; the same-name set drops MB's special entities; `getReleaseGroups` answers an empty list for one. "Various Artsts", "VA", "Various" and names that only contain it are NOT covered (0.56.41; Simon: "A short message") | A2 | `NEVER ONE ARTIST: VARIOUS ARTISTS` |
+| A search row whose name has no Latin letter is titled "<name> (<English name>)", the English name being MusicBrainz's PRIMARY locale-en alias (never the first alias), from the search reply or the artist read's cache, no request; display only, a tap opens the real name; such a row drops its "aka"; Latin names (Björk, Kenshi Yonezu) never retitled; an owned untagged row gets none (0.56.42; Simon: "In the title") | A2 | `A NON-LATIN NAME IS TITLED WITH ITS ENGLISH ONE` |
 | `%MB_SPECIAL_ARTIST` kept MB's special entities (Various Artists 89ad4ac3) out of every MusicBrainz name lookup | A3 | `THE SAME-NAME SET KEPT THE SPECIAL ENTITIES` |
 | MB's artist lookup listing only first-credited groups; omitting an empty `release-groups`; a combined `inc=` returning less; a 50-id `reid:` search being too long | A3 | `MEASURED FOR STAGE 1` |
 | A non-UUID album id tag spoiling a `reid:` batch | A3 | `LMS VALIDATES MB ID TAGS AT SCAN` |
@@ -973,6 +974,28 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   Pinned in `t_tracklink.pl` §5, `t_extid.pl` §6, `t_view.pl` §11, `t_extras.pl` part D, `t_rel2rg.pl` §12; 17
   of 19 mutants caught, the 2 left equivalent (rivals arrive sorted compilations last; an owned ALBUM row carries
   no `_fromAlbum`) (scratchpad `mutTrack.py`).
+- **A NON-LATIN NAME IS TITLED WITH ITS ENGLISH ONE** (0.56.42; `Browse::_titleWithEnglish`, `_stampEnglish`,
+  `_mbCandidateRow`, `_searchResultRow`; `API::_primaryEnglish`, `getArtistCandidates` and `_fuzzyPick` `en`,
+  `_candKey` v8, `_fuzzyKey` v2; Simon 2026-10-02: *"we should look to display the default from MB but with english
+  translation as well if thats easy to do"*, then **In the title**; resolver plan §5.3's "English labels").
+  Measured on 0.56.41 (scratchpad `nlsearch.py`): MusicBrainz's own rows read "宇多田ヒカル · aka Cubic U", "坂本龍一 ·
+  aka R.S." (the FIRST alias, another spelling), "米津玄師 · aka Kenshi Yonezu" only because his first alias happens
+  to be it; Qobuz's 王菲 and КИНО rows no English at all. The public search reply carries every alias with its
+  locale and primary flag (宇多田ヒカル: Utada, Hikki, Cubic U, all en, before the primary "Hikaru Utada").
+  1. **The English name is MusicBrainz's PRIMARY locale-"en" alias** (`_primaryEnglish`), the rule the artist read
+     already used (`peekArtistEnglishName`, 0.56.18); not en_PH, not a non-primary legal name.
+  2. **From the request already made:** the same-name set and the closest names keep it as `en` from their reply;
+     else the artist read's cache. No request.
+  3. **The title only, only for a name with no Latin letter** (`_norm` has no a-z; accented Latin counts as Latin, so
+     Björk and Sigur Rós never change; digits alone count as none): "王菲 (Faye Wong)". Display only: the row's
+     params, passthrough and photo keep the real name, so a tap opens what it opened before. Such a row drops its
+     "aka" (the first alias); a Latin row keeps it (the name its records sell under, Tony Madness, since 0.43.x).
+  4. **Result rows (services, library):** the act a row opens by `_stampDisambiguation`'s rule (an owned row by its
+     tag, an unowned one by the resolver's cached answer, an owned untagged row nothing), for any act, not only a
+     shared name; stamped afresh on every search (the 10-minute list's rows are reused).
+  Not changed: the artist page itself and its "Also a member of" / Similar artists rows (their titles are the
+  names as opened). Pinned in `t_searchflow.pl` §13 (18), `t_namesearch.pl` §12 (4), `t_fuzzynames.pl` part 5 (2);
+  22 mutants caught (scratchpad `mutEnglish.py`).
 - **NEVER ONE ARTIST: VARIOUS ARTISTS** (0.56.41; `API::isVarious`, `getArtistCandidates`, `getReleaseGroups`,
   `Browse::_artistSearchView`, `_withMbCandidates`, `_discographyView` `$notOne`, `_resolveArtistMbid`,
   `_notOneArtistRow`; Simon 2026-10-02: *"we should not allow a search for Various Artists or look up on albums
@@ -2121,7 +2144,31 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
-### 0.56.41 (2026-10-02) — Various Artists / Various Composers is never one artist: no search, no page, no lookups — BUILT (sha aa20012f), INSTALLED + CHECKED LIVE 2026-10-02, NOT committed; carries 0.56.38-0.56.40
+### 0.56.42 (2026-10-02) — a search row with a non-Latin name is titled with its English one: "宇多田ヒカル (Hikaru Utada)" — BUILT (sha bd10797f), INSTALLED + CHECKED LIVE 2026-10-02 (Material's page title confirmed by Simon), NOT committed
+- **Source (Simon):** *"2. we should look to display the default from MB but with english translation as well if
+  thats easy to do."* -> measured (below) -> asked where: **In the title**.
+- **Measured on 0.56.41** (scratchpad `nlsearch.py base0.56.41`, `nlsearch_base0.56.41.json`): 米津玄師, 宇多田ヒカル,
+  坂本龍一, 椎名林檎 as the one MusicBrainz act ("aka" the first alias: Kenshi Yonezu, Cubic U, R.S., Ringo Sheena);
+  王菲 (Qobuz, Top Result) and КИНО (Qobuz) with no English. The public search reply carries the aliases with locale
+  and primary flag (one request, contact-free User-Agent).
+- **Change:** A2 `A NON-LATIN NAME IS TITLED WITH ITS ENGLISH ONE` (new). CACHE_VERSION 0.56.42; `dsc:acand` v8,
+  `dsc:fuzzy` v2.
+- **Tests:** `t_searchflow.pl` 109 -> 127 (§13), `t_namesearch.pl` 30 -> 34 (§12), `t_fuzzynames.pl` 32 -> 34 (part
+  5), `t_artistrows.pl` (stub only). 22 mutants caught. 65 suites / 3,275 green; syntax_check clean; zip == tree.
+- **Live check after install:** search 米津玄師, 宇多田ヒカル, 坂本龍一, 王菲, Кино, 椎名林檎: titles "米津玄師 (Kenshi
+  Yonezu)", "宇多田ヒカル (Hikaru Utada)", "坂本龍一 (Ryuichi Sakamoto)", "王菲 (Faye Wong)" (Qobuz row), "КИНО (Kino)"
+  where the act is known, "椎名林檎 (Ringo Sheena)"; each still opens its page as before, and the page title is
+  checked on Material. Control: Kenshi Yonezu, Björk, The Beatles unchanged.
+- **CHECKED LIVE 2026-10-02** (restart 18:30:24; scratchpad `nlsearch_after0.56.42.json`): 米津玄師 (Kenshi Yonezu),
+  宇多田ヒカル (Hikaru Utada), 坂本龍一 (Ryūichi Sakamoto), 椎名林檎 (Sheena Ringo) as the Top Result, no "aka" (was Cubic U,
+  R.S.); Qobuz's 王菲 (Faye Wong) and КИНО (Kino); the Taiwanese 王菲 (no English alias) as before. Kenshi Yonezu,
+  Björk, The Beatles, Madness unchanged. A tap opens the real name: 宇多田ヒカル by mbid (Albums 10, Compilations 3,
+  Live 4, Other 2), 王菲 (Albums 13, Compilations 15, Live 1), КИНО (Albums 2), each cold ~3 s. Material's title for
+  the opened page not seen from here; **Simon on the device: the КИНО page's title "says kino in brackets"** (Material
+  titles the page with the tapped row's title). (The first "installed" was before the restart: the server still ran
+  0.56.41.)
+
+### 0.56.41 (2026-10-02) — Various Artists / Various Composers is never one artist: no search, no page, no lookups — BUILT (sha aa20012f), INSTALLED + CHECKED LIVE 2026-10-02, COMMITTED (940228c) + dev PUSHED 2026-10-02; carries 0.56.38-0.56.40
 - **Source (Simon):** *"on other things we should not allow a search for Various Artists or look up on albums tagged
   wiuth various artists or various composers. MB uses this to put any non artist compilation under it would grind to
   a halt."* -> measured (below) -> asked what the page shows: **A short message**.
@@ -2150,7 +2197,7 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   (public API), dropped by the row check on the next search as any empty act is. Ella: Appearances (6); first visit
   after the install 51 / 65 / 24 as on 0.56.40's (the cold page, settling in the background).
 
-### 0.56.40 (2026-10-02) — a list cut at MusicBrainz's 600 is kept an hour, not 14 days (Ella's Live albums) — BUILT (sha ceda79bb), INSTALLED + CHECKED LIVE 2026-10-02, NOT committed; carries 0.56.38-0.56.39
+### 0.56.40 (2026-10-02) — a list cut at MusicBrainz's 600 is kept an hour, not 14 days (Ella's Live albums) — BUILT (sha ceda79bb), INSTALLED + CHECKED LIVE 2026-10-02, COMMITTED (940228c) + dev PUSHED 2026-10-02; carries 0.56.38-0.56.39
 - **Source (Simon):** *"installed but now Ella takes ages to open a big regression"* -> measured (below) -> *"okay, be good
   to see if it wsnt us causing those timeouts with multiple calls going out from different plugins as thats behaviour
   we dont want"*, *"and on restart that could cause it"*.
@@ -2171,7 +2218,7 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   showed only through 0.56.39's removed track link and match no service, so hide_unmatched hides them. The "70" above
   forgot 0.56.39's own item 2 ("Qobuz or unmatched"). Checked by expanding Compilations to all 66 tiles.
 
-### 0.56.39 (2026-10-02) — an owned song makes only its single Local, once, and says which album; Appearances say Soundtrack — BUILT (sha 8c7d07c6), INSTALLED 2026-10-02 (Ella's first visit then hit a ListenBrainz outage: 0.56.40), CHECKED LIVE on 0.56.40, NOT committed; carries 0.56.38
+### 0.56.39 (2026-10-02) — an owned song makes only its single Local, once, and says which album; Appearances say Soundtrack — BUILT (sha 8c7d07c6), INSTALLED 2026-10-02 (Ella's first visit then hit a ListenBrainz outage: 0.56.40), CHECKED LIVE on 0.56.40, COMMITTED (940228c) + dev PUSHED 2026-10-02; carries 0.56.38
 - **Source (Simon):** *"before we do seeing some oddities when searching Ella Fitzgerald and showing only what I own the
   same track is showing multiple times under compilations and not one gives the album name. Also this is Soundtrack not
   a compilation not sure if LMS has that but MB does"*; asked: **Singles only, once**; extras **Album name on linked
@@ -2195,7 +2242,7 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   Artyfacts From the First Psychedelic Era, 1965–1968"; Nuggets under Appearances reads "1972 · Local" on the first
   visit, "1972 · Compilation · Local" on the second.
 
-### 0.56.38 (2026-10-02) — Part D step 2: a search that finds nothing lists the closest names MusicBrainz knows (Beatels -> The Beatles) — BUILT (sha a75f886d), INSTALLED with 0.56.40 + TIMING GATE PASSED 2026-10-02, NOT committed
+### 0.56.38 (2026-10-02) — Part D step 2: a search that finds nothing lists the closest names MusicBrainz knows (Beatels -> The Beatles) — BUILT (sha a75f886d), INSTALLED with 0.56.40 + TIMING GATE PASSED 2026-10-02, COMMITTED (940228c) + dev PUSHED 2026-10-02
 - **Source (Simon):** *"if this generates too much lag we abondonen it, and we rely on how it stands now"* ->
   measured (below) -> *"okay"*.
 - **Change:** A2 `NOTHING FOUND: THE CLOSEST NAMES`; `THE SEARCH PAGE IS TOP RESULT, THEN ARTISTS` item 6.

@@ -40,6 +40,7 @@ BEGIN {
     *{'Slim::Utils::PluginManager::isEnabled'} = sub { 1 };   # MAI on: the proxy image route
     *{'Plugins::Discography::DB::store'} = sub { bless {}, 'T::Null' }; $INC{'Plugins/Discography/DB.pm'} = 1;
     *{'Plugins::Discography::API::peekArtistAliases'} = sub { [] };
+    *{'Plugins::Discography::API::peekArtistEnglishName'} = sub { undef };   # 0.56.42; t_searchflow §13
     *{'Plugins::Discography::Sources::orderedAdapters'} = sub { () };
     *{'Slim::Utils::Strings::cstring'}   = sub { $_[1] };   # returns the token
     *{'Plugins::Discography::Plugin::dbg'} = sub { };
