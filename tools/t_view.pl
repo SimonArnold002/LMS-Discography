@@ -66,6 +66,10 @@ BEGIN {
     *{"${A}::markArtistEmpty"}    = sub { };
     *{"${A}::peekBands"}          = sub { $main::BANDS };
     *{"${A}::peekCollabs"}        = sub { undef };
+    # The artist's other names (_otherNames): none cached.
+    *{"${A}::peekArtistName"}     = sub { undef };
+    *{"${A}::peekArtistAliases"}  = sub { undef };
+    *{"${A}::peekArtistEnglishName"} = sub { undef };
 }
 
 package T::Null; our $AUTOLOAD; sub AUTOLOAD { return } sub DESTROY {}

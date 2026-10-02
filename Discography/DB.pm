@@ -30,8 +30,10 @@ package Plugins::Discography::DB;
 #         Slim::Utils::Cache->new(NS, CACHE_VERSION) did: every build still
 #         clears these (Simon, 2026-07-22).
 #   mbid  MusicBrainz ids the plugin resolved: artist name -> artist mbid
-#         (`dsc:mbid:<v>:<name>`) and owned release -> release group
-#         (`dsc:rel2rg:<v>:<release>`). NOT emptied by a build (Simon,
+#         (`dsc:mbid:<v>:<name>`), owned release -> release group
+#         (`dsc:rel2rg:<v>:<release>`) and an untagged library contributor ->
+#         the act its albums name (`dsc:libmbid:<v>:<id>:<name>`, resolver plan
+#         C2; the same row shape, no schema change). NOT emptied by a build (Simon,
 #         2026-09-25: "we need a new one for storing mbids"). Lifetimes are
 #         unchanged (found 30d / miss 1h; releases 14d), so a stored id is still
 #         re-asked on the same schedule; a change to how names resolve must bump
@@ -264,11 +266,12 @@ sub _key {
     return $k;
 }
 
-# The two MusicBrainz-id families -> (kind, lookup). Anything else is kv.
+# The MusicBrainz-id families -> (kind, lookup). Anything else is kv.
 sub _mbidRoute {
     my ($k) = @_;
     return ('artist',  $1) if $k =~ /\Adsc:mbid:[^:]*:(.*)\z/s;
     return ('release', $1) if $k =~ /\Adsc:rel2rg:[^:]*:(.*)\z/s;
+    return ('library', $1) if $k =~ /\Adsc:libmbid:[^:]*:(.*)\z/s;
     return;
 }
 

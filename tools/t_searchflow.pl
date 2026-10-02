@@ -31,6 +31,7 @@ our (@WARMED, %COUNT, $OPT, @WARM_BG);
 our $CANDS;      # section 7: the same-name set to answer with (undef = three Genesis)
 our ($LAYOUT, $STRIPS);   # section 8: the layout_search pref, a strip-capable Material
 our (%RESOLVED, @PEEKED); # section 9: the name resolver's cached answers, and who asked
+our %LIBMBID;             # section 9: the album lookup's kept answers, by library id (C2)
 
 BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
@@ -90,6 +91,8 @@ BEGIN {
     };
     *{"${A}::peekReleaseGroupCount"} = sub { $main::COUNT{ $_[1] // '' } };
     *{"${A}::peekArtistMbid"} = sub { push @main::PEEKED, $_[1]; $main::RESOLVED{ lc($_[1] // '') } };
+    # The album lookup's kept answer for an untagged library contributor (C2), by id.
+    *{"${A}::peekLibraryMbid"} = sub { $main::LIBMBID{ $_[1] // '' } };
 }
 
 package T::Null; our $AUTOLOAD; sub AUTOLOAD { return } sub DESTROY {}
@@ -570,6 +573,20 @@ section('9', sub {
     $rows = $run->('The Bees', [ { name => 'The Bees', artist_id => 155540, sources => ['Local'], _seq => 0 } ]);
     ok(scalar($l2->($rows, 155540) eq 'Local' && !@PEEKED),
        '9: an owned row with no tag gets nothing, and its name is not looked up');
+    # ... unless its page has had its own albums name its act (resolver plan
+    # C2): that answer stands as a tag does, still never by name. The row handed
+    # in (the search cache's own) is not written to.
+    %LIBMBID = (155540 => id(903));
+    my $given = { name => 'The Bees', artist_id => 155540, sources => ['Local'], _seq => 0 };
+    $rows = $run->('The Bees', [ $given ]);
+    ok(scalar($l2->($rows, 155540) eq "Local \x{00B7} $LA" && !@PEEKED),
+       "9: an untagged owned row whose albums named its act says which act it is (C2), no name lookup");
+    ok(scalar(!exists $given->{_ident_mbid}), '9: ... stamped on a copy, not on the row handed in');
+    %LIBMBID = (155528 => id(902));
+    $rows = $run->('The Bees', $bees->());
+    ok(scalar($l2->($rows, 155528) eq "Local \x{00B7} 4 albums \x{00B7} $IOW"),
+       '9: a tagged owned row keeps its tag whatever the album lookup kept for its id');
+    %LIBMBID = ();
     # An owned collaboration (Local, no single library artist, no tag): the same.
     $rows = $run->('The Bees', [ { name => 'The Bees', sources => ['Local', 'Qobuz'], _seq => 0 } ]);
     ok(scalar($l2->($rows, undef, 'The Bees') eq "Local \x{00B7} Qobuz" && !@PEEKED),

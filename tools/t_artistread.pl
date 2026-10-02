@@ -142,8 +142,12 @@ sub slurp {
     local $/;
     return scalar <$fh>;
 }
+# 米津玄師 (Kenshi Yonezu): MusicBrainz's own name has no Latin letter; its aliases
+# are "Kenshi Yonezu" (locale en, PRIMARY), "米津玄師" (ja, the name itself) and a
+# Korean search hint. Captured 2026-10-01.
+my $KY  = '09d4a85c-4916-4b4e-bc96-c4cfcf371046';
 my %RAW = map { $_->[0] => slurp("mb_artist_$_->[1]_aliases_artistrels_releasegroups.json") }
-          ([ $ENO, 'eno' ], [ $RH, 'radiohead' ], [ $LH, 'ladyhawke' ]);
+          ([ $ENO, 'eno' ], [ $RH, 'radiohead' ], [ $LH, 'ladyhawke' ], [ $KY, 'yonezu' ]);
 my %BROWSE = ($LH => slurp('mb_rg_browse_ladyhawke.json'));
 our (%NOLIST, %READFAIL, %FAKEREAD);
 # Decoded afresh for every response, as from_json would: the code must never be
@@ -270,7 +274,7 @@ $API->warmBandMembers($ENO, sub { $eB++ });
 flush();
 ok(ref $eA eq 'ARRAY' && !@$eA, '4: a failure answers the alias caller with an empty list');
 ok($eB == 1, '4: ... and the band caller exactly once');
-ok(!defined $CACHE{"dsc:alias:2:$ENO"} && !defined $CACHE{"dsc:bands:v2:$ENO"}
+ok(!defined $CACHE{"dsc:alias:3:$ENO"} && !defined $CACHE{"dsc:bands:v2:$ENO"}
    && !defined $CACHE{"dsc:collabcand:v1:$ENO"} && !defined $CACHE{"dsc:mbname:1:$ENO"},
    '4: ... and nothing at all is cached');
 $DEFER = 0; $FAILMODE = 0; @URLS = ();
@@ -289,7 +293,7 @@ my ($uA, $uB) = ('UNSET', 0);
 $API->warmArtistAliases($ENO, sub { $uA = $_[0] });
 $API->warmBandMembers($ENO, sub { $uB++ });
 ok(ref $uA eq 'ARRAY' && !@$uA && $uB == 1, '5: an unreadable reply still answers both callers');
-ok(!defined $CACHE{"dsc:alias:2:$ENO"}, '5: ... and caches NO alias list (it used to pin an empty one)');
+ok(!defined $CACHE{"dsc:alias:3:$ENO"}, '5: ... and caches NO alias list (it used to pin an empty one)');
 ok(!defined $CACHE{"dsc:bands:v2:$ENO"}, '5: ... and no band list');
 ok(scalar(@URLS) == 2, '5: ... so the second caller asked again rather than trusting it');
 $BADJSON = 0; @URLS = ();
@@ -428,7 +432,7 @@ $API->getReleaseGroups(mbid => $LH, read => 1,
     onDone => sub { $rgs11 = shift }, onError => sub { $err11++ });
 ok(scalar(mb_urls()) == 2 && (mb_urls())[1] =~ m{/release-group\?artist=}, '11: a failed read falls back to the browse');
 ok(ref $rgs11 eq 'ARRAY' && scalar(@$rgs11) == 24 && !$err11, '11: ... and the page still gets its spine');
-ok(!defined $CACHE{"dsc:alias:2:$LH"} && !defined $CACHE{"dsc:bands:v2:$LH"},
+ok(!defined $CACHE{"dsc:alias:3:$LH"} && !defined $CACHE{"dsc:bands:v2:$LH"},
    '11: ... while the failed read cached nothing');
 reset_all();
 $BADJSON = 1;
@@ -514,6 +518,44 @@ ok(scalar($rgs14 && ($rgs14->[0]{mbid} // '') eq 'bbbbbbbb-0000-4000-8000-000000
            "15: $s browses as before");
     }
 }
+
+# ---------------------------------------------------------------------------
+# 16. MUSICBRAINZ'S PRIMARY ENGLISH ALIAS IS KEPT WITH THE ALIASES (0.56.18).
+#     Browse::_poolQuery searches it first for a name with no Latin letter: the
+#     "米津玄師" page searched the services under the Japanese name, Qobuz settled
+#     on another act and Tidal found nothing (rig, 2026-10-01). Only the alias
+#     MusicBrainz marks primary for locale "en": the first Latin alias is often
+#     another spelling (宇多田ヒカル: "Cubic U"; 坂本龍一: "R.S.").
+# ---------------------------------------------------------------------------
+reset_all();
+$API->warmBandMembers($KY, sub {});
+ok(scalar(($API->peekArtistEnglishName($KY) // '') eq 'Kenshi Yonezu'),
+   "16: the read keeps MusicBrainz's primary English alias (米津玄師 -> Kenshi Yonezu)");
+ok(scalar(join('|', @{ $API->peekArtistAliases($KY) || [] }) eq "Kenshi Yonezu|\x{cf04}\x{c2dc} \x{c694}\x{b124}\x{c988}"),
+   '16: ... and the aliases are answered as before (the name itself left out)');
+my ($kyKey) = grep { /^dsc:alias:/ && /\Q$KY\E$/ } keys %CACHE;
+ok(scalar(defined $kyKey && $kyKey !~ /^dsc:alias:[12]:/),
+   '16: ... under a new key version, so an alias list stored without it is not read');
+reset_all();
+$API->warmBandMembers($ENO, sub {});
+ok(scalar(!defined $API->peekArtistEnglishName($ENO) && @{ $API->peekArtistAliases($ENO) || [] } == 6),
+   '16: an English alias that is not primary is not taken (Brian Eno: "Eno")');
+reset_all();
+$API->warmBandMembers($RH, sub {});
+ok(scalar(!defined $API->peekArtistEnglishName($RH)),
+   '16: primary aliases in other languages only -> none (Radiohead: ja, zh)');
+reset_all();
+$FAKEREAD{$KY} = { id => $KY, name => 'Kenshi Yonezu', relations => [],
+    aliases => [ { name => 'Kenshi Yonezu', locale => 'en', primary => JSON::PP::true },
+                 { name => 'Yonezu Kenshi', locale => 'en', primary => JSON::PP::false } ] };
+$API->warmBandMembers($KY, sub {});
+ok(scalar(!defined $API->peekArtistEnglishName($KY)),
+   "16: the English alias that IS the artist's name is not stored as another name");
+reset_all();
+$CACHE{ $kyKey } = [ 'Kenshi Yonezu' ];
+ok(scalar(join('|', @{ $API->peekArtistAliases($KY) || [] }) eq 'Kenshi Yonezu'
+          && !defined $API->peekArtistEnglishName($KY)),
+   '16: a plain alias list (the old shape) still answers its aliases, and no English name');
 
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

@@ -202,5 +202,67 @@ $S->can('_resolveArtist')->('TestSvc', 'Madness', \@same, $SPINE, $fetch,
                             sub { $un = $_[0] }, undef, $search, 1);
 ok(!defined $un, 'an ambiguous name with no corroboration is still UNRESOLVED');
 
+# ---------------------------------------------------------------------------
+# 6. BOTH NAMES WHEN THE PAGE ASKS (`$compare`, 0.56.19). The query is
+#    MusicBrainz's English name standing in for a name with no Latin letter, the
+#    first alias that name. Field (rig, 2026-10-01): Qobuz files 王菲 as two
+#    artists, "王菲" (25 of her releases) and "Faye Wong" (4, none in common);
+#    0.56.18 answered "Faye Wong" at once (4 is strong) and lost 21.
+# ---------------------------------------------------------------------------
+my $WF = "\x{738b}\x{83f2}";   # 王菲
+my $SP6 = { map { $norm->($_) => 1 } qw(Sky Fable Toy Eyebrows Everything Wishing) };
+%CAT = (%CAT,
+    601 => [ { title => 'Everything' }, { title => 'Wishing' }, { title => 'Unrelated' } ],          # "Faye Wong": 2
+    602 => [ { title => 'Sky' }, { title => 'Fable' }, { title => 'Toy' }, { title => 'Eyebrows' } ], # "王菲": 4
+    603 => [ { title => 'Sky' } ],                                                                     # weak: 1
+    604 => [ { title => 'Toy' }, { title => 'Fable' } ],                                               # a tie: 2
+);
+sub both {
+    my ($query, $native, %o) = @_;
+    @FETCHED = (); @SEARCHED = ();
+    my %saved = %BY_NAME;            # a lexical: restored by hand, not local()
+    %BY_NAME = (%saved, %{ $o{names} || {} });
+    my @got = ('UNSET');
+    $S->can('_resolveArtist')->(
+        'TestSvc', $query, $BY_NAME{ lc $query } || [], exists $o{spine} ? $o{spine} : $SP6, $fetch,
+        sub { @got = @_ }, [ $native ], $search, 0, $o{compare} // 1);
+    %BY_NAME = %saved;
+    return @got;
+}
+my %FW = ('faye wong' => [ { id => 601, name => 'Faye Wong' } ], $WF => [ { id => 602, name => $WF } ]);
+
+my ($w6, $al6, $bs6) = both('Faye Wong', $WF, names => \%FW);
+ok(scalar(ref $w6 eq 'HASH' && $w6->{id} == 602),
+   "6: the English name corroborates, the native one more: the native one wins (王菲 on Qobuz)");
+ok(scalar(@SEARCHED == 1 && $SEARCHED[0] eq $WF), '6: ... because the native name was asked too, once');
+ok(scalar(ref $bs6 eq 'ARRAY' && ($bs6->[0]{id} // 0) == 601 && @{ $bs6->[1] || [] } == 3),
+   "6: ... and the English entry's albums go beside it (it corroborates strongly on its own)");
+
+($w6, $al6, $bs6) = both('Faye Wong', $WF, names => \%FW, compare => 0);
+ok(scalar(ref $w6 eq 'HASH' && $w6->{id} == 601 && !@SEARCHED && !defined $bs6),
+   '6: control: without compare a strong first answer is taken at once (no extra search), as before');
+
+($w6, $al6, $bs6) = both('Faye Wong', $WF, names => { %FW, $WF => [ { id => 603, name => $WF } ] });
+ok(scalar(ref $w6 eq 'HASH' && $w6->{id} == 601 && !defined $bs6),
+   '6: the English name corroborates more: it wins, and a weak native entry is not kept beside');
+
+($w6, $al6, $bs6) = both('Faye Wong', $WF, names => { %FW, $WF => [ { id => 604, name => $WF } ] });
+ok(scalar(ref $w6 eq 'HASH' && $w6->{id} == 601 && ref $bs6 eq 'ARRAY' && $bs6->[0]{id} == 604),
+   '6: a tie keeps the English entry, the other beside');
+
+($w6, $al6, $bs6) = both('Faye Wong', $WF, names => { %FW, $WF => [ { id => 601, name => $WF } ] });
+ok(scalar(ref $w6 eq 'HASH' && $w6->{id} == 601 && !defined $bs6 && "@SEARCHED" eq $WF),
+   '6: both names reach the SAME service artist: answered once, nothing beside');
+
+($w6, $al6, $bs6) = both('Faye Wong', $WF, names => { %FW, $WF => [] });
+ok(scalar(ref $w6 eq 'HASH' && $w6->{id} == 601 && !defined $bs6), '6: the native name finds nothing: the English answer stands');
+
+($w6) = both('Faye Wong', $WF, names => { %FW, 'faye wong' => [ { id => 603, name => 'Faye Wong' } ] });
+ok(scalar(ref $w6 eq 'HASH' && $w6->{id} == 602 && "@SEARCHED" eq $WF),
+   '6: a weak English answer: the native name is asked next and wins, as any alias retry');
+
+($w6) = both('Faye Wong', $WF, names => \%FW, spine => {});
+ok(scalar(ref $w6 eq 'HASH' && $w6->{id} == 601 && !@SEARCHED), '6: no spine, no opinion: no extra search');
+
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

@@ -121,5 +121,38 @@ ok(scalar((($srch[0] // {})->{line2} // '') eq "Local \x{00B7} Qobuz"), '2: line
     ok(scalar(($root // '') =~ /_searchRow\(/), '4: the home page keeps its inline search box');
 }
 
+# 5. "FIND AN ARTIST" SITS BETWEEN THE BANNER AND ABOUT (0.56.24; Simon,
+#    2026-10-02: "The search needs to be below the banner but above about
+#    discography", "needs a header too"). Material focuses an inline search box
+#    only as row 0 (browse-page.js `:focus="index==0 && !IS_MOBILE"`), so with
+#    its header above it the box is never focused on arrival: by his layout.
+my @order = ('<div>covers</div>', 'PLUGIN_DISCOGRAPHY_SEARCH_HDR', 'search', 'PLUGIN_DISCOGRAPHY_ABOUT_HDR');
+sub _shape { map { ($_->{type} // '') eq 'search' ? 'search' : ($_->{name} // '') } @_ }
+{
+    no warnings 'redefine'; no strict 'refs';
+    local *{"${B}::_coverCollageRow"} = sub { { name => '<div>covers</div>', type => 'text' } };
+    my @wb = @{ $B->can('_rootView')->(undef, 'hi')->{items} };
+    ok(scalar(join('|', (_shape(@wb))[0 .. 3]) eq join('|', @order)),
+       '5: banner, the "Find an artist" header, the search box, then the About section');
+    ok(scalar(($wb[1]{type} // '') =~ /^header/), '5: "Find an artist" is a real header for a header-capable client');
+    my @nh = @{ $B->can('_rootView')->(undef, '')->{items} };
+    ok(scalar(join('|', (_shape(@nh))[0 .. 3]) eq join('|', @order) && ($nh[1]{type} // '') eq 'text'),
+       '5: a client without headers gets the same order, the header as a text divider');
+}
+{
+    my @rows = @{ $B->can('_rootView')->(undef, 'hi')->{items} };
+    ok(scalar(join('|', (_shape(@rows))[0 .. 2]) eq join('|', @order[1 .. 3])),
+       '5: a library with no artwork: no banner, the rest in the same order');
+}
+{
+    open my $sf, '<', "$FindBin::Bin/../Discography/strings.txt" or die $!;
+    my $str = do { local $/; <$sf> };
+    my ($a2) = $str =~ /^PLUGIN_DISCOGRAPHY_ABOUT_2\n\tEN\t([^\n]*)/m;
+    ok(scalar(defined $a2 && $a2 =~ /^Search for any artist above,/), '5: the About text points UP at the search');
+    ok(scalar($str =~ /^PLUGIN_DISCOGRAPHY_SEARCH_HDR\n\tEN\tFind an artist$/m), '5: the header string is there');
+    ok(scalar($str =~ /^PLUGIN_DISCOGRAPHY_ABOUT_HDR\n\tEN\tDiscography$/m),
+       '5: the About section is headed "Discography", not "About Discography" (0.56.25, Simon)');
+}
+
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

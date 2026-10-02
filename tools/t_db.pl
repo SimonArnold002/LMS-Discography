@@ -112,6 +112,8 @@ my %FAMILY = (
     'dsc:rg:abc:v2'                     => [ { mbid => 'r', title => 'OK', aliases => ['a'] } ],
     'dsc:rel2rg:v1:rel-1'               => 'rg-1',
     'dsc:rel2rg:v1:rel-404'             => '',
+    'dsc:libmbid:1:153744:jack'         => 'c8fc9d07-a910-46ea-bbc8-3258395f8aaf',
+    'dsc:libmbid:1:9:fever'             => '',
     'dsc:collabs:v1:abc'                => [],
     'dsc:bands:v2:abc'                  => [ { mbid => 'b', name => 'Soft Cell' } ],
     'dsc:collabcand:v1:abc'             => [ { mbid => 'c' } ],
@@ -143,7 +145,7 @@ my %FAMILY = (
         $inArtist{"dsc:alias:$r->[3]:$r->[0]"}  = 1 if $r->[4];
     }
     for my $k (sort keys %FAMILY) {
-        my $want = $k =~ /^dsc:(?:mbid|rel2rg):/   ? 'mbid'
+        my $want = $k =~ /^dsc:(?:mbid|rel2rg|libmbid):/ ? 'mbid'
                  : $k =~ /^dsc:(?:mbname|alias):/  ? 'artist' : 'kv';
         my @in   = grep { $_->[1] } [mbid => $inMbid{$k}], [artist => $inArtist{$k}], [kv => $inKv{$k}];
         my $in   = @in == 1 ? $in[0][0] : @in ? 'several' : 'none';
@@ -154,9 +156,15 @@ my %FAMILY = (
     $row = $h->selectrow_hashref("SELECT * FROM mbid WHERE k = 'dsc:rel2rg:v1:rel-1'");
     ok($row->{kind} eq 'release' && $row->{lookup} eq 'rel-1' && $row->{mbid} eq 'rg-1',
        '2: release row carries kind + lookup + mbid');
+    # An untagged library contributor's album answer (resolver plan C2): an id
+    # the plugin resolved, kept like the name's.
+    $row = $h->selectrow_hashref("SELECT * FROM mbid WHERE k = 'dsc:libmbid:1:153744:jack'");
+    ok($row->{kind} eq 'library' && $row->{lookup} eq '153744:jack'
+       && $row->{mbid} eq 'c8fc9d07-a910-46ea-bbc8-3258395f8aaf',
+       '2: library row carries kind + lookup (id:name) + mbid');
     my $n = $DB->counts;
-    ok($n->{mbid} == 4 && $n->{artist} == 1 && $n->{kv} == keys(%FAMILY) - 6,
-       '2: counts() = 4 mbid rows, 1 artist row (name + aliases), the rest kv');
+    ok($n->{mbid} == 6 && $n->{artist} == 1 && $n->{kv} == keys(%FAMILY) - 8,
+       '2: counts() = 6 mbid rows, 1 artist row (name + aliases), the rest kv');
     $h->disconnect;
 
     ok(!defined $s->get('dsc:never:set'), '2: an absent key reads undef');
@@ -212,6 +220,7 @@ my %FAMILY = (
     my $s = $DB->store('1.0');
     $s->set('dsc:bio:2:v', 'kv row', 3600);
     $s->set('dsc:mbid:2:v', 'mbid row', 3600);
+    $s->set('dsc:libmbid:1:7:v', 'library row', 3600);
 
     $DB->_reset;
     $s = $DB->store('1.0');
@@ -221,6 +230,7 @@ my %FAMILY = (
     $s = $DB->store('2.0');
     ok(!defined $s->get('dsc:bio:2:v'), '4: new version: kv emptied');
     ok(($s->get('dsc:mbid:2:v') // '') eq 'mbid row', '4: new version: mbid table kept');
+    ok(($s->get('dsc:libmbid:1:7:v') // '') eq 'library row', '4: new version: a library album answer kept');
 
     $DB->_reset;
     $s = $DB->store('2.0');
@@ -368,11 +378,15 @@ my %FAMILY = (
     $s->set('dsc:mbname:0:m',   'Old', 3600);
     $s->set('dsc:mbname:1:m2',  'Cur', 3600);
     $s->set('dsc:alias:1:m2',   ['old alias'], 3600);
-    $DB->keepCurrent('dsc:mbid:2:', 'dsc:rel2rg:v1:', 'dsc:mbname:1:', 'dsc:alias:2:');
+    $s->set('dsc:libmbid:0:5:x', 'l0', 3600);
+    $s->set('dsc:libmbid:1:5:x', 'l1', 3600);
+    $DB->keepCurrent('dsc:mbid:2:', 'dsc:rel2rg:v1:', 'dsc:mbname:1:', 'dsc:alias:2:', 'dsc:libmbid:1:');
     my $h = raw();
     my %mb = map { $_->[0] => 1 } @{ $h->selectall_arrayref('SELECT k FROM mbid') };
-    ok(!$mb{'dsc:mbid:1:old'} && !$mb{'dsc:rel2rg:v0:r'}, '9: old-version id rows are deleted');
-    ok($mb{'dsc:mbid:2:cur'} && $mb{'dsc:rel2rg:v1:r'}, '9: current-version id rows are kept');
+    ok(!$mb{'dsc:mbid:1:old'} && !$mb{'dsc:rel2rg:v0:r'} && !$mb{'dsc:libmbid:0:5:x'},
+       '9: old-version id rows are deleted');
+    ok($mb{'dsc:mbid:2:cur'} && $mb{'dsc:rel2rg:v1:r'} && $mb{'dsc:libmbid:1:5:x'},
+       '9: current-version id rows are kept');
     my ($oldName) = $h->selectrow_array("SELECT COUNT(*) FROM artist WHERE mbid = 'm'");
     my $r = $h->selectrow_hashref("SELECT name IS NOT NULL AS n, aliases IS NOT NULL AS a FROM artist WHERE mbid = 'm2'");
     ok($oldName == 0, '9: an artist row holding only an old-version answer is deleted');
@@ -391,6 +405,11 @@ my %FAMILY = (
     my $cur = Plugins::Discography::API::_mbidKey('zz');
     $h->do("INSERT INTO mbid (k, kind, lookup, mbid, fetched_at, expires_at)
             VALUES (?, 'artist', 'zz', 'cur', ?, 0)", undef, $cur, time());
+    $h->do("INSERT INTO mbid (k, kind, lookup, mbid, fetched_at, expires_at)
+            VALUES ('dsc:libmbid:0:5:zz', 'library', '5:zz', 'old', ?, 0)", undef, time());
+    my $curLib = Plugins::Discography::API::_libMbidKey(5, 'zz');
+    $h->do("INSERT INTO mbid (k, kind, lookup, mbid, fetched_at, expires_at)
+            VALUES (?, 'library', '5:zz', 'cur', ?, 0)", undef, $curLib, time());
     $h->disconnect;
     $DB->_reset;
     {   # re-run API's load-time registration, as a server start would
@@ -403,6 +422,7 @@ my %FAMILY = (
     my $h2 = raw();
     my %mb = map { $_->[0] => 1 } @{ $h2->selectall_arrayref('SELECT k FROM mbid') };
     ok(!$mb{'dsc:mbid:1:zz'} && $mb{$cur}, "10: API's own key version decides what is retired");
+    ok(!$mb{'dsc:libmbid:0:5:zz'} && $mb{$curLib}, '10: the library album answers\' too (registered by API)');
     $h2->disconnect;
 }
 

@@ -20,7 +20,7 @@ use strict;
 use warnings;
 use FindBin;
 
-our (@SEARCHED, @FETCHED, %ARTISTS, %ALBUMS, %HOLD, @HELD, @TIMERS, %SARTISTS, %SALBUMS);
+our (@SEARCHED, @FETCHED, %ARTISTS, %ALBUMS, %HOLD, @HELD, @TIMERS, %SARTISTS, %SALBUMS, @RAWQ);
 
 BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
@@ -52,6 +52,7 @@ package T::QAPI;
 sub search {
     my ($s, $cb, $q, $type) = @_;
     push @main::SEARCHED, $q;
+    push @main::RAWQ, [ 'Qobuz', $q ];   # exactly as handed over (section 11)
     $cb->({ artists => { items => $main::ARTISTS{$q} || [] } });
 }
 sub getArtist {
@@ -66,6 +67,7 @@ sub getArtist {
 package T::Multi;
 sub search {
     my ($s, $cb, $a) = @_;
+    push @main::RAWQ, [ $s->{svc}, $a->{search} // $a->{query} ];   # as handed over (section 11)
     my $q = lc($a->{search} // $a->{query} // '');
     push @main::SEARCHED, "$s->{svc}:$q";
     $cb->($main::SARTISTS{ $s->{svc} }{$q} || []);
@@ -578,6 +580,108 @@ ok(scalar($calls == 1 && !@TIMERS && !grep { $_ eq $JOINT } @FETCHED),
         $ask->(0);
     }
     ok(scalar(($n[0] // 0) == 1 && !$flight->_count), '10: an adapter that dies -> answered, claim released');
+}
+
+# ---------------------------------------------------------------------------
+# 11. THE NAMES TRIED AFTER THE FIRST GET EACH SERVICE'S OWN TEXT CONVERSION
+#     (resolver plan Part C, C5; 2026-10-01). The first name has always gone to
+#     Qobuz, TIDAL and Spotify as characters and to Deezer as bytes (query_enc,
+#     0.10.1); the names tried after it (MusicBrainz's aliases, the browsed name)
+#     were handed over raw, so a non-ASCII one reached Deezer as characters.
+#     There is no Deezer account on the rig: this is the only check.
+# ---------------------------------------------------------------------------
+{
+    no warnings qw(redefine once);
+    # All four services on for this section only (each adapter's probe).
+    local *Plugins::TIDAL::Plugin::getAlbum  = sub { };
+    local *Plugins::Deezer::Plugin::getAlbum = sub { };
+    local *Plugins::Spotty::OPML::album      = sub { };
+    my $ko  = "\x{cf04}\x{c2dc} \x{c694}\x{b124}\x{c988}";   # 켄시 요네즈, Kenshi Yonezu's Korean alias on MusicBrainz
+    my $ko8 = $ko; utf8::encode($ko8);
+    # What each service's artist search was handed for the alias.
+    my $asked = sub {
+        my %by;
+        for my $r (@RAWQ) {
+            my $d = $r->[1] // ''; utf8::decode($d) unless utf8::is_utf8($d);
+            $by{ $r->[0] } = $r->[1] if lc($d) eq lc($ko);
+        }
+        return \%by;
+    };
+    for my $given ([ 'characters', $ko ], [ 'octets', $ko8 ]) {
+        reset_all(); @RAWQ = ();
+        # The first name finds only an unrelated act, so each service retries
+        # under the alias.
+        my $other = [ { id => 'z1', name => 'Zzz Unrelated' } ];
+        $ARTISTS{'nobody here'} = $other;
+        %SARTISTS = map { ($_ => { 'nobody here' => $other }) } qw(Tidal Deezer Spotify);
+        %SALBUMS = ();
+        my @al = ($given->[1]);
+        $S->getCandidates('client', 'Nobody Here', 1, sub {}, { mbid => 'mb-ko', aliases => \@al });
+        my $by = $asked->();
+        ok(scalar(defined $by->{Deezer} && !utf8::is_utf8($by->{Deezer}) && $by->{Deezer} eq $ko8),
+           "11: an alias given as $given->[0] reaches Deezer as bytes");
+        ok(scalar(3 == grep { defined $by->{$_} && utf8::is_utf8($by->{$_}) } qw(Qobuz Tidal Spotify)),
+           "11: ... and Qobuz, TIDAL and Spotify as characters");
+        ok(scalar($al[0] eq $given->[1] && utf8::is_utf8($al[0]) == utf8::is_utf8($given->[1])),
+           "11: ... and the caller's own list is left as it was");
+    }
+    %SARTISTS = (); %SALBUMS = ();
+}
+
+# ---------------------------------------------------------------------------
+# 12. BOTH NAMES, ON EVERY SERVICE (getCandidates `compare`, 0.56.19). Field
+#     (rig, 2026-10-01): Qobuz files 王菲 as two artists, "王菲" and "Faye Wong",
+#     with no album in common; 0.56.18 searched the English name first, took it
+#     at once and dropped 21 of her 25 Qobuz matches. With `compare` each
+#     service asks the native name too, keeps the stronger entry, and puts the
+#     other's albums beside it as a joint artist's (match-only).
+# ---------------------------------------------------------------------------
+{
+    no warnings qw(redefine once);
+    local *Plugins::TIDAL::Plugin::getAlbum  = sub { };
+    local *Plugins::Deezer::Plugin::getAlbum = sub { };
+    local *Plugins::Spotty::OPML::album      = sub { };
+    my $wf  = "\x{738b}\x{83f2}";   # 王菲
+    my $wf8 = $wf; utf8::encode($wf8);
+    my $n = $S->can('_norm');
+    my $spine = { map { ($n->($_) => 1) } qw(Sky Fable Toy Eyebrows Everything Wishing) };
+    my @EN = map { +{ id => "e$_->[0]", title => $_->[1], name => $_->[1] } } [1, 'Everything'], [2, 'Wishing'];
+    my @NA = map { +{ id => "n$_->[0]", title => $_->[1], name => $_->[1] } } [1, 'Sky'], [2, 'Fable'], [3, 'Toy'];
+    my $setup = sub {
+        reset_all(); @RAWQ = ();
+        my $en = [ { id => 'en1', name => 'Faye Wong' } ];
+        my $na = [ { id => 'na1', name => $wf } ];
+        %ARTISTS = ('faye wong' => $en, $wf => $na);
+        %ALBUMS  = (en1 => [ @EN ], na1 => [ @NA ]);
+        %SARTISTS = map { ($_ => { 'faye wong' => $en, ($_ eq 'Deezer' ? $wf8 : $wf) => $na }) } qw(Tidal Deezer Spotify);
+        %SALBUMS  = map { ($_ => { en1 => [ @EN ], na1 => [ @NA ] }) } qw(Tidal Deezer Spotify);
+    };
+    my $titles = sub { my ($pool, $svc) = @_;
+        join ',', sort map { $_->{_candTitle} // '' } @{ ($pool || {})->{$svc} || [] } };
+    my $joint = sub { my ($pool, $svc) = @_;
+        join ',', sort map { $_->{_candTitle} // '' } grep { $_->{_joint} } @{ ($pool || {})->{$svc} || [] } };
+    my $askedNative = sub { my ($svc) = @_;
+        scalar grep { my $q = $_->[1] // ''; utf8::decode($q) unless utf8::is_utf8($q);
+                      $_->[0] eq $svc && $q eq $wf } @RAWQ };
+
+    $setup->();
+    my $pool;
+    $S->getCandidates('client', $wf, 1, sub { $pool = shift },
+        { mbid => 'mb-wf', query => 'Faye Wong', aliases => [ $wf ], compare => 1, spine => $spine });
+    for my $svc (qw(Qobuz Tidal Deezer Spotify)) {
+        ok(scalar($askedNative->($svc) == 1), "12: $svc asks the native name too, once");
+        ok(scalar($titles->($pool, $svc) eq 'Everything,Fable,Sky,Toy,Wishing'),
+           "12: $svc: the stronger entry's albums and the other's, in one pool");
+        ok(scalar($joint->($pool, $svc) eq 'Everything,Wishing'),
+           "12: $svc: ... the English entry's marked as beside it (match-only)");
+    }
+
+    $setup->(); $pool = undef;
+    $S->getCandidates('client', $wf, 1, sub { $pool = shift },
+        { mbid => 'mb-wf', query => 'Faye Wong', aliases => [ $wf ], spine => $spine });
+    ok(scalar(!$askedNative->('Qobuz') && $titles->($pool, 'Qobuz') eq 'Everything,Wishing'),
+       '12: control: without compare the English answer is taken at once, as 0.56.18 did');
+    %SARTISTS = (); %SALBUMS = ();
 }
 
 print "\n$pass passed, $fail failed\n";

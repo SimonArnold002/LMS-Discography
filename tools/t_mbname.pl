@@ -167,7 +167,7 @@ ok(scalar(@$got) == 11, '... and still returns the aliases');
 # ---------------------------------------------------------------------------
 my $M3 = '00000000-0000-0000-0000-000000000003';
 reset_all();
-$CACHE{ 'dsc:alias:2:' . $M3 } = [@ALIAS];   # aliases only, exactly as measured
+$CACHE{ 'dsc:alias:3:' . $M3 } = [@ALIAS];   # aliases only, exactly as measured
 ok(!defined $API->peekArtistName($M3), 'the field state: aliases cached, no name');
 $API->warmArtistAliases($M3, sub { $got = $_[0] });
 ok(scalar(@URLS) == 1, '... so the name is refetched');
@@ -182,7 +182,7 @@ ok(scalar(@$got) == 11, '... with the alias list still returned intact');
 my $M4 = '00000000-0000-0000-0000-000000000004';
 reset_all();
 $DROP_NAME = 1;                              # the cache swallows every name write
-$CACHE{ 'dsc:alias:2:' . $M4 } = [@ALIAS];
+$CACHE{ 'dsc:alias:3:' . $M4 } = [@ALIAS];
 $API->warmArtistAliases($M4, sub { });
 ok(scalar(@URLS) == 1, 'a cache that loses the name still only refetches once');
 ok(!defined $CACHE{ 'dsc:mbname:1:' . $M4 }, '... the cache genuinely did not keep it');

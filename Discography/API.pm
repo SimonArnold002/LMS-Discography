@@ -56,7 +56,7 @@ my $prefs = preferences('plugin.discography');
 # first module to call DB->store() sets it and later calls are ignored.
 # tools/syntax_check.sh asserts all three agree and match install.xml.
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.16';
+use constant CACHE_VERSION => '0.56.25';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 # The families DB.pm keeps across builds, by their CURRENT key prefix, so rows
 # written under an older key version are retired at open. Taken from the key
@@ -64,7 +64,7 @@ my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 # suites load this module against a stubbed store with no DB.pm behind it; in
 # LMS DB.pm ships in the same zip, so the call always runs.)
 Plugins::Discography::DB->keepCurrent(
-    _mbidKey(''), _rel2rgKey(''), _mbNameKey(''), _aliasKey(''))
+    _mbidKey(''), _rel2rgKey(''), _mbNameKey(''), _aliasKey(''), _libMbidKey(''))
     if Plugins::Discography::DB->can('keepCurrent');
 
 # MB's canonical artist name, remembered in-process as well as cached — the
@@ -852,9 +852,10 @@ sub _libraryTagMbid {
 }
 
 # getArtistMbid(artist_id => N, artist => 'Name', onDone => sub($mbid, $fromTag))
-# Library tag wins (exact identity); MB name search otherwise. onDone always
-# fires exactly once. $fromTag is 1 when the mbid came from the library tag, 0
-# from a name search — the caller uses it to distinguish a trusted-but-possibly
+# Library tag wins (exact identity); for a library artist with no tag, the act
+# its own albums name (C2, _libraryAlbumMbid); MB name search otherwise. onDone
+# always fires exactly once. $fromTag is 1 when the mbid came from the library
+# tag, 0 from the albums or a name search — the caller uses it to distinguish a trusted-but-possibly
 # WRONG tag (a mis-tagged / merged same-name artist) from a name-search result,
 # and to decide whether to try a fallback if the tag mbid has no discography.
 # %a: artist (name), artist_id (library contributor), onDone,
@@ -873,8 +874,16 @@ sub getArtistMbid {
         return;
     }
 
-    $class->_artistMbidByName($a{artist}, sub { $onDone->($_[0], 0) },
-                              $a{speculative}, $a{fetch}, $a{asked});
+    my $byName = sub {
+        my ($cb) = @_;
+        $class->_artistMbidByName($a{artist}, $cb, $a{speculative}, $a{fetch}, $a{asked});
+    };
+    # A library artist with no tag: its own albums say which act it is (C2,
+    # _libraryAlbumMbid). Not for a speculative guess (the search's row check),
+    # which reads that answer from the store instead.
+    return _libraryAlbumMbid($a{artist_id}, $a{artist}, $byName, sub { $onDone->($_[0], 0) })
+        if $a{artist_id} && !$a{speculative};
+    $byName->(sub { $onDone->($_[0], 0) });
 }
 
 # Port of the ListenBrainz plugin's getArtistMbidByName: quoted artist query,
@@ -1624,6 +1633,257 @@ sub _artistMbidByName {
     };
 
     $run->($run, _mbBase(), 0, 'artist', 0);
+}
+
+# ---------------------------------------------------------------------------
+# AN UNTAGGED LIBRARY ARTIST IS NAMED BY ITS OWN ALBUMS (resolver plan C2).
+#
+# With no MusicBrainz tag on the files, the page resolved by name and took the
+# best-scoring act of that name: Simon's Welsh band Jack opened Jack Johnson, his
+# Roswell (MusicBrainz's "Roswell Road", an alias no name search reaches) a
+# psytrance act, Muzz the producer MUZZ, Rico an MC (2026-07-22 triage, still so
+# on 0.56.20). An album title is far more particular than a name, so the owned
+# albums are asked instead: `releasegroup:"<title>" AND artist:"<name>"`, and
+# the act credited on the hits with that very title is the one.
+#
+# MEASURED 2026-10-02 beyond those four (Simon: "needs to work for others ...
+# needs to disambiguate properly"; resolver plan C2, MEASURED): his 1,119 album
+# artists as if untagged, scored against the tags July's sweep logged (15 put
+# right, the lesser act of a shared name each time, none made wrong), and 436
+# pretend libraries of a LESSER same-name act over 154 common names (by name 85
+# right; one title asked 322; these rules 415, none made wrong). Each rule below
+# is there for a case that measurement showed:
+#   * up to LIBMBID_TITLES titles, distinctive first (Sources::_titleWeight): one
+#     title reached 322 of the 415;
+#   * only hits whose title IS the one asked count, and a title that two acts of
+#     the name both hold counts for neither (a self-titled album, "Greatest Hits");
+#   * the act's name must be the library's (2: spacing and a leading "The" aside,
+#     so every spelling of the Chocolate Watchband is one act) or hold it (1:
+#     Roswell / Roswell Road, Rico / Rico Rodriguez). Without it July's classical
+#     albums moved orchestras onto their COMPOSERS;
+#   * an act named as the library beats one whose name only holds it: "The Best
+#     of the Nat King Cole Trio" outvoted his "The Collection" until it did;
+#   * otherwise an outright winner by weight, a tie deciding nothing;
+#   * the first title agreeing with the name's own answer ends it, one request
+#     in the common case (the same answers, 1,092 requests where 1,285);
+#   * the artist is asked without a leading "The" (MusicBrainz calls them
+#     "Go-Go's"; a quoted phrase finds the shorter name inside the longer one);
+#     the title again without edition words when the first form finds nobody.
+# Nothing decided, a request failing: the name's answer, as before. A tag still
+# wins (getArtistMbid). Kept per library CONTRIBUTOR, id and name together (an
+# id LMS reuses after a rescan cannot inherit it), in the store's kept mbid
+# table, and NEVER under the name: a service row called "Jack" opens what the
+# name opens. Refresh asks again (clearArtistCache).
+# ---------------------------------------------------------------------------
+use constant LIBMBID_V        => 1;
+use constant LIBMBID_TTL      => 30 * 86400;   # an act decided
+use constant LIBMBID_NONE_TTL =>  7 * 86400;   # albums found, no act decided
+use constant LIBMBID_MISS_TTL =>      86400;   # no album found at all
+use constant LIBMBID_TITLES   => 3;
+use constant LIBMBID_LIMIT    => 12;           # July's probe asked 12
+
+sub _libMbidKey {
+    my ($id, $name) = @_;
+    my $k = 'dsc:libmbid:' . LIBMBID_V . ':'
+          . ((defined $id && length $id) ? "$id:" . lc($name // '') : '');
+    utf8::encode($k) if utf8::is_utf8($k);
+    return $k;
+}
+
+# The contributor's own name: the albums carry it, whatever spelling a search
+# row that attached the id wears. undef outside LMS (the suites).
+sub _libraryName {
+    my ($id) = @_;
+    return undef unless $id;
+    my $n = eval {
+        require Slim::Schema;
+        my $c = Slim::Schema->find('Contributor', $id);
+        $c ? $c->name : undef;
+    };
+    return (defined $n && length $n) ? $n : undef;
+}
+
+# What the album lookup decided for library contributor $id, from the store
+# only: an mbid, or undef when it was not asked or decided nothing.
+sub peekLibraryMbid {
+    my ($class, $id, $name) = @_;
+    return undef unless $id;
+    my $m = $cache->get(_libMbidKey($id, _libraryName($id) // $name));
+    return (defined $m && $m =~ $UUID_RE) ? lc $m : undef;
+}
+
+# Lucene's reserved characters escaped, as July's probe sent them (its esc()).
+sub _luceneEsc {
+    my ($s) = @_;
+    $s =~ s/([+\-!(){}\[\]^"~*?:\\\/]|&&|\|\|)/\\$1/g;
+    return $s;
+}
+
+# The title without its edition words, July's T2 (its clean()): "(Deluxe
+# Edition)", "[Remastered 2011]", " - Expanded". Itself when nothing is left.
+my $EDITION_WORDS = qr/deluxe|expanded|remaster|remastered|edition|anniversary|bonus|disc\s*\d
+                      |digital|version|mono|stereo|reissue|special|original\s+score
+                      |original\s+motion\s+picture|explicit|japan|import/xi;
+sub _editionless {
+    my ($t) = @_;
+    my $s = $t // '';
+    1 while $s =~ s/\s*[(\[][^)\]]*(?:$EDITION_WORDS)[^)\]]*[)\]]//;
+    $s =~ s/\s*[:\-]\s*(?:deluxe|expanded|remastered).*$//i;
+    $s =~ s/^\s+|\s+$//g;
+    return length $s ? $s : $t;
+}
+
+sub _rgQueryUrl {
+    my ($title, $artist) = @_;
+    my $q = 'releasegroup:"' . _luceneEsc($title) . '" AND artist:"' . _luceneEsc($artist) . '"';
+    utf8::encode($q) if utf8::is_utf8($q);
+    (my $safe = $q) =~ s/([^A-Za-z0-9])/sprintf("%%%02X",ord($1))/ge;
+    return _mbBase() . 'release-group?query=' . $safe . '&fmt=json&limit=' . LIBMBID_LIMIT;
+}
+
+# A credited act's name against the library's: 2 the same name (case, marks,
+# spacing and a leading "The" aside), 1 one name's words all inside the other's
+# (the shared matcher's token test), 0 neither.
+sub _libNameMatch {
+    my ($lib, $mb) = @_;
+    my ($a, $b) = map {
+        my $n = Plugins::Discography::Sources::_norm($_ // '');
+        $n =~ s/^the //;
+        $n;
+    } $lib, $mb;
+    return 0 unless length $a && length $b;
+    (my $ca = $a) =~ s/ //g;
+    (my $cb = $b) =~ s/ //g;
+    return 2 if $ca eq $cb;
+    return Plugins::Discography::Sources::_artistMatch($a, $b) ? 1 : 0;
+}
+
+# One title's vote, from a release-group search reply: the act credited on the
+# hits whose title is one of @asked, by a name _libNameMatch passes (a hit's
+# first such credit). undef when no hit is one; { ambiguous => 1 } when two
+# acts are; otherwise { mbid, exact }.
+sub _titleVote {
+    my ($rgs, $name, @asked) = @_;
+    my %want = map { Plugins::Discography::Sources::_norm($_) => 1 } grep { defined } @asked;
+    my %acts;
+    for my $rg (@{ $rgs || [] }) {
+        next unless ref $rg eq 'HASH'
+            && $want{ Plugins::Discography::Sources::_norm($rg->{title} // '') };
+        for my $c (@{ $rg->{'artist-credit'} || [] }) {
+            my $a = ref $c eq 'HASH' ? $c->{artist} : undef;
+            next unless ref $a eq 'HASH' && $a->{id} && !$MB_SPECIAL_ARTIST{ lc $a->{id} };
+            my $m = _libNameMatch($name, $a->{name}) or next;
+            $acts{ lc $a->{id} } = $m;
+            last;
+        }
+    }
+    return undef unless %acts;
+    return { ambiguous => 1 } if keys %acts > 1;
+    my ($id) = keys %acts;
+    return { mbid => $id, exact => ($acts{$id} == 2 ? 1 : 0) };
+}
+
+# _libraryAlbumMbid($id, $pageName, $byName, $cb): getArtistMbid's answer for an
+# untagged library contributor. $byName->(sub($mbid)) is the name resolver.
+sub _libraryAlbumMbid {
+    my ($id, $pageName, $byName, $cb) = @_;
+    my $name = _libraryName($id) // $pageName;
+    return $byName->($cb) unless defined $name && length $name;
+    my $key  = _libMbidKey($id, $name);
+    my $kept = $cache->get($key);
+    if (defined $kept) {
+        if ($kept =~ $UUID_RE) {
+            _dbg("artist mbid from the library's albums (kept): '$name' ($id) -> $kept");
+            return $cb->(lc $kept);
+        }
+        _dbg("library artist '$name' ($id): its albums decided no act (kept) - by name");
+        return $byName->($cb);
+    }
+
+    my $own = Plugins::Discography::Sources->ownAlbumTitles($id) || [];
+    return $byName->($cb) unless @$own;
+    my $i = 0;
+    my @titles = map  { $_->[1] }
+                 sort { $b->[0] <=> $a->[0] || $a->[2] <=> $b->[2] }
+                 map  { [ Plugins::Discography::Sources::_titleWeight($_, $name), $_, $i++ ] } @$own;
+    splice @titles, LIBMBID_TITLES if @titles > LIBMBID_TITLES;
+    (my $qArtist = $name) =~ s/^\s*the\s+(?=\S)//i;
+
+    my @jobs;    # [title number, title, form asked]
+    for my $n (0 .. $#titles) {
+        my $t = $titles[$n];
+        push @jobs, [ $n, $t, $t ];
+        # Compared as strings, not by _norm: _norm drops what is in brackets,
+        # so "X (Remastered)" and "X" are one key there and the second form
+        # would never be asked.
+        my $e = _editionless($t);
+        push @jobs, [ $n, $t, $e ] if $e ne $t;
+    }
+
+    $byName->(sub {
+        my ($named) = @_;
+        $named = lc $named if $named;
+        my (%exact, %part, %settled, $found, $failed, $done);
+        my $finish = sub {
+            my ($agreed) = @_;
+            return if $done++;
+            my $pick = $agreed;
+            unless ($pick || $failed) {
+                for my $t (\%exact, \%part) {
+                    next unless %$t;
+                    my @o = sort { $t->{$b} <=> $t->{$a} || $a cmp $b } keys %$t;
+                    $pick = (@o > 1 && $t->{ $o[0] } == $t->{ $o[1] }) ? undef : $o[0];
+                    last;
+                }
+            }
+            if ($failed) {
+                _dbg("library artist '$name' ($id): an album lookup failed - by name, nothing kept");
+            }
+            else {
+                my $ttl = $pick ? LIBMBID_TTL : $found ? LIBMBID_NONE_TTL : LIBMBID_MISS_TTL;
+                eval { $cache->set($key, $pick // '', $ttl); 1 }
+                    or $log->warn("library-artist mbid cache set failed: $@");
+                _dbg("library artist '$name' ($id): "
+                    . ($pick ? "its albums name $pick" . ($named && $pick ne $named
+                                   ? " (the name gives $named)" : '')
+                             : 'its albums decided no act - by name'));
+            }
+            $cb->($pick || $named);
+        };
+        my $j = 0;
+        my $step = sub {
+            my ($self) = @_;
+            $j++ while $j < @jobs && $settled{ $jobs[$j][0] };
+            return $finish->() if $j >= @jobs;
+            my ($n, $t, $form) = @{ $jobs[$j++] };
+            _netGet(_rgQueryUrl($form, $qArtist),
+                sub {
+                    my $d = eval { from_json(shift->content) };
+                    my $rgs = (ref $d eq 'HASH' && ref $d->{'release-groups'} eq 'ARRAY')
+                            ? $d->{'release-groups'} : undef;
+                    unless ($rgs) { $failed = 1; return $finish->() }
+                    $found = 1 if @$rgs;
+                    my $v = _titleVote($rgs, $name, $t, $form);
+                    if ($v) {
+                        $settled{$n} = 1;
+                        _dbg("library artist '$name': '$form' -> "
+                            . ($v->{mbid} ? $v->{mbid} . ($v->{exact} ? '' : ' (name inside)')
+                                          : 'two acts of the name - counts for neither'));
+                        if (my $m = $v->{mbid}) {
+                            ($v->{exact} ? \%exact : \%part)->{$m}
+                                += Plugins::Discography::Sources::_titleWeight($t, $name);
+                            return $finish->($m) if $n == 0 && $named && $m eq $named;
+                        }
+                    }
+                    $self->($self);
+                },
+                sub { $failed = 1; $finish->() },
+                timeout => 15);
+        };
+        _dbg("library artist '$name' ($id): no tag - asking " . scalar(@titles)
+            . " of its album(s) at most");
+        $step->($step);
+    });
 }
 
 # getArtistCandidates($name, sub(\@cands)) — the SAME-NAME candidate set for
@@ -2898,7 +3158,11 @@ sub filterRowsWithContent {
         # does not list must not vanish from search - but it still RESOLVES,
         # so it can take part in folding and carry its artist_id across. Its
         # own tag first, as getArtistMbid always has.
-        if ($row->{artist_id} && (my $tag = _libraryTagMbid($row->{artist_id}))) {
+        # An untagged one: the act its albums named on its page (C2), when a
+        # visit has found it - cache only, and like a tag never remembered
+        # under the name (_rememberRow).
+        if ($row->{artist_id} && (my $tag = _libraryTagMbid($row->{artist_id})
+                                  // $class->peekLibraryMbid($row->{artist_id}, $name))) {
             $tagged{$i} = 1;
             $settle->($i, 1, $tag);
             next;
@@ -3259,7 +3523,12 @@ sub _rowBatch {
 # `warmArtistAliases` early-returns on a cached alias list, so a v1 entry would
 # keep the canonical name from ever being fetched and the fold relabel would
 # silently never fire. Bumping repopulates both from one request.
-sub _aliasKey { 'dsc:alias:2:' . lc($_[0] // '') }
+# v3 (0.56.18): the entry is { names => [...], en => MB's primary English alias }
+# (peekArtistEnglishName says why). A v2 list has no English name, and the
+# artist page would keep reading it for up to 30 days; the bump retires them
+# (DB.pm keeps this family across builds), and the artist read every first
+# visit after a build makes anyway refills them.
+sub _aliasKey { 'dsc:alias:3:' . lc($_[0] // '') }
 
 # MusicBrainz's CANONICAL name for the artist. The alias fetch has always had
 # it (it uses `$d->{name}` to keep the canonical spelling out of the alias
@@ -3395,7 +3664,26 @@ sub peekArtistAliases {
     my ($class, $mbid) = @_;
     return undef unless $mbid;
     my $a = $cache->get(_aliasKey($mbid));
+    $a = $a->{names} if ref $a eq 'HASH';
     return ref $a eq 'ARRAY' ? $a : undef;
+}
+
+# MusicBrainz's PRIMARY ENGLISH ALIAS (locale "en", primary), from the same
+# artist read as the aliases; undef when it has none. Cache only. Wanted for an
+# artist whose own name has no Latin letter (米津玄師): the services outside Japan
+# file him as "Kenshi Yonezu", so his page searches that first
+# (Browse::_poolQuery). NOT the first Latin alias: measured 2026-10-01 over nine
+# such artists, all nine have a primary English alias and for six it is not the
+# first Latin one (宇多田ヒカル: "Cubic U" before "Hikaru Utada"; 坂本龍一: "R.S.").
+sub peekArtistEnglishName {
+    my ($class, $mbid) = @_;
+    return undef unless $mbid;
+    my $a = $cache->get(_aliasKey($mbid));
+    return undef unless ref $a eq 'HASH';
+    my $en = $a->{en};
+    return undef unless defined $en && length $en;
+    utf8::decode($en) unless utf8::is_utf8($en);
+    return $en;
 }
 
 my %nameRefetched;   # one recovery fetch per artist per plugin run -- see below
@@ -3823,9 +4111,14 @@ sub clearArtistMbid {
     $cache->remove($key);
 }
 
+# The biography of an act that shares its name, kept under its MusicBrainz id and
+# never its name (0.56.22, Browse::_fetchExactBio). Lives here so Refresh below
+# and the page use one spelling.
+sub _bioMbidKey { return 'dsc:biomb:1:' . lc($_[0] // '') }
+
 # Clear ALL of an artist's cached MusicBrainz data in one shot: resolution (mbid,
 # incl. the '' miss sentinel), release-group list, bootleg map, band members,
-# and bio. Streaming candidates live in Sources — call Sources::clearCandidates
+# and bio (by name, and by mbid for a shared name). Streaming candidates live in Sources — call Sources::clearCandidates
 # alongside (the CLI command and the view Refresh both do). This is the "re-pull
 # from MusicBrainz" primitive: a stale/poisoned cache (e.g. a miss pinned while a
 # mirror's search index was still building) can always be busted, from the UI
@@ -3849,6 +4142,15 @@ sub clearArtistCache {
     # page actually uses (`peekPool ...:tidal:mb:a74b1b7f...: HIT`).
     $mbid = _libraryTagMbid($a{artist_id}) if !$mbid && $a{artist_id};
 
+    # An untagged library artist's page opened the act its albums named (C2):
+    # that act's caches are the page's, and Refresh asks the albums again.
+    my $libKey;
+    if ($a{artist_id} && !_libraryTagMbid($a{artist_id})) {
+        $libKey = _libMbidKey($a{artist_id}, _libraryName($a{artist_id}) // $name);
+        my $l = $cache->get($libKey);
+        $mbid = $l if !$mbid && $l && $l =~ $UUID_RE;
+    }
+
     if (!$mbid && defined $name && length $name) {
         my $ck = _mbidKey($name);
         my $c = $cache->get($ck);
@@ -3857,6 +4159,7 @@ sub clearArtistCache {
     $mbid = lc $mbid if $mbid;
 
     my @cleared;
+    if ($libKey) { $cache->remove($libKey); push @cleared, 'library-albums' }
     if (defined $name && length $name) {
         $class->clearArtistMbid($name);
         my $bk = 'dsc:bio:2:' . lc $name;   # Browse::_fetchArtistBio's key — keep in step
@@ -3889,6 +4192,7 @@ sub clearArtistCache {
         }
         $cache->remove(_officialKey($mbid)); push @cleared, 'official';
         $cache->remove(_bandsKey($mbid));    push @cleared, 'bands';
+        $cache->remove(_bioMbidKey($mbid));  push @cleared, 'bio-mbid';
         $cache->remove(_collabsKey($mbid));
         $cache->remove(_collabCandKey($mbid)); push @cleared, 'collabs';
         $cache->remove(_rgCountKey($mbid));  push @cleared, 'rgcount';
@@ -4442,17 +4746,22 @@ sub _readArtist {
                 return $settle->(undef);
             }
 
-            # ALIASES: every spelling but the name itself, each once.
-            my (@names, %seenA);
+            # ALIASES: every spelling but the name itself, each once; and the
+            # primary English one among them (peekArtistEnglishName).
+            my (@names, %seenA, $en);
             for my $al (@{ ref $d->{aliases} eq 'ARRAY' ? $d->{aliases} : [] }) {
                 next unless ref $al eq 'HASH';
                 my $n = $al->{name};
                 next unless defined $n && length $n;
                 next if lc $n eq lc($d->{name} // '');   # the name itself
                 push @names, $n unless $seenA{ lc $n }++;
+                $en //= $n if ($al->{locale} // '') eq 'en' && $al->{primary};
             }
-            _dbg("aliases $mbid: " . (@names ? join(', ', @names) : 'none'));
-            eval { $cache->set(_aliasKey($mbid), \@names, ALIAS_TTL); 1 };
+            _dbg("aliases $mbid: " . (@names ? join(', ', @names) : 'none')
+                 . (defined $en ? " (English: $en)" : ''));
+            eval { $cache->set(_aliasKey($mbid),
+                               { names => \@names, (defined $en ? (en => $en) : ()) },
+                               ALIAS_TTL); 1 };
 
             # MB'S CANONICAL NAME — see peekArtistName. Kept in memory TOO: this
             # is the value that was measured missing from the cache while the

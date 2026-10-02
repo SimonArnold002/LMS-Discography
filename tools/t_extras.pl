@@ -26,7 +26,7 @@ use strict;
 use warnings;
 use FindBin;
 
-our (%PREF, $POOL, @SOURCES);
+our (%PREF, $POOL, @SOURCES, %CANON, %ALIASES, @MARKED, $PEEK_REAL);   # the last four: part C
 
 BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
@@ -57,9 +57,12 @@ BEGIN {
     *{"${A}::peekLocalReleaseMap"} = sub { {} };
     *{"${A}::peekEditions"}        = sub { {} };
     *{"${A}::clearArtistEmpty"}    = sub { 0 };
-    *{"${A}::markArtistEmpty"}     = sub { };
+    *{"${A}::markArtistEmpty"}     = sub { push @main::MARKED, $_[1] };
     *{"${A}::peekBands"}           = sub { undef };
     *{"${A}::peekCollabs"}         = sub { undef };
+    *{"${A}::peekArtistName"}      = sub { $main::CANON{ $_[1] // '' } };
+    *{"${A}::peekArtistAliases"}   = sub { $main::ALIASES{ $_[1] // '' } };
+    *{"${A}::peekArtistEnglishName"} = sub { undef };
 }
 
 package T::Null;  our $AUTOLOAD; sub AUTOLOAD { return } sub DESTROY {}
@@ -78,6 +81,7 @@ require Plugins::Discography::Browse;
 my $B = 'Plugins::Discography::Browse';
 my $S = 'Plugins::Discography::Sources';
 
+my $REAL_PEEK = $S->can('peekMatches');   # part C runs the real matcher
 {
     no strict 'refs'; no warnings 'redefine';
     *{"${S}::orderedSources"}  = sub { map { { name => $_ } } @main::SOURCES };
@@ -85,7 +89,8 @@ my $S = 'Plugins::Discography::Sources';
     *{"${S}::localTracks"}     = sub { [] };
     *{"${S}::peekPool"}        = sub { $main::POOL };
     *{"${S}::claimedLocalIds"} = sub { {} };
-    *{"${S}::peekMatches"}     = sub { { sections => [], resolved => 1 } };
+    *{"${S}::peekMatches"}     = sub { $main::PEEK_REAL ? $REAL_PEEK->(@_)
+                                                         : { sections => [], resolved => 1 } };
 }
 
 my ($pass, $fail) = (0, 0);
@@ -237,6 +242,76 @@ for my $svc (@ALL) {
     ok(scalar(@$r == 1 && $r->[0]{id} eq "str:$svc:k1"),
        "C1: $svc - a joint artist's unclaimed album is not shown; the artist's own still is");
 }
+
+# ------------------------------------------------------------------ PART C
+# THE SAME RELEASES WHICHEVER NAME OPENED THE PAGE (resolver plan Part C, item
+# C3, 2026-10-01). Measured on the rig: the page opened as "米津玄師"
+# (MusicBrainz's own name for him) read "No releases found" from a healthy pool
+# credited "Kenshi Yonezu", and recorded him as having no releases (hiding his
+# search rows for 7 days). The REAL matcher here (peekMatches unstubbed), and
+# MusicBrainz's real names and aliases for him (09d4a85c, read 2026-10-01; the
+# alias equal to his name is dropped by the artist read).
+print "# PART C - the artist's other MusicBrainz names\n";
+{ package T::Client; sub id { $_[0]{id} } }
+my $YONEZU = "\x{7c73}\x{6d25}\x{7384}\x{5e2b}";
+my $YMBID  = '09d4a85c-4916-4b4e-bc96-c4cfcf371046';
+my $cid = 0;
+sub page {
+    my (%o) = @_;
+    local @SOURCES   = ('Qobuz');
+    local $POOL      = { bySvc => { Qobuz => $o{pool} }, resolved => 1, index => {} };
+    local $PREF{hide_unmatched} = exists $o{hide} ? $o{hide} : 1;
+    local $PEEK_REAL = 1;
+    @MARKED = ();
+    # A client of its own each time: the hide_unmatched snapshot is per player.
+    my $client = bless { id => 'c' . ++$cid }, 'T::Client';
+    return $B->can('_buildList')->($client,
+        { artist => $o{artist} // $YONEZU, features => 'hi', sort => 'newest' },
+        $YMBID, [ map { +{ %$_ } } @{ $o{rgs} } ], '', []);
+}
+sub flat { map { ($_, flat(@{ $_->{items} || [] })) } @_ }
+sub tile { my ($items, $title) = @_; (grep { ($_->{name} // '') eq $title } flat(@$items))[0] }
+my $SHEEP = { mbid => '00000002-0000-0000-0000-000000000000', title => 'STRAY SHEEP',
+              type => 'Album', secondary => [], date => '2020-08-05' };
+my $ycopy = copy('Qobuz', 'STRAY SHEEP', 2020, 'y1', artist => 'Kenshi Yonezu');
+
+# C2. Nothing cached about his names: the page as measured (the bug).
+%CANON = (); %ALIASES = ();
+my $items = page(pool => [ $ycopy ], rgs => [ $SHEEP ]);
+ok(scalar(!tile($items, 'STRAY SHEEP') && @MARKED == 0),
+   "C2: control (the bug): with no other names known, his release is not on the page (no canonical name, no verdict)");
+%CANON = ($YMBID => $YONEZU);
+$items = page(pool => [ $ycopy ], rgs => [ $SHEEP ]);
+ok(scalar(!tile($items, 'STRAY SHEEP') && @MARKED == 1),
+   'C2: control (the bug): ... and the page records him as having no releases');
+
+# C3. His aliases cached (the artist read every page makes): the same page now
+#     shows the release, and records nothing.
+%ALIASES = ($YMBID => [ 'Kenshi Yonezu', "\x{cf04}\x{c2dc} \x{c694}\x{b124}\x{c988}" ]);
+$items = page(pool => [ $ycopy ], rgs => [ $SHEEP ]);
+my $t = tile($items, 'STRAY SHEEP');
+ok(scalar($t && ($t->{line2} // '') =~ /Qobuz$/),
+   'C3: opened under MusicBrainz\'s own name, the copy credited "Kenshi Yonezu" matches');
+ok(scalar(@MARKED == 0), 'C3: ... and no "no releases" verdict is recorded');
+$items = page(pool => [ $ycopy ], rgs => [ $SHEEP ], artist => 'Kenshi Yonezu');
+ok(scalar(tile($items, 'STRAY SHEEP')), 'C3: the page opened as "Kenshi Yonezu" shows it, as before');
+$items = page(pool => [ copy('Qobuz', 'STRAY SHEEP', 2020, 'y2', artist => 'Somebody Else') ], rgs => [ $SHEEP ]);
+ok(scalar(!tile($items, 'STRAY SHEEP')), 'C3: a copy credited to none of his names still does not match');
+
+# C4. "Also on streaming" takes the same names (the credit test there).
+my $UNREL = { %$RG };
+$items = page(pool => [ copy('Qobuz', 'Lemon', 2018, 'y3', artist => 'Kenshi Yonezu'),
+                        copy('Qobuz', 'Other Album', 2018, 'y4', artist => 'Somebody Else') ],
+              rgs => [ $UNREL ], hide => 0);
+my @str = grep { ($_->{id} // '') =~ /^str:/ } flat(@$items);
+ok(scalar(@str == 1 && $str[0]{id} eq 'str:Qobuz:y3'),
+   'C4: "Also on streaming" lists a copy credited under his other name, not another act\'s');
+%ALIASES = ();
+$items = page(pool => [ copy('Qobuz', 'Lemon', 2018, 'y3', artist => 'Kenshi Yonezu') ],
+              rgs => [ $UNREL ], hide => 0);
+@str = grep { ($_->{id} // '') =~ /^str:/ } flat(@$items);
+ok(scalar(@str == 0), 'C4: control: without his aliases, the copy is not his');
+%CANON = ();
 
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

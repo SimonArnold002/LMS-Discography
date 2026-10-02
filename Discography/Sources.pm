@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.16';
+use constant CACHE_VERSION => '0.56.25';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
@@ -917,6 +917,10 @@ sub getCandidates {
     # The NAME is shared by several MB artists: a lone same-name hit on a
     # service proves nothing and must be checked against the spine too.
     my $strict  = $opt->{ambiguous} ? 1 : 0;
+    # compare => 1: the query is MusicBrainz's English name standing in for a
+    # name with no Latin letter, and the first alias is that name. Both are
+    # asked even when the English one corroborates (_resolveArtist says why).
+    my $compare = $opt->{compare} ? 1 : 0;
     # THE WRITE KEY, and it must be derived exactly as the READ keys are.
     #
     # This used to be `($spine && %$spine) ? $opt->{mbid} : undef` — vestigial
@@ -948,6 +952,11 @@ sub getCandidates {
     utf8::decode($qChars) unless utf8::is_utf8($qChars);   # no-op if not valid UTF-8
     my $qBytes = $svcName;
     utf8::encode($qBytes) if utf8::is_utf8($qBytes);
+    # The names tried after it (aliases, the browsed name) in the same two
+    # spellings (C5, 2026-10-01): they were handed over raw, so a non-ASCII one
+    # reached Deezer, which takes bytes, as characters.
+    my @aChars = map { my $c = $_; utf8::decode($c) unless utf8::is_utf8($c); $c } @{ $aliases || [] };
+    my @aBytes = map { my $b = $_; utf8::encode($b) if utf8::is_utf8($b); $b } @{ $aliases || [] };
 
     my %out;
     my $pending = scalar @adapters;
@@ -1051,8 +1060,10 @@ sub getCandidates {
             $settle->(undef);
         });
 
-        my $query = ($a->{query_enc} || 'bytes') eq 'chars' ? $qChars : $qBytes;
-        eval { $a->{run}->($client, $query, $svc, $settle, $spine, $aliases, $strict); 1 } or do {
+        my $chars = ($a->{query_enc} || 'bytes') eq 'chars';
+        my $query = $chars ? $qChars : $qBytes;
+        my $names = $aliases ? ($chars ? \@aChars : \@aBytes) : undef;
+        eval { $a->{run}->($client, $query, $svc, $settle, $spine, $names, $strict, $compare); 1 } or do {
             $log->warn("candidates $svc failed: $@");
             $settle->(undef);
         };
@@ -1800,6 +1811,64 @@ sub _contribMbid {
         ? lc $mbid : undef;
 }
 
+# The titles of the albums library contributor $id is the ALBUM ARTIST of, a
+# compilation excepted, oldest first, one per spelling: what the album lookup
+# for an untagged library artist asks MusicBrainz about (API::getArtistMbid,
+# resolver plan C2). Its own albums only: a compilation, or an album where it
+# is a guest, would ask about other acts' records. One local query.
+sub ownAlbumTitles {
+    my ($class, $id) = @_;
+    return [] unless $id;
+    my $r = eval {
+        Slim::Control::Request::executeRequest(undef,
+            ['albums', 0, 500, "artist_id:$id", 'role_id:ALBUMARTIST', 'tags:lyaSw']);
+    };
+    return [] unless $r;
+    my (%seen, @own);
+    for my $e (@{ $r->getResult('albums_loop') || [] }) {
+        next if $e->{compilation};
+        next unless ($e->{artist_id} // '') eq $id;
+        my $t = $e->{album};
+        next unless defined $t && length $t;
+        my $k = _norm($t);
+        next unless length $k && !$seen{$k}++;
+        push @own, [ $e->{year} || 9999, $t ];
+    }
+    return [ map { $_->[1] } sort { $a->[0] <=> $b->[0] || $a->[1] cmp $b->[1] } @own ];
+}
+
+# Titles that corroborate WEAKLY for same-name disambiguation, because lots of
+# artists have one: a match on "Greatest Hits"/"Live"/etc. is near-coincidence.
+# Stored _norm'd so they compare against a _norm'd title. (English-biased, but
+# that's where most MB/streaming titles land; self-titled is handled separately
+# and universally.) Down-weighted, not excluded — two of them still corroborate.
+# Built on first use: _norm's tables further down this file are not filled yet
+# while it loads. Moved here from Browse for C2, which weighs titles in API.
+my %GENERIC_TITLE;
+
+# Weight of one owned-album title as disambiguation EVIDENCE for a same-name
+# artist. A SELF-TITLED album (title == artist name) is worthless here: every
+# same-name candidate has one, so it matches them ALL and could hand a wrong one
+# the tie-break — so 0.5, never decisive alone. A generic compilation title is
+# likewise weak (0.5). A distinctive title is strong (1.0). Sums per candidate;
+# Browse::_disambiguateByLibrary adopts at >= DISAMBIG_MIN_WEIGHT so a single
+# self-titled/generic collision can't drive a wrong adoption, while ONE
+# distinctive album still heals a tag.
+sub _titleWeight {
+    my ($title, $artist) = @_;
+    %GENERIC_TITLE = map { _norm($_) => 1 } (
+        'Greatest Hits', 'The Greatest Hits', 'Best Of', 'The Best Of',
+        'Very Best Of', 'The Very Best Of', 'Collection', 'The Collection',
+        'Anthology', 'Live', 'Unplugged', 'Hits', 'The Hits', 'Singles',
+        'The Singles', 'Compilation', 'Essential', 'The Essential', 'Gold',
+        'Retrospective', 'Discography', 'Rarities', 'Demos', 'Christmas',
+    ) unless %GENERIC_TITLE;
+    my $n = _norm($title // '');
+    return 0.5 if length $n && $n eq _norm($artist // '');
+    return 0.5 if $GENERIC_TITLE{$n};
+    return 1.0;
+}
+
 # SPLIT AN OWNED SEARCH ROW INTO ONE ROW PER OWNED IDENTITY.
 #
 # Field (Simon): he owns THREE distinct acts called "The Bees" — the UK band,
@@ -2165,6 +2234,36 @@ sub _trackLinksRelease {
     return 0;
 }
 
+# THE SAME RELEASES WHICHEVER NAME OPENED THE PAGE (C3, 2026-10-01). A page
+# tests each streaming copy's credit against the name it was opened under, so a
+# page opened under another of the artist's MusicBrainz names rejected every
+# copy: "米津玄師" (MusicBrainz's own name for him) read "No releases found" from
+# a healthy pool (Qobuz 73, TIDAL 43) because the services credit "Kenshi
+# Yonezu", while the "Kenshi Yonezu" page showed 24 releases; the same mbid, the
+# same pool. Genesis Mohanraj / Tommy Genesis (2026-09-30) is the same case.
+#
+# Returns the artist's other names (normalised; MusicBrainz's canonical name and
+# aliases, Browse::_otherNames) that $credit matches when the page's own name
+# does not: [] when the page's name matches, or none does. The caller then judges
+# the copy under that name, title rules and artist check alike, exactly as the
+# page opened under it would, so the page shows what one of the artist's own
+# names would show, and a copy credited under the page's own name is judged
+# exactly as before. $memo (optional) keeps the answer per credit, as the service
+# gives it, for one page's names, so a list build normalises each credit once.
+# Call-site logic like 0.24.0's Local gate: the shared matcher subs are
+# untouched, so this is not a fleet port.
+sub _otherNamesFor {
+    my ($artistNorm, $other, $credit, $memo) = @_;
+    return [] unless $other && @$other;
+    $credit //= '';
+    return $memo->{$credit} if $memo && $memo->{$credit};
+    my $cn = _norm($credit);
+    my $hit = ($cn eq '' || _artistMatch($artistNorm, $cn)) ? []
+            : [ grep { _artistMatch($_, $cn) } @$other ];
+    $memo->{$credit} = $hit if $memo;
+    return $hit;
+}
+
 # matchesFor($bySvc, $artist, $albumTitle, $local) ->
 #   [ { svc => 'Local'|'Qobuz'|..., icon, items => [nodes] }, ... ]
 # in orderedSources priority order, only sources with matches; per-source
@@ -2232,21 +2331,28 @@ sub matchesFor {
     }
 
     # Canonical title first, then each alias, then each edition title.
-    # Returns 1 on the first hit.
+    # Returns 1 on the first hit. $an: the artist name the copy is judged under
+    # (the page's own, unless the copy is credited under another of its names).
     my $titleHit = sub {
-        my ($gateArtist, $it, $isLocal) = @_;
+        my ($gateArtist, $it, $isLocal, $an) = @_;
+        $an //= $artistNorm;
         my $candTitle = $it->{_candTitle};
-        return 1 if _albumMatches($artistNorm, $albumNorm, $gateArtist, $candTitle, $albumTitle);
+        return 1 if _albumMatches($an, $albumNorm, $gateArtist, $candTitle, $albumTitle);
         for my $a (@alts) {
-            return 1 if _aliasMatches($artistNorm, $a->[0], $a->[1], $gateArtist, $candTitle);
+            return 1 if _aliasMatches($an, $a->[0], $a->[1], $gateArtist, $candTitle);
         }
         for my $e (@eds) {
-            next unless _aliasMatches($artistNorm, $e->[0], $e->[1], $gateArtist, $candTitle);
+            next unless _aliasMatches($an, $e->[0], $e->[1], $gateArtist, $candTitle);
             return 1 unless $e->[2];
             return 1 if (($isLocal ? _localSize($it) : $it->{_size}) // '') eq 'album';
         }
         return 0;
     };
+    # The artist's OTHER MusicBrainz names (C3; $opt->{otherNames}, normalised):
+    # see _otherNamesFor. $opt->{creditMemo} keeps the per-credit answer for a
+    # whole list build.
+    my $other = $opt->{otherNames};
+    my $memo  = $opt->{creditMemo} || {};
 
     my %all = %{ $bySvc || {} };
     $all{Local} = $local if $local && @$local;
@@ -2285,7 +2391,15 @@ sub matchesFor {
                 # split still sees the true album-artist. (Simon: Raising Sand,
                 # 2026-07-11.)
                 my $gateArtist = $a->{local} ? $artist : $it->{_candArtist};
-                next unless $titleHit->($gateArtist, $it, $a->{local});
+                my $hit = $titleHit->($gateArtist, $it, $a->{local});
+                # A copy credited under another of the artist's MusicBrainz names
+                # is judged as that name's own page would judge it (C3).
+                unless ($hit || $a->{local}) {
+                    for my $on (@{ _otherNamesFor($artistNorm, $other, $it->{_candArtist}, $memo) }) {
+                        last if $hit = $titleHit->($gateArtist, $it, 0, $on);
+                    }
+                }
+                next unless $hit;
                 # AN ALBUM IS NOT A SINGLE (Simon, Kraftwerk, 2026-09-19): his
                 # 12-track "Tour De France" read Local on the single "Tour de
                 # France (Etape 2) (edit)" on title alone. A copy of unknown
@@ -2769,7 +2883,7 @@ use constant ALIAS_MAX => 3;
 # under the wrong name (field, 2026-07-19). Alias retries cost one extra artist
 # search each and happen ONLY on the failure path.
 sub _resolveArtist {
-    my ($svc, $query, $artists, $spine, $fetch, $cb, $aliases, $search, $strict) = @_;
+    my ($svc, $query, $artists, $spine, $fetch, $cb, $aliases, $search, $strict, $compare) = @_;
 
     # The strongest attempt so far. A WEAKLY corroborated pick is held here
     # rather than returned, so a better-corroborated name can displace it — and
@@ -2824,6 +2938,38 @@ sub _resolveArtist {
 
     _resolveOne($svc, $query, $artists, $spine, $fetch, sub {
         my ($artist, $albums, $score) = @_;
+        # BOTH NAMES, WHEN THE PAGE ASKS ($compare, 0.56.19). The query is
+        # MusicBrainz's English name standing in for a name with no Latin letter
+        # (Browse::_poolQuery) and the first alias is that name. A service may
+        # file the act under BOTH, as two artists: measured on Qobuz (rig,
+        # 2026-10-01), "王菲" holds 38 albums (25 matched) and "Faye Wong" 7 (4
+        # matched, none in common), and 0.56.18, answering the English name at
+        # once because 4 is strong, took the page from 25 Qobuz matches to 4.
+        # So the other name is asked too, the better-corroborated artist wins
+        # (a tie keeps the English one), and the other's albums go beside it,
+        # as a passed-over duo entry's do, when it corroborates strongly in its
+        # own right. One more search per service, for these pages only; a weak
+        # English answer takes the walk below, which asks the other name next.
+        if ($compare && $artist && defined $score && $score >= SPINE_STRONG
+            && $search && @{ $aliases || [] }) {
+            my $other = $aliases->[0];
+            _dbg("$svc: '" . ($artist->{name} // '?') . "' corroborates $score spine title(s)"
+                . " - also asking under '$other'");
+            return $search->($other, sub {
+                _resolveOne($svc, $other, shift, $spine, $fetch, sub {
+                    my ($b, $bAlbums, $bScore) = @_;
+                    return $cb->($artist, $albums)
+                        unless $b && defined $bScore && ($b->{id} // '') ne ($artist->{id} // '');
+                    my ($win, $lose) = ([ $artist, $albums, $score ], [ $b, $bAlbums, $bScore ]);
+                    ($win, $lose) = ($lose, $win) if $bScore > $score;
+                    my $beside = $lose->[2] >= SPINE_STRONG ? [ $lose->[0], $lose->[1] ] : undef;
+                    _dbg("$svc: '" . ($win->[0]{name} // '?') . "' ($win->[2]) wins over '"
+                        . ($lose->[0]{name} // '?') . "' ($lose->[2])"
+                        . ($beside ? ' - its albums kept beside' : ''));
+                    $cb->($win->[0], $win->[1], $beside);
+                }, $strict);
+            });
+        }
         # Nothing to judge by (no spine), or a genuinely corroborated artist:
         # done, at exactly today's cost — no extra search, no extra fetch.
         return $cb->($artist, $albums)
@@ -3129,7 +3275,7 @@ use constant JOINT_MAX  => 3;
 use constant JOINT_WAIT => 3;    # seconds past the artist's own answer
 
 sub _searchQobuz {
-    my ($client, $query, $svc, $collect, $spine, $aliases, $strict) = @_;
+    my ($client, $query, $svc, $collect, $spine, $aliases, $strict, $compare) = @_;
 
     my $api = Plugins::Qobuz::Plugin::getAPIHandler($client);
     unless ($api) { $collect->(undef); return }
@@ -3157,7 +3303,7 @@ sub _searchQobuz {
     $api->search(sub {
         my $res = shift;
         _resolveWithJoints('Qobuz', $query, $res && $res->{artists} && $res->{artists}{items},
-            $spine, $fetch, $aliases, $search, $strict, sub {
+            $spine, $fetch, $aliases, $search, $strict, $compare, sub {
                 my ($artist, $albums, $extra) = @_;
                 unless ($artist) {
                     # With a spine, an unresolved artist is DELIBERATE (nothing
@@ -3220,7 +3366,7 @@ sub _jointArtists {
 # joint artist, one extra request); the other three services' shapes are read
 # in their plugins' sources, not yet measured live.
 sub _resolveWithJoints {
-    my ($svc, $query, $items, $spine, $fetch, $aliases, $search, $strict, $done) = @_;
+    my ($svc, $query, $items, $spine, $fetch, $aliases, $search, $strict, $compare, $done) = @_;
     my @joint = _jointArtists($items, $query);
     my ($main, @got, $finished, $waitTimer);
     my $left = scalar @joint;
@@ -3256,7 +3402,7 @@ sub _resolveWithJoints {
         $finish->();
         $waitTimer = Slim::Utils::Timers::setTimer(undef, time() + JOINT_WAIT,
             sub { $waitTimer = undef; $finish->(1) }) unless $finished;
-    }, $aliases, $search, $strict);
+    }, $aliases, $search, $strict, $compare);
 }
 
 # The joint albums rendered with the adapter's own renderer ($render->(\@albums,
@@ -3302,7 +3448,7 @@ sub _renderQobuzAlbums {
 }
 
 sub _searchTidal {
-    my ($client, $query, $svc, $collect, $spine, $aliases, $strict) = @_;
+    my ($client, $query, $svc, $collect, $spine, $aliases, $strict, $compare) = @_;
 
     my $api = Plugins::TIDAL::Plugin::getAPIHandler($client);
     unless ($api) { $collect->(undef); return }
@@ -3333,7 +3479,7 @@ sub _searchTidal {
     $api->search(sub {
         my $artists = shift;
         _resolveWithJoints('Tidal', $query, ref $artists eq 'ARRAY' ? $artists : [],
-            $spine, $fetch, $aliases, $search, $strict, sub {
+            $spine, $fetch, $aliases, $search, $strict, $compare, sub {
                 my ($artist, $albums, $extra) = @_;
                 unless ($artist) {
                     if ($spine && %$spine) { return $collect->(undef) }
@@ -3364,7 +3510,7 @@ sub _renderTidalAlbums {
 }
 
 sub _searchDeezer {
-    my ($client, $query, $svc, $collect, $spine, $aliases, $strict) = @_;
+    my ($client, $query, $svc, $collect, $spine, $aliases, $strict, $compare) = @_;
 
     my $api = Plugins::Deezer::Plugin::getAPIHandler($client);
     unless ($api) { $collect->(undef); return }
@@ -3383,7 +3529,7 @@ sub _searchDeezer {
     $api->search(sub {
         my $artists = shift;
         _resolveWithJoints('Deezer', $query, ref $artists eq 'ARRAY' ? $artists : [],
-            $spine, $fetch, $aliases, $search, $strict, sub {
+            $spine, $fetch, $aliases, $search, $strict, $compare, sub {
                 my ($artist, $albums, $extra) = @_;
                 unless ($artist) {
                     if ($spine && %$spine) { return $collect->(undef) }
@@ -3507,7 +3653,7 @@ sub _spotifyAlbum {
 }
 
 sub _searchSpotify {
-    my ($client, $query, $svc, $collect, $spine, $aliases, $strict) = @_;
+    my ($client, $query, $svc, $collect, $spine, $aliases, $strict, $compare) = @_;
 
     # A CLASS method, and it needs a client: none -> no handler -> unresolved
     # (never a confirmed miss). hasCredentials is deliberately never called: it
@@ -3559,7 +3705,7 @@ sub _searchSpotify {
         return $collect->(_spotifyEmpty("artist search '$query'"))
             unless ref $artists eq 'ARRAY' && @$artists;
         _resolveWithJoints('Spotify', $query, $artists, $spine, $fetch,
-            $aliases, $search, $strict, sub {
+            $aliases, $search, $strict, $compare, sub {
                 my ($artist, $albums, $extra) = @_;
                 unless ($artist) {
                     if ($spine && %$spine) { return $collect->(undef) }

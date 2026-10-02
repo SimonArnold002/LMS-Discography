@@ -52,6 +52,13 @@ BEGIN {
     *{"${A}::peekReleaseGroups"}   = sub { [] };
     *{"${A}::peekReleaseMap"}      = sub { {} };
     *{"${A}::peekLocalReleaseMap"} = sub { {} };
+    # The pool's options (_poolOpts) and the artist's other names (_otherNames):
+    # nothing cached, one act of the name.
+    *{"${A}::getArtistCandidates"} = sub { $_[2]->([]) };
+    *{"${A}::warmArtistAliases"}   = sub { $_[2]->([]) };
+    *{"${A}::peekArtistName"}      = sub { undef };
+    *{"${A}::peekArtistAliases"}   = sub { undef };
+    *{"${A}::peekArtistEnglishName"} = sub { undef };
     *{"${S}::getCandidates"}       = sub { $_[-2]->({}) };
     *{"${S}::localAlbums"}         = sub { [] };
     *{"${S}::localTracks"}         = sub { [] };

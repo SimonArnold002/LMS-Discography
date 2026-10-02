@@ -140,7 +140,7 @@ my $B   = 'Plugins::Discography::Browse';
     *{"${B}::_buildList"} = sub {
         my ($client, $opts, $mbid, $rgs, $bio, $local) = @_;
         push @EV, 'render';
-        push @BUILT, { mbid => $mbid, rgs => $rgs, local => $local,
+        push @BUILT, { mbid => $mbid, rgs => $rgs, local => $local, bio => $bio,
                        official => $API->peekOfficial($mbid) };
         return [ { name => 'row', type => 'text' } ];
     };
@@ -505,6 +505,35 @@ ok(!defined $CACHE{"dsc:rgfull:1:$RH"} && !defined $CACHE{"dsc:rgfast:1:$RH"} &&
     ok(scalar(@asked && ref $o eq 'HASH' && !exists $o->{query}),
        '10: control: a page opened under its own name asks as before');
 }
+
+# ---------------------------------------------------------------------------
+# 11. THE BIOGRAPHY OF AN ACT THAT SHARES ITS NAME (0.56.22). The page used to
+#     show none (the guard held the name route back); it now takes the exact
+#     route, by the act's MusicBrainz id. An act that does not share its name
+#     keeps the name route.
+# ---------------------------------------------------------------------------
+{
+    no strict 'refs'; no warnings 'redefine';
+    my ($shared, @bioEv);
+    local *{"${API}::sharesNameWithProminentAsync"} = sub { $_[-1]->($shared) };
+    local *{"${B}::_fetchExactBio"} = sub { push @bioEv, "exact $_[1] $_[2]"; $_[-1]->('EXACT BIO') };
+    local *{"${B}::_fetchArtistBio"} = sub { push @bioEv, "name $_[1]"; $_[-1]->('NAME BIO') };
+    for my $case ([1, 'exact', 'EXACT BIO'], [0, 'name', 'NAME BIO']) {
+        my ($sh, $route, $text) = @$case;
+        fresh(); $PREF{show_bio} = 1; $shared = $sh; @bioEv = ();
+        page($LH, 'Ladyhawke');
+        flush();
+        my $label = $sh ? 'a shared name' : 'control: a name nobody else holds';
+        ok(scalar(@bioEv == 1 && $bioEv[0] =~ /^\Q$route\E /), "11: $label takes the $route route, once");
+        ok(scalar(@BUILT == 1 && ($BUILT[0]{bio} // '') eq $text), "11: $label: its biography reaches the page");
+    }
+    ok(scalar(($bioEv[0] // '') eq 'name Ladyhawke'), '11: control: the name route is asked with the page name');
+    fresh(); $PREF{show_bio} = 1; $shared = 1; @bioEv = ();
+    page($LH, 'Ladyhawke');
+    flush();
+    ok(scalar(($bioEv[0] // '') eq "exact Ladyhawke $LH"), "11: the exact route is asked with the page's own mbid");
+}
+
 package T::Client; sub id { 'c1' }
 package main;
 

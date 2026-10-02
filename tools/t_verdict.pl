@@ -102,7 +102,7 @@ sub ok {
 # The REAL mbid from the field report.
 my $MBID = '4aae17a7-9f0c-487b-b60e-f8eafb410b1d';
 sub canon { $CACHE{ 'dsc:mbname:1:' . $MBID } = $_[0] }
-sub aliases { $CACHE{ 'dsc:alias:2:' . $MBID } = [ @_ ] }
+sub aliases { $CACHE{ 'dsc:alias:3:' . $MBID } = [ @_ ] }
 
 # ---------------------------------------------------------------------------
 # 1. BROWSING THE ARTIST UNDER THEIR OWN NAME — a verdict is legitimate.

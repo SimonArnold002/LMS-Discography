@@ -36,7 +36,7 @@ my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.16';
+use constant CACHE_VERSION => '0.56.25';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -1225,46 +1225,10 @@ sub _discographyView {
                 unless ($client && defined $artist && length $artist) {
                     return $done->();   # every path must settle $done
                 }
-
-                # FETCHED, not peeked. The same-name set was only ever
-                # populated by the plugin's own SEARCH, so an artist entered
-                # from the Material context menu - the main entry point - was
-                # never known to be ambiguous: no strict verification and no
-                # alias retry (field, 2026-07-19: Sonic Boom, FOUR MB artists
-                # of that name, resolved to a Qobuz entity holding 2 albums and
-                # nothing checked it). Cached 14 days, so this is one MB
-                # request per artist per fortnight.
-                Plugins::Discography::API->getArtistCandidates($artist, sub {
-                    my ($cands) = @_;
-                    my $ambig = ($mbid && $cands && @$cands > 1) ? 1 : 0;
-
-                    my $go = sub {
-                        my ($names) = @_;
-                        # MB's CANONICAL name is SEARCHED FIRST (0.56.13), the
-                        # browsed name retried after it (_poolQuery). Before,
-                        # the canonical name was only the first retry: a
-                        # renamed act is filed by the services under its
-                        # CURRENT name ("British Sea Power" must reach Qobuz's
-                        # "Sea Power"), so it rescued those; but a browsed name
-                        # that DID find a service artist was kept even when it
-                        # was another act's, and stored as this artist's pool.
-                        my ($query, $alias) = _poolQuery($artist, $mbid, $names);
-                        Plugins::Discography::Sources->getCandidates(
-                            $client, $artist, 0, sub { $done->() },
-                            { spine => $spine, mbid => $mbid,
-                              aliases => (@$alias ? $alias : undef),
-                              ($query ? (query => $query) : ()),
-                              ambiguous => $ambig });
-                    };
-
-                    # Aliases only for an AMBIGUOUS name, where a failed
-                    # resolution is expected and the retry is what rescues it.
-                    # The canonical name above is added regardless -- it is
-                    # already cached, so it costs no request either way.
-                    if ($ambig) {
-                        Plugins::Discography::API->warmArtistAliases($mbid, $go);
-                    }
-                    else { $go->(undef) }
+                # The release page asks with the same options (_poolOpts).
+                _poolOpts($artist, $mbid, $spine, sub {
+                    Plugins::Discography::Sources->getCandidates(
+                        $client, $artist, 0, sub { $done->() }, $_[0]);
                 });
             };
 
@@ -1306,12 +1270,16 @@ sub _discographyView {
             # reported (Pete Kember's bio on the Sonic Boom group with Andrew
             # Huang). The fetch is cached and the page is already waiting on MB,
             # so correctness here costs nothing a user can perceive.
+            #
+            # A SHARED NAME TAKES THE EXACT ROUTE (0.56.22), not no biography:
+            # MusicBrainz's Wikidata link for THIS act, never the name. Muzz
+            # (the NYC trio) had none on 0.56.21; see _fetchExactBio.
             if ($prefs->get('show_bio')) {
                 Plugins::Discography::API->sharesNameWithProminentAsync(
                     $opts->{artist}, $mbid, sub {
                         my ($shared) = @_;
-                        if ($shared) { $bioDone = 1; $render->(); return }
-                        _fetchArtistBio($client, $artist, $mbid, sub {
+                        my $fetch = $shared ? \&_fetchExactBio : \&_fetchArtistBio;
+                        $fetch->($client, $artist, $mbid, sub {
                             $bio = shift; $bioDone = 1; $render->();
                         });
                     });
@@ -1599,33 +1567,10 @@ sub _resolveArtistMbid {
     );
 }
 
-# Titles that corroborate WEAKLY for same-name disambiguation, because lots of
-# artists have one: a match on "Greatest Hits"/"Live"/etc. is near-coincidence.
-# Stored _norm'd so they compare against a _norm'd title. (English-biased, but
-# that's where most MB/streaming titles land; self-titled is handled separately
-# and universally.) Down-weighted, not excluded — two of them still corroborate.
-my %GENERIC_TITLE = map { Plugins::Discography::Sources::_norm($_) => 1 } (
-    'Greatest Hits', 'The Greatest Hits', 'Best Of', 'The Best Of',
-    'Very Best Of', 'The Very Best Of', 'Collection', 'The Collection',
-    'Anthology', 'Live', 'Unplugged', 'Hits', 'The Hits', 'Singles',
-    'The Singles', 'Compilation', 'Essential', 'The Essential', 'Gold',
-    'Retrospective', 'Discography', 'Rarities', 'Demos', 'Christmas',
-);
-
 # Weight of one owned-album title as disambiguation EVIDENCE for a same-name
-# artist. A SELF-TITLED album (title == artist name) is worthless here: every
-# same-name candidate has one, so it matches them ALL and could hand a wrong one
-# the tie-break — so 0.5, never decisive alone. A generic compilation title is
-# likewise weak (0.5). A distinctive title is strong (1.0). Sums per candidate;
-# adoption needs >= DISAMBIG_MIN_WEIGHT so a single self-titled/generic collision
-# can't drive a wrong adoption, while ONE distinctive album still heals a tag.
-sub _matchWeight {
-    my ($title, $artist) = @_;
-    my $n = Plugins::Discography::Sources::_norm($title // '');
-    return 0.5 if length $n && $n eq Plugins::Discography::Sources::_norm($artist // '');
-    return 0.5 if $GENERIC_TITLE{$n};
-    return 1.0;
-}
+# artist: 0.5 self-titled or generic, 1.0 distinctive. The list and the reasons
+# live in Sources::_titleWeight (moved there for C2, which weighs titles in API).
+sub _matchWeight { return Plugins::Discography::Sources::_titleWeight(@_) }
 
 # The page builders' opt-in for localAlbums/localTracks when the entry id
 # performs on no album (LMS search lists composer-only contributors — "The
@@ -1781,6 +1726,96 @@ sub _fetchArtistBio {
         $log->warn("MAI getBiography threw: $@");
         eval { $cache->set($key, '', BIO_EMPTY_TTL); 1 };
         $cb->(undef);
+    }
+}
+
+# THE BIOGRAPHY OF AN ACT THAT SHARES ITS NAME (0.56.22; Simon, 2026-10-02, on
+# Muzz the NYC trio: "it didnt find a bio for Muzz I am sure there is one").
+# The name route above is held back for such an act (the guard in
+# _discographyView): keyed and fetched by name, it would show the best-known
+# act's biography (MUZZ the producer's). MAI's route is exact at ONE step only:
+# the community API, asked with the act's mbid, answers from MusicBrainz's own
+# Wikidata link for THAT act. MEASURED 2026-10-02: asked for Muzz with 893e0bd0
+# it named 893e0bd0 and Wikipedia "Muzz (band)" (page 64177014), the page
+# MusicBrainz links through Wikidata Q96394499. Every other step falls back to
+# the NAME: Last.fm, and the community API itself when it does not know the
+# mbid (asked with a wrong one, it answered for MUZZ the producer). So only that
+# step is taken, with MAI's own functions (its queue, headers and cache):
+#   * the reply counts only when it names THIS mbid and carries a Wikidata page;
+#     another act's mbid, or no page, is no biography, as before;
+#   * the page is read with MAI's own Wikipedia reader, as its route does;
+#   * kept under the mbid, never the name, so it never reaches the other act;
+#   * a reply naming no act is a failed call (MAI hands back the hash with its
+#     error removed): nothing is kept, the next open asks again.
+sub _fetchExactBio {
+    my ($client, $artist, $mbid, $cb) = @_;
+
+    unless ($mbid && defined $artist && length $artist) { $cb->(undef); return }
+
+    my $key = Plugins::Discography::API::_bioMbidKey($mbid);
+    if (defined(my $c = _cacheGetText($key))) {
+        $cb->(length $c ? $c : undef);
+        return;
+    }
+
+    my $done;
+    my $answer = sub {
+        my ($text, $ttl) = @_;
+        return if $done++;
+        _cacheSetText($key, $text, $ttl) if $ttl;
+        $cb->($text);
+    };
+
+    my ($idFn, $pageFn, $langFn);
+    eval {
+        if (Slim::Utils::PluginManager->isEnabled('Plugins::MusicArtistInfo::Plugin')) {
+            $idFn   = Plugins::MusicArtistInfo::API->can('getArtistBioId');
+            $pageFn = Plugins::MusicArtistInfo::Wikipedia->can('getPage');
+            $langFn = Plugins::MusicArtistInfo::Common->can('validateLanguage');
+        }
+        1;
+    };
+    unless ($idFn && $pageFn) {
+        _dbg("exact bio '$artist' $mbid: MAI unavailable");
+        return $answer->(undef, BIO_EMPTY_TTL);
+    }
+    my $lang = $langFn ? eval { $langFn->($client) } : undef;
+
+    my $ok = eval {
+        $idFn->('Plugins::MusicArtistInfo::API', sub {
+            my $d = shift;
+            $d = {} unless ref $d eq 'HASH';
+            my $said = lc($d->{mbid} // '');
+            my $w    = $d->{wikidata};
+            unless (length $said) {
+                _dbg("exact bio '$artist' $mbid: no answer (not kept)");
+                return $answer->(undef, 0);
+            }
+            unless ($said eq lc $mbid && ref $w eq 'HASH' && $w->{pageid}) {
+                _dbg("exact bio '$artist' $mbid: "
+                    . ($said ne lc $mbid ? "answered for $said" : 'no Wikidata page'));
+                return $answer->(undef, BIO_EMPTY_TTL);
+            }
+            my $read = eval {
+                $pageFn->('Plugins::MusicArtistInfo::Wikipedia', $client, sub {
+                    my $p = shift;
+                    my $text = (ref $p eq 'HASH' && !$p->{error}) ? _cleanProse($p->{content}) : undef;
+                    _dbg("exact bio '$artist' $mbid: Wikipedia '" . ($w->{title} // $w->{pageid}) . "' "
+                        . (defined $text ? 'len=' . length $text : 'empty'));
+                    $answer->($text, defined $text ? BIO_FOUND_TTL : BIO_EMPTY_TTL);
+                }, { id => $w->{pageid}, title => $w->{title}, lang => $w->{lang} || $lang });
+                1;
+            };
+            unless ($read) {
+                $log->warn("MAI Wikipedia getPage threw: $@");
+                $answer->(undef, BIO_EMPTY_TTL);
+            }
+        }, { artist => $artist, mbid => $mbid, ($lang ? (lang => $lang) : ()) });
+        1;
+    };
+    unless ($ok) {
+        $log->warn("MAI getArtistBioId threw: $@");
+        $answer->(undef, BIO_EMPTY_TTL);
     }
 }
 
@@ -2173,6 +2208,26 @@ sub _browsedAsSelf {
     return 0;
 }
 
+# The artist's OTHER MusicBrainz names, normalised: its canonical name and its
+# aliases for $mbid, minus the name the page was opened under, each once. For
+# Sources::_otherNamesFor (C3: the same releases whichever name opened the page).
+# Cache only: the artist read every page makes fills both, so no request; a
+# cold cache gives none, and the page tests the name it was opened under alone,
+# as before.
+sub _otherNames {
+    my ($mbid, $artist) = @_;
+    return [] unless $mbid;
+    my %seen = (Plugins::Discography::Sources::_norm($artist // '') => 1);
+    my @out;
+    for my $n (Plugins::Discography::API->peekArtistName($mbid),
+               @{ Plugins::Discography::API->peekArtistAliases($mbid) || [] }) {
+        next unless defined $n && length $n;
+        my $nn = Plugins::Discography::Sources::_norm($n);
+        push @out, $nn unless $nn eq '' || $seen{$nn}++;
+    }
+    return \@out;
+}
+
 sub _buildList {
     my ($client, $opts, $mbid, $rgs, $bio, $local) = @_;
 
@@ -2277,6 +2332,10 @@ sub _buildList {
     # title norm is computed once per RG below and reused for BOTH the rivals
     # lookup and the matcher (was normed twice).
     my $artistNorm = Plugins::Discography::Sources::_norm($opts->{artist} // '');
+    # The artist's other MusicBrainz names, and one answer per credit for the
+    # whole list (C3: the same releases whichever name opened the page).
+    my $otherNames = _otherNames($mbid, $opts->{artist});
+    my %creditMemo;
     my $sources    = [ Plugins::Discography::Sources::orderedSources() ];
     # Groups a local copy's MusicBrainz id can place it in: the same pool
     # "Also in your library" claims across, so the two views agree.
@@ -2302,7 +2361,8 @@ sub _buildList {
             { artistNorm => $artistNorm, albumNorm => $rgNorm, sources => $sources,
               index => $pool->{index}, aliases => $rg->{aliases},
               rgType => $rg->{type}, editions => $editions->{ $rg->{mbid} },
-              idGroups => $idGroups, localTracks => $localTracks });
+              idGroups => $idGroups, localTracks => $localTracks,
+              otherNames => $otherNames, creditMemo => \%creditMemo });
         # Which streaming candidates a release group CLAIMED. Collected here
         # rather than recomputed, because matching every candidate against
         # every release group is exactly the work this loop already does.
@@ -2661,9 +2721,13 @@ sub _buildList {
                 # the show_streaming_extras note in Plugin.pm for the three
                 # signals tested and why each fails. Hence the pref now
                 # defaults OFF and the section is labelled unverified.
+                # Credited under another of the artist's MusicBrainz names
+                # counts too (C3), as it does for the release matching above.
                 next unless Plugins::Discography::Sources::_artistMatch(
                     $artistNorm,
-                    Plugins::Discography::Sources::_norm($it->{_candArtist} // ''));
+                    Plugins::Discography::Sources::_norm($it->{_candArtist} // ''))
+                    || @{ Plugins::Discography::Sources::_otherNamesFor(
+                              $artistNorm, $otherNames, $it->{_candArtist}, \%creditMemo) };
 
                 my %t = %$it;
                 $t{_svc} = $svc;   # line2 is built after the cross-service merge
@@ -3213,7 +3277,7 @@ sub _searchRow {
 }
 
 # The artist page's way into search (Simon, 2026-09-24): a plain button that
-# opens the plugin's HOME page (_rootView: banner, About, the search box, Works
+# opens the plugin's HOME page (_rootView: banner, Find an artist, About, Works
 # best with), rather than the search box sitting among the artist page's rows.
 # The home page is small, so Material draws its box inline (on a big artist
 # page it went popup; see CLAUDE.md, "renders inline OR as a click-to-popup").
@@ -3269,7 +3333,7 @@ sub _coverCollageRow {
     return { name => $html, type => 'text' };
 }
 
-# The app-root view — artist-photo banner, about, search, and a live
+# The app-root view — album-cover banner, search, about, and a live
 # plugin-status list, in the artist view's own visual language:
 # _sectionHeader dividers (real headers under Material w/ features:hi, text
 # dividers elsewhere), _proseRow indent for the about text, MTL/_svg icons
@@ -3291,10 +3355,23 @@ sub _rootView {
         push @items, $banner;
     }
 
+    # --- Find an artist: under the banner, above About (0.56.24) ---
+    # Simon, 2026-10-02: "The search needs to be below the banner but above
+    # about discography", and "needs a header too". Was banner -> About ->
+    # "Find an artist" (0.39.0). 0.56.22 had put the box first with no header so
+    # Material would put the cursor in it: an inline search box is focused only
+    # as the list's FIRST row, on a computer (browse-page.js `<text-field
+    # :focus="index==0 && !IS_MOBILE">`, read in the 6.4.10.8 the rig serves),
+    # and a header is a row. So here it is never focused on arrival.
+    my @search = ( _searchRow($client, { features => $features }) );
+    push @items,
+        _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_SEARCH_HDR', $useH, MENU_SEARCH, \@search),
+        @search;
+
     # --- About ---
     # The second prose row carries bottom padding: a visual gap before the
-    # "Find an artist" section (Simon: the sections butted together). Padding
-    # INSIDE the row keeps the item count/shape untouched (walk stability).
+    # next section, "Works best with" (Simon: the sections butted together).
+    # Padding INSIDE the row keeps the item count/shape untouched (walk stability).
     my @about = (
         _proseRow(cstring($client, 'PLUGIN_DISCOGRAPHY_ABOUT_1')),
         _proseRow(cstring($client, 'PLUGIN_DISCOGRAPHY_ABOUT_2'), ';padding-bottom:24px'),
@@ -3302,12 +3379,6 @@ sub _rootView {
     push @items,
         _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_ABOUT_HDR', $useH, ICON, \@about),
         @about;
-
-    # --- Find an artist ---
-    my @search = ( _searchRow($client, { features => $features }) );
-    push @items,
-        _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_SEARCH_HDR', $useH, MENU_SEARCH, \@search),
-        @search;
 
     # --- Works best with (live detection) ---
     # ONE dead text row holding a strip of tiles (Simon, 2026-09-24: five
@@ -3433,8 +3504,8 @@ sub _svcQueryName {
 # Latin name, so the browsed name stays first and the canonical one is retried,
 # as before. Cache only (peekArtistName); with no canonical name cached, the
 # browsed name is searched as before.
-# Returns (query or undef, \@aliases).
-sub _poolQuery {
+# Returns (query or undef, \@aliases). _poolQuery below adds the English name.
+sub _poolQueryCanon {
     my ($artist, $mbid, $aliases) = @_;
     my @alias = @{ $aliases || [] };
     my $canon = $mbid ? Plugins::Discography::API->peekArtistName($mbid) : undef;
@@ -3444,8 +3515,87 @@ sub _poolQuery {
     return (undef, \@alias) if $cn eq $an;
     my @rest = grep { my $n = Plugins::Discography::Sources::_norm($_ // '');
                       $n ne $cn && $n ne $an } @alias;
-    return (undef, [ $canon, @rest ]) if $cn !~ /[a-z]/ && $an =~ /[a-z]/;
+    # The third value: a Latin name stands in for MusicBrainz's own, so both are
+    # asked (getCandidates' `compare`; see _poolQuery below). 0.56.20: the page
+    # opened as "Faye Wong" got 4 Qobuz matches where 王菲 got 29, and the pool
+    # is the MusicBrainz artist's, so whichever page built it decided both.
+    return (undef, [ $canon, @rest ], 1) if $cn !~ /[a-z]/ && $an =~ /[a-z]/;
     return (_svcQueryName($canon), [ $artist, @rest ]);
+}
+
+# AND WHEN THE NAME IT WOULD SEARCH HAS NO LATIN LETTER, MusicBrainz's primary
+# English alias goes first, that name second (0.56.18). Field (rig, 2026-10-01):
+# "米津玄師" is both the page's name and MusicBrainz's, so the rule above had
+# nothing to swap; Qobuz settled on another act ("DAOKO × 米津玄師", 0 spine
+# titles), Tidal found nothing, and the page read "No releases found" and was
+# recorded empty for 7 days, while the "Kenshi Yonezu" page had 5 albums. The
+# aliases are fetched only for a name several acts share, so "Kenshi Yonezu" was
+# never tried. The Кино rule above, for a name the browse already spells in
+# Latin. The native name stays the first retry: an account in Japan may well
+# list him as 米津玄師 (Simon, 2026-10-01). Cache only, as above.
+# A third value, 1, says a Latin name stands in for one with no Latin letter,
+# here or by the Кино rule above: the services then ask BOTH and keep the better
+# (getCandidates' `compare`, 0.56.19; 王菲 is two Qobuz artists, one per name).
+sub _poolQuery {
+    my ($artist, $mbid, $aliases) = @_;
+    my ($query, $alias, $compare) = _poolQueryCanon($artist, $mbid, $aliases);
+    my $en = $mbid ? Plugins::Discography::API->peekArtistEnglishName($mbid) : undef;
+    return ($query, $alias, $compare) unless defined $en && length $en;
+    my $first = defined $query ? $query : ($artist // '');
+    my $fn = Plugins::Discography::Sources::_norm($first);
+    my $nn = Plugins::Discography::Sources::_norm($en);
+    return ($query, $alias, $compare) if $fn =~ /[a-z]/ || $nn !~ /[a-z]/;
+    my @rest = grep { my $n = Plugins::Discography::Sources::_norm($_ // '');
+                      $n ne $nn && $n ne $fn } @$alias;
+    return (_svcQueryName($en), [ $first, @rest ], 1);
+}
+
+# THE STREAMING LOOKUP'S OPTIONS, the same for the artist page and the release
+# page (C5, 2026-10-01): $cb->(\%opt) for Sources::getCandidates. The release
+# page used to ask without the shared-name flag and MusicBrainz's aliases, so a
+# release page opened after the 3-day pool had expired, for a name several acts
+# share, took a lone same-name service artist unchecked (the 0.43.7 shortcut)
+# and wrote the pool both pages read.
+sub _poolOpts {
+    my ($artist, $mbid, $spine, $cb) = @_;
+
+    # FETCHED, not peeked. The same-name set was only ever populated by the
+    # plugin's own SEARCH, so an artist entered from the Material context menu
+    # - the main entry point - was never known to be ambiguous: no strict
+    # verification and no alias retry (field, 2026-07-19: Sonic Boom, FOUR MB
+    # artists of that name, resolved to a Qobuz entity holding 2 albums and
+    # nothing checked it). Cached 14 days, so this is one MB request per artist
+    # per fortnight.
+    Plugins::Discography::API->getArtistCandidates($artist, sub {
+        my ($cands) = @_;
+        my $ambig = ($mbid && $cands && @$cands > 1) ? 1 : 0;
+
+        my $go = sub {
+            my ($names) = @_;
+            # MB's CANONICAL name is SEARCHED FIRST (0.56.13), the browsed name
+            # retried after it (_poolQuery). Before, the canonical name was only
+            # the first retry: a renamed act is filed by the services under its
+            # CURRENT name ("British Sea Power" must reach Qobuz's "Sea Power"),
+            # so it rescued those; but a browsed name that DID find a service
+            # artist was kept even when it was another act's, and stored as this
+            # artist's pool.
+            my ($query, $alias, $compare) = _poolQuery($artist, $mbid, $names);
+            $cb->({ spine => $spine, mbid => $mbid,
+                    (@$alias ? (aliases => $alias) : ()),
+                    ($query ? (query => $query) : ()),
+                    ($compare ? (compare => 1) : ()),
+                    ambiguous => $ambig });
+        };
+
+        # Aliases only for an AMBIGUOUS name, where a failed resolution is
+        # expected and the retry is what rescues it. The canonical name above is
+        # added regardless -- it is already cached, so it costs no request
+        # either way.
+        if ($ambig) {
+            Plugins::Discography::API->warmArtistAliases($mbid, $go);
+        }
+        else { $go->(undef) }
+    });
 }
 
 sub _artistSearchView {
@@ -3644,6 +3794,19 @@ sub _withMbCandidates {
     # for the same-name acts below. Runs on the cached path too (like the
     # attach), so the split is judged against the library as it is NOW.
     $merged = Plugins::Discography::Sources->splitOwnedByIdentity($merged);
+
+    # An owned row with NO tag is the act its own albums named when its page was
+    # opened (API::getArtistMbid, resolver plan C2), once a visit has found one:
+    # the same id for the same-name acts and the descriptions below as a tag
+    # gives. Cache only, no request. A copy, never the row itself: a row the
+    # split passed through is the 10-minute search cache's own.
+    for my $i (0 .. $#{ $merged || [] }) {
+        my $r = $merged->[$i];
+        next unless ref $r eq 'HASH' && $r->{artist_id} && !$r->{_ident_mbid};
+        my $m = Plugins::Discography::API->peekLibraryMbid($r->{artist_id}, $r->{name})
+            or next;
+        $merged->[$i] = { %$r, _ident_mbid => $m };
+    }
 
     # RE-RANK, because the attach above is what makes some rows Local at all —
     # "The La's" is not found by the Local leg, so at merge time it ranked as a
@@ -4672,7 +4835,7 @@ sub _releaseDetail {
     my $dSpine = _spineTitles(
         Plugins::Discography::API->peekReleaseGroups($pass->{mbid}));
 
-    Plugins::Discography::Sources->getCandidates($client, $artist, 0, sub {
+    my $withCands = sub {
         my $bySvc = shift;
         # Same gate as the list's $local (_discographyView): a secondary act
         # with no library id of its own gets no name lookup, or the prominent
@@ -4707,7 +4870,9 @@ sub _releaseDetail {
             $sections = Plugins::Discography::Sources->matchesFor(
                 $bySvc, $artist, $rg->{title}, $local, $rg->{mbid}, $relMap, $rivalBucket,
                 { aliases => $rg->{aliases}, rgType => $rg->{type}, editions => $eds,
-                  idGroups => $idGroups, localTracks => $localTracks });
+                  idGroups => $idGroups, localTracks => $localTracks,
+                  # The artist's other MusicBrainz names, as the tile's (C3).
+                  otherNames => _otherNames($ambid, $artist) });
             $sectionsDone = 1;
             # Review needs $sections (Qobuz-description fallback rides the match).
             _fetchAlbumReview($client, $artist, $rg->{title}, $rg->{mbid}, $sections, sub {
@@ -4743,13 +4908,12 @@ sub _releaseDetail {
         else {
             $finish->(undef);
         }
-    }, do {
-        # The list page's search name (_poolQuery), or a cold detail page would
-        # build the pool under a different name than its tile's page did.
-        my ($query, $alias) = _poolQuery($artist, $pass->{mbid}, []);
-        +{ spine => $dSpine, mbid => $pass->{mbid},
-           ($query ? (query => $query) : ()),
-           (@$alias ? (aliases => $alias) : ()) };
+    };
+
+    # The list page's options (_poolOpts), or a cold detail page would build the
+    # pool under a different name, or with a looser check, than its tile's page.
+    _poolOpts($artist, $pass->{mbid}, $dSpine, sub {
+        Plugins::Discography::Sources->getCandidates($client, $artist, 0, $withCands, $_[0]);
     });
 }
 

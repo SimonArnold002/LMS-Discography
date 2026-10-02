@@ -1,15 +1,22 @@
 
 # Community API + one artist resolver — plan (2026-09-25)
 
-**Status 2026-09-30 (night): Part B is BUILT, by another route; Part A only in part; Parts C and D not started.**
+**Status 2026-10-01: Part B BUILT; Part A in part; Part C APPROVED (Simon: "yes lets move forward"), C3 + C5 BUILT
+as 0.56.17 and CHECKED LIVE; its one open case (a non-Latin name opened cold) fixed in 0.56.18 (checked live; its 王菲 regression fixed in 0.56.19, checked live; the "Faye Wong" page's gap fixed in 0.56.20, checked live), C4 DECLINED in the ledger, C2 BUILT as 0.56.21 (measured
+beyond Simon's library first, below) and CHECKED LIVE, C1 next; Part D not started.** Everything through
+0.56.16 is committed and pushed to `dev` (718c24b); 0.56.21 is installed on the rig and checked live; 0.56.25 (outside the plan: a shared name's biography by mbid; home page: banner, Find an artist, Discography) is built, not installed; 0.56.17-0.56.25 not committed.
+- **Part C** (§5) was rewritten on 2026-10-01 from today's code and today's measurements: what is already done, what
+  is left (C1 initials, C2 an owned artist with no MusicBrainz tag, C3 the same releases whichever name opened the
+  page, C4 §A7 #4 decided, C5 two smaller gaps), and the live list. Approved the same day; built in §5.4's order.
 - **Part B** (§4) came in as the efficiency plan's stage 3 (`docs/mb-efficiency-and-community-api-analysis.md`
-  §A12-§A14; 0.56.3-0.56.6, checked live, uncommitted). Every gate is gone. The row check is not §4's one batched
+  §A12-§A14; 0.56.3-0.56.6, checked live). Every gate is gone. The row check is not §4's one batched
   name search, which was measured unsound (analysis §E). It is the typed query's own reply, then one combined search
   trusted only when complete, then the community API by name for the rest.
 - **Part A** (§3): the community API gives release counts and judges the search's leftover results. Its helper is
-  `_netGet`'s `hosted` bucket with `_hostedHeaders`, not a `_hostedGet`. The list (§3.2) and the caching (§3.5) are
-  not started.
-- **Parts C and D** are not started. Analysis §A7 #4 is held for Part C.
+  `_netGet`'s `hosted` bucket with `_hostedHeaders`, not a `_hostedGet`. The page's list came from the community
+  API and ListenBrainz by another route (analysis §A16 route A, 0.56.7-0.56.8). The caching (§3.5) is not started.
+- **Part D** (§6) is not started; 0.56.10's search layout (Top Result, then Artists with the same-name acts first)
+  covers part of it. Rewrite it against that layout after Part C.
 
 *Was: PLAN. No code written.* Built from the code at the last dev push (`ba95148`, the 0.55.x tree) and
 from measurements taken on 2026-09-25. It supersedes the "what the code does today" parts of
@@ -220,39 +227,194 @@ public behaviour.
 *Built 2026-09-30 (stage 3, 0.56.3; checked live on 0.56.4), with the row check described in the status note at the
 top. A row lookup runs every pass a page lookup runs; `speculative` keeps only its mirror-retry role.*
 
-## 5. Part C — one artist resolver
+## 5. Part C — one artist resolver (REWRITTEN 2026-10-01 against 0.56.16; APPROVED 2026-10-01; C3 + C5 built as 0.56.17)
 
-The design in `docs/unified-artist-resolver-plan.md` §1–§6 stands (ranked candidates with the measured
-initialism lift; the owned-album check whenever there is more than one act; English label on MusicBrainz-only
-rows; streaming asked canonical first; same material whichever name opened the page). It is **rebuilt on the
-current code, with Parts A and B underneath it**, and the 0.57.0 build is NOT restored as a whole.
+The 2026-09-25 text of this section planned against code that has since changed (0.56.3-0.56.16) and is in git
+history. Everything below was read in today's code or measured today: on the rig (0.56.16, public MusicBrainz,
+debug log on for three page opens, then restored to WARN; scratchpad `partc_*.out`) and on the public MusicBrainz and ListenBrainz
+APIs (scratchpad `initials_measure.out`, `partc_albumlookup.out`). Design detail and the September measurements
+are in `docs/unified-artist-resolver-plan.md`; where the two differ, this section wins.
 
-The 0.57.0 review (2026-09-25) found defects that the rebuild must not repeat. Each becomes a requirement with a
-suite:
+### 5.1 Already done — no work
 
-| 0.57.0 defect | requirement |
-|---|---|
-| Duplicate rows for an alias act on public ("Beatles" -> two "The Beatles") | fixed by Part B (rows resolve on public too) plus a join on the MB name / English name / inline aliases the ranked list already carries |
-| MB aliases and the demoted browsed name sent to the services unconverted (Deezer takes bytes) | every name, not just the first, goes through the adapter's `query_enc` |
-| Release page resolves without `ambiguous` and writes the shared pool | the release page asks EXACTLY what the list asks, `ambiguous` included, through one helper |
-| Collaboration filter and same-name guard compare one name while the lookup uses another | both test the browsed name AND MB's names |
-| Refresh cleared another act's caches via a name-only clear | every clear carries the mbid |
-| "Also on streaming" credit gate ignores MB's other names | same `artistAlts` rule as the matcher |
+| September item | where it landed | checked today |
+|---|---|---|
+| Streaming searched under MusicBrainz's canonical name first | 0.56.13 `Browse::_poolQuery` (a non-Latin canonical name keeps the Latin browsed name first) | British Sea Power and Sea Power pages are identical (Albums 11, Live 1, Appearances 1) |
+| Same-name acts listed and told apart | 0.56.10 (first under Artists), 0.56.12 (MusicBrainz description on matched rows) | Madness, The Bees, Luna, Tennis |
+| The owned act first | 0.48.4 "Local trumps" | Luna, James, Tennis, Bob, Madness, The Bees: the user's act is the Top Result |
+| Rows resolve on the public API | Part B (stage 3) | — |
+| Refresh clears by mbid | 0.56.15 | — |
 
-Code from the 0.57.0 stash (`git stash list`: "0.56.0/0.57.0 working tree") may be reused sub by sub
-(`rankArtistCandidates`, `_initials`, `searchArtistCandidates`, the suites `t_rankcands`, `t_ownedcheck`,
-`t_mbcands`, `t_mbfirst`, `t_canonfirst`), each re-read against this plan before it goes in. Nothing is taken
-unread.
+Luna, James and Tennis were September's regressions of the reverted MusicBrainz-first build, not of the code that
+shipped; they pass today and become Part D's guard list.
 
-**Also decided here (added 2026-09-29): the combined name query, §A7 #4 of
-`docs/mb-efficiency-and-community-api-analysis.md`.** Replacing `_artistMbidByName`'s `artist:` then `alias:`
-passes with one `artist:"X" OR alias:"X"` query would save 1–2 requests for a name the name field cannot
-answer, but it re-scores the hits. Measured on the public API 2026-09-29: HAIM (the US trio) drops from 100
-to 84, below the ≥ 90 gate, and Haïm (a Raï pop act, 93) becomes the first name-equal hit, so HAIM would
-resolve to Haïm. It was held out of the efficiency work (stage 1, which built §A7 #1–#3) for that reason.
-Decide it here, where the ranked list already runs the combined query for its alias tier
-(`docs/unified-artist-resolver-plan.md` §1), and measure any use of it in `_artistMbidByName` against the
-1,117 library artists before it changes an answer.
+### 5.2 What is left
+
+**C1. Initials ("ELO" is Electric Light Orchestra).** `_artistMbidByName` prefers an act literally named what was
+asked for (0.44.14), so an abbreviation opens an obscure act of that name. Today:
+- Search "ELO" (25 rows), "PIL" (26), "EBTG" (1): the user OWNS Electric Light Orchestra, Public Image Ltd and
+  Everything but the Girl, and none of them is in the list. "NIN": Nine Inch Nails is row 11 (Qobuz · Tidal).
+- Page opened by the name: "ELO" shows one album by another act called ELO under Electric Light Orchestra's
+  biography and similar artists (both fetched by name); "PIL" shows a Danish Pil's two albums under PiL's biography;
+  "NIN", "EBTG" and "BTO" say "No releases found".
+
+**Fix:** September's rule, from the stash (`_initials`, `_rankCandidates`): one combined query
+`artist:"X" OR alias:"X"` (limit 25); an act matched only by an alias whose own name's initials spell the query
+wins when that query scores it above every act named the query. Re-measured on public MusicBrainz today:
+
+| query | lifted to | its score vs the best act named the query |
+|---|---|---|
+| ELO | Electric Light Orchestra | 100 vs 72 |
+| PIL | Public Image Ltd | 89 vs 82 |
+| NIN | Nine Inch Nails | 100 vs 72 |
+| EBTG | Everything but the Girl | 100 vs 98 |
+| BTO | Bachman–Turner Overdrive (84) over Brynjar Takle Ohr (74): when two lift, the higher score wins | no act named BTO |
+
+Unchanged, correctly: ABC (an act named ABC scores 100), TLC (100), HAIM (93), KLF (The KLF's initials are "tk"),
+Bob (B.o.B is single letters). REM is not lifted either: R.E.M. is single letters, excluded by design so that "Bob"
+never opens B.o.B (measured in September); the search already shows the owned R.E.M. first today.
+
+- **Where:** `_artistMbidByName`, after the name search, so every name lookup (a search's typed query, a page
+  entered by name, the row check's fallback) agrees. The lifted act's name is kept as its canonical name, as for
+  any winner.
+- **The search follows without more code:** `_artistSearchView` already searches the services again under
+  MusicBrainz's name when it differs from what was typed (0.45.2), and `attachLibraryArtists` then gives that row
+  the user's library id by name. So "ELO" should show Electric Light Orchestra, Local, as the Top Result. To be
+  confirmed live, not assumed.
+- **The shared-name guard must count a lifted act as the name's main one.** `API::_sharesDecision` calls a page a
+  lesser act whenever its id is not the top of the same-name set (the acts literally named "ELO"); for such a page
+  it hides the biography, similar artists and, with no library id, the user's own albums (0.43.4). Unchanged, a page
+  opened as "ELO" would show Electric Light Orchestra's releases with none of those.
+- **Cost:** one extra MusicBrainz request, only for a SHORT name (2-5 letters once spaces and dots are dropped),
+  only when it is resolved by name (a tagged library artist never is), cached 14 days. About a second added to the
+  first search or name-entered page of such a name on the public API.
+- **Before it ships:** replay the rule over the library's album artists through the real code. September's
+  "changes none of the 1,117" was measured on the mirror with the stashed code.
+
+**C2. An owned artist whose files carry no MusicBrainz artist tag.** BUILT as 0.56.21 with the revised rules below
+(CLAUDE.md A2 `AN UNTAGGED LIBRARY ARTIST IS NAMED BY ITS ALBUMS`); the built code replayed on both populations:
+library 887 -> 903 right, outside sample 86 -> 417, none made wrong. With no tag, the page resolves by name and
+takes the best-scoring act of that name. July's four (2026-07-22 triage, "RESOLVER, NOT MATCHER") still fail today:
+
+| library artist | the page shows today | the user's albums | the album lookup today (one request, first hit, score 100) |
+|---|---|---|---|
+| Jack (153744) | Jack Johnson: his biography, 9 albums | The Jazz Age, Pioneer Soundtracks, under "Also in your library" | Jack, Welsh band |
+| Roswell (155151) | another Roswell's one album | Come Home, Remedy: not on the page at all | Roswell Road, UK acoustic/folk duo (both titles) |
+| Muzz (154491) | the producer Muzz's biography and album | Muzz, under "Also in your library" | Muzz, NYC indie rock trio |
+| Rico (155050) | another Rico's 5 albums | That Man Is Forward, under "Also in your library" | Rico Rodriguez, Jamaican trombonist |
+
+- **Why not September's owned-album check** (weigh each same-name act's album list against the owned albums): it
+  cannot reach two of the four. The Welsh Jack is 32nd on `artist:"Jack"`, outside the 15 the same-name set reads;
+  Roswell Road is not NAMED Roswell (it is an alias). It also cost up to 8 requests (ListenBrainz would answer all
+  of them in one: `metadata/artist/?artist_mbids=A,B,C,D&inc=release_group`, measured today, 0.33 s for four acts;
+  noted for later, not needed here).
+- **Fix: the album lookup** (July's tier T1, `tools/mb_identity_probe.py`): `release-group?query=releasegroup:"<an
+  owned title>" AND artist:"<library name>"`, then the artist credited on the top hit. Rules, each from July's
+  measurement:
+  1. only for a library artist with no tag; a tag still wins, and the 0.27.0 check for a tag with no releases is
+     unchanged;
+  2. the act found must agree with the library name (token subset either way: Roswell / Roswell Road, Rico / Rico
+     Rodriguez). Without this gate, classical albums credited to the composer moved orchestras onto composers;
+  3. the title asked for is an album credited to this artist (not a compilation they appear on), preferring a
+     distinctive title over a self-titled or generic one (`_matchWeight`'s classes);
+  4. a miss, an error or a failed name check keeps today's answer;
+  5. the answer is kept per library CONTRIBUTOR (its id and name together, so an id reused after a clear-and-rescan
+     cannot inherit it), never under the name: a Qobuz row called "Jack" must not start opening the Welsh band.
+- **Where:** `Browse::_resolveArtistMbid` (pages entered with a library id), and the search's row check for an
+  untagged library row (background work since 0.56.9). That also gives such a row its MusicBrainz description,
+  which 0.56.12 withholds from untagged owned rows.
+- **Biography:** once the page is the Welsh Jack, the existing shared-name guard (C1's) hides the biography and
+  similar artists rather than showing Jack Johnson's (read in `_sharesDecision`: the act is not the name's top one).
+- **Cost:** one MusicBrainz request on the first visit to an untagged owned artist, kept 30 days. Tagged artists pay
+  nothing.
+- **Not the identity index:** no library scan, and no album-to-release-group storing (July's rule 3); only the
+  artist.
+- **MEASURED 2026-10-02 beyond July's four (Simon: *"needs to work for others ... needs to disambiguate
+  properly"*; mirror, as a correctness test, Simon's call).** Today's REAL resolver (0.56.20 `getArtistMbid` by name,
+  tag ignored; scratch harness on Sept's `mbdrive.pl` stubs) against the lookup rules, two populations:
+  - *The library as if untagged* (1,119 album artists; answer key = the tag July's sweep logged, 914 scorable): by
+    name 883 right. The rule as first written above (one title, first hit) 897; the revised rules below 897, with
+    15 fixed (Bob, caroline, Palace, Discovery, Weekend, Pacific, Heartworms ... all the user's lesser same-name act)
+    and 0 broken. The one "broken" row is Rico, whose contributor carries ANOTHER Rico's tag (the Opgezwolle MC);
+    the lookup's Rico Rodriguez is right. The untagged 200: only Jack, Muzz, Roswell change, each to the right act.
+  - *An outside sample* (not from the library): 154 common band words and first names, up to 3 same-name acts each
+    with an official studio album, a pretend untagged library of 1-3 of its albums (title 2 given "(Remastered)"):
+    436 cases. By name 85 right; the rule as first written 322; the revised rules **415, 0 broken**, about 2.5
+    requests per artist. The 21 left keep today's answer: 15 a lone self-titled album that several same-name acts
+    hold (refused, not guessed), 6 titles the index does not find (Japanese, German).
+  - What the measurement changed (each a counterexample): **up to 3 titles** (one title: 322 vs 415); **exact-title
+    hits only, and a title two same-named acts hold counts for neither** (generic and self-titled titles);
+    **a self-titled title counts when ONE act holds it** (Muzz's only album is "Muzz"; `_matchWeight`'s 0.5 floor
+    alone would refuse it); **an act NAMED as the library beats one whose name only contains it** (Nat King Cole:
+    "The Best of the Nat King Cole Trio" outvoted "The Collection" until this rule); **stop after the first title when
+    it agrees with the name's answer** (same results, 1,092 vs 1,285 requests on the sample).
+  - Seen, not yet in the rules: the name check should ignore spacing ("Chocolate Watch Band" / MusicBrainz's
+    "Watchband" was refused); a leading "The" in the query blocks "The Go-Go's" (MusicBrainz: "Go-Go's"); a renamed
+    act (Kingfisher -> Racing Mount Pleasant) and "2nd"/"Second" stay as today. July's `VARIOUS` regex (`^va`) skips
+    any name starting "Va" ("Valley"): never port it.
+  - Optional later: the library YEAR breaks a self-titled tie (July's T7) would reach most of the 15 refused.
+  - Scratch (session scratchpad): `c2lib.py`, `c2byname.pl`, `c2lookup.py`, `c2score.py`, `c2outside.py`, outputs
+    `c2score_v.out`, `c2out_score.out`.
+
+**C3. The same releases whichever name opened the page.** BUILT in 0.56.17 (CLAUDE.md A2 `THE SAME RELEASES
+WHICHEVER NAME OPENED THE PAGE`); checked live 2026-10-01, with one case open (a non-Latin name opened cold builds
+its pool under that name and never tries the Latin alias), built as 0.56.18: MusicBrainz's primary English alias is
+searched first (CLAUDE.md A2 `A NON-LATIN NAME IS SEARCHED IN ENGLISH FIRST`). As built, a copy credited under another of the artist's names is
+judged as that name's own page would judge it, title rules included, not only let through the artist test (Tommy
+Genesis's self-titled album: her canonical page wants the exact title), and a copy credited under the page's own name
+exactly as before. Library copies, the candidate index and the biography stay on the page's name (no field case).
+Measured today: "Kenshi Yonezu" shows 24 releases,
+"米津玄師" (MusicBrainz's own name for him) says "No releases found". Same mbid (09d4a85c), same pool (Qobuz 73,
+Tidal 43); all 39 release groups NO MATCH, because the page tests each candidate's artist against the name it was
+opened under (`_buildList` `$artistNorm`) and the services credit "Kenshi Yonezu".
+- **Reachable today:** Tidal's search row "米津玄師" (it appears for both spellings) opens that page.
+- **And it hides search rows for 7 days:** that render recorded the act as having no releases ("empty artist
+  recorded ... search rows for it will be hidden for 7d"), which drops every search row that resolves to it,
+  "Kenshi Yonezu" included. Set by today's measurement, cleared by re-opening the "Kenshi Yonezu" page ("empty
+  verdict CLEARED ... found 24 release(s)"). Same class as the open Genesis Mohanraj case in CLAUDE.md A2 `STAGE 1
+  CHANGED SIX BEHAVIOURS ON PURPOSE` #1 (her 3 releases were rejected on the name); this fix closes that one too.
+- **Fix:** the page's artist test accepts MusicBrainz's canonical name and MusicBrainz's aliases for the page's
+  mbid, beside the name it was opened under. Both are already cached by the artist read every page makes, so no
+  request. Callers: the release matching and owned-album claims in `_buildList`, the "Also on streaming" credit
+  test, and the release page (`_releaseDetail`), so a release page agrees with its tile. Call-site logic, like
+  0.24.0: the shared matcher subs are untouched, so no fleet port.
+- Biography and similar artists by MusicBrainz's name instead of the browsed one: not changed unless the live check
+  shows them differing between the two names.
+
+**C4. §A7 #4 (the combined name query) — not taken as an efficiency change.** DONE 2026-10-01: the ledger entry
+is now `A7 #4 IS DECLINED`. Replacing `_artistMbidByName`'s
+`artist:` and `alias:` passes with the one combined query re-orders the acts named the query: HAIM would open Haïm
+(measured on the public API 2026-09-29). The combined query is asked only by C1, only for short names, and never
+reorders the name tier. On approval, the ledger entry `A7 #4 IS HELD FOR THE RESOLVER` becomes DECLINED with this
+reason.
+
+**C5. Two smaller gaps found reading the code (no live failure seen).** BUILT in 0.56.17 with C3 (`Browse::_poolOpts`;
+`Sources::getCandidates` converts every name it is given):
+- The release page asks for its streaming matches without the artist page's shared-name flag and MusicBrainz
+  aliases (`_releaseDetail` against `_discographyView`'s `$go`). Writer: a release page opened after the 3-day pool
+  has expired, for a name several acts share; it then picks the service artist without the strict check and writes
+  the pool both pages read. One helper builds the options for both pages.
+- Names tried after the first (the browsed name, aliases) reach a service's artist search without that service's
+  text conversion (`query_enc`). Writer: Deezer, which takes bytes, with a non-ASCII alias. Not testable on the rig
+  (no Deezer account); suite only.
+
+### 5.3 Dropped from September's Part C
+- **English labels on MusicBrainz-only rows** (Kenshi Yonezu for 米津玄師): today's search lists only acts named as
+  typed, so a label in another script can only appear once alias-matched acts are listed. Moved to Part D.
+- **The owned-album check that weighs every same-name act:** replaced by C2's album lookup (above, why).
+
+### 5.4 Order and checks
+C3 with C5 first (smallest; stops a wrong 7-day verdict), then C2, then C1 (with its library replay). Each step:
+suites before and after, mutation-checked, `MBID_CACHE_V` bumped for C1 (a 30-day `dsc:mbid` entry holds today's
+answer for "ELO"; the fleet rule for a resolve fix; C2 keeps its answers per contributor, not in that cache), then
+the live check on the rig, results shown to Simon before the next step. Code from the 0.57.0 stash (`git stash list`) is reused sub by sub only after re-reading it.
+
+Live list:
+- **Changed:** ELO, PIL, NIN, EBTG, BTO (the band is in the search, the Top Result and Local where owned; the page
+  is the band's, with its own biography); Jack, Roswell, Muzz, Rico (the page is the user's act, its albums on their tiles);
+  米津玄師 = Kenshi Yonezu (the same releases, no "empty" verdict).
+- **Unchanged:** ABC, TLC, HAIM, KLF, Bob, REM, Madness, The Bees, Luna, James, Tennis, British Sea Power / Sea
+  Power, Radiohead (tagged: no extra request).
 
 ## 6. Part D — the search list, MusicBrainz first (redo)
 
@@ -281,8 +443,9 @@ shown to Simon before the next stage starts.
    Shostakovich (search, then page: right act both times).
    **BUILT as stage 3/3b (0.56.3-0.56.6).** The live checks are analysis §A12.9 and the dev log's 0.56.5 and 0.56.6
    entries (Genesis, British Sea Power, Hall and Oates right).
-3. **Part C** (§5): resolver, owned-album check, English labels, canonical-first streaming, same-material diff.
-   Live: the plan's list (ELO, PIL, NIN, OMD, KLF, Luna, James, Madness, Kenshi Yonezu, Кино, The Bees).
+3. **Part C** (§5, rewritten and approved 2026-10-01): C3 + C5 (built as 0.56.17), then C2, then C1. Live: the list in §5.4. (Canonical-first
+   streaming was built in 0.56.13; English labels moved to Part D; OMD dropped from the list, Simon 2026-10-01:
+   it already works.)
 4. **Part D** (§6): MusicBrainz-first search list. Live: Hawkwind, ELO, Madness, Beatles.
 5. Full soak on public against the stage-0 baseline; every loss explained or fixed. Then docs, then ask to build.
 

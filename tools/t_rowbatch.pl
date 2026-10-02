@@ -359,6 +359,32 @@ section('4', sub {
     ok(ref $out eq 'ARRAY' && @$out == 1 && !@QUERIES,
        '4: a tagged library row is kept by its tag with no request');
 
+    # An UNTAGGED library row whose page has had its own albums name its act
+    # (resolver plan C2): that answer stands as a tag does - no request, and
+    # never remembered under the name (a "Genesis" row from a service must open
+    # what the name opens, not the user's act).
+    cold();
+    $REPLY{ q_for('genesis') } = $GEN;
+    $CACHE{ Plugins::Discography::API::_libMbidKey(78, 'Genesis') } = id(91);
+    $out = undef;
+    $API->filterRowsWithContent([ { name => 'Genesis', sources => ['Local'], artist_id => 78 } ],
+        sub { $out = $_[0] }, { query => 'genesis' });
+    flush();
+    ok(ref $out eq 'ARRAY' && @$out == 1 && !@QUERIES,
+       "4: an untagged library row with its albums' answer kept is settled by it, no request");
+    ok(!exists $CACHE{ Plugins::Discography::API::_rowKey('Genesis') }
+       && !exists $CACHE{ Plugins::Discography::API::_mbidKey('Genesis') },
+       '4: and nothing is remembered under the name');
+    # Control: with no kept answer the same row is resolved by name, as before.
+    cold();
+    $REPLY{ q_for('genesis') } = $GEN;
+    $out = undef;
+    $API->filterRowsWithContent([ { name => 'Genesis', sources => ['Local'], artist_id => 78 } ],
+        sub { $out = $_[0] }, { query => 'genesis' });
+    flush();
+    ok(ref $out eq 'ARRAY' && @$out == 1 && scalar(grep { index($_, 'artist?query=') >= 0 } @QUERIES) >= 1,
+       '4: control - no kept answer: the untagged library row is resolved by name (it asks)');
+
     # The row named like the query is answered by the resolver's own cache.
     cold();
     $REPLY{ q_for('genesis') } = $GEN;

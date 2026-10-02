@@ -1,6 +1,10 @@
 # One artist resolver — plan (rewritten 2026-09-25)
 
 > **2026-09-25: the working plan is now `docs/community-api-and-resolver-plan.md`.** This file is kept for its design detail and measurements.
+>
+> **2026-10-01: Part C of that plan (§5) was rewritten against 0.56.16.** It keeps this file's initials rule (§1),
+> replaces the owned-album check (§2.3) with an owned-album LOOKUP, moves the English labels (§4) to Part D, and
+> notes that canonical-first streaming (§5) was built in 0.56.13. Where the two differ, §5 there wins.
 
 
 Status: PLAN, no code changed. The previous version (four evidence tiers, streaming-evidence ranking, renaming the page after it opened) went
