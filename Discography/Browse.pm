@@ -37,7 +37,7 @@ my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.46';
+use constant CACHE_VERSION => '0.56.49';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -3700,6 +3700,75 @@ sub _artistSearch {
     my ($client, $callback, $args, $pt) = @_;
     my $features = ref $pt eq 'HASH' ? ($pt->{features} // '') : '';
     _artistSearchView($client, $callback, $features, $args->{search});
+}
+
+# ---------------------------------------------------------------------------
+# A "Discography" entry in LMS's own search (TEST BUILD 0.56.47; Simon,
+# 2026-10-03: "can we try and build a test of this to see if it would work").
+# Plugin::initPlugin registers this with Slim::Menu::GlobalSearch, the hook
+# Qobuz, TIDAL and Spotty use, so a search anywhere in LMS lists the entry and
+# it opens DSC's artist search for the same words.
+#
+# NOTHING IS SEARCHED UNTIL THE ENTRY IS OPENED. LMS calls this for every
+# search and again for every tap into its list (GlobalSearch::cliQuery
+# rebuilds the whole menu), and Material's search asks for that list on every
+# pause while typing. So this only builds the entry.
+#
+# THE TAP IS PARAM-ADDRESSED, like the search box (_searchRow): its go action
+# is `discography items search:<words>`, straight to topLevel's search
+# dispatch. Material adds `features:hi` to every plugin command it builds from
+# a row's go action (browse-functions.js browseBuildCommand: all but
+# browselibrary / artistinfo / albuminfo), so Material gets the results page
+# the box gives.
+#
+# NO CODEREF ON THE ENTRY ITSELF (0.56.48). XMLBrowser gives a list a session
+# id, the 8-hex prefix every row's item_id walks back by, ONLY when no
+# top-level item has a ref url (XMLBrowser.pm: `grep { ref $_->{url} }`, "Don't
+# cache if list has coderefs"). 0.56.47 put `url => \&_globalSearchWalk` here:
+# every LMS search list lost its prefix ("_Massive%20Attack.5" instead of
+# "1a41356a_Massive%20Attack.4"), a walk then misread the words as a row
+# number, and EVERY source opened from a search came back "Empty" (Qobuz, BBC
+# Sounds; measured on the rig 2026-10-03, and the same walk with a prefix
+# worked). So the entry carries the coderef one level down, Qobuz's shape: a
+# client that walks in gets one "Artists" row, which runs the search. That
+# row's coderef is handed only the parent menu's `query`, never the request
+# (XMLBrowser.pm: `params => $feed->{'query'}`), so a walk gets the plain list.
+#
+# On a walk LMS takes the words from the item id with Misc::unescape, which
+# leaves UTF-8 as octets ("Bj\xC3\xB6rk"); decoded here unless already
+# characters, so both routes search the same words.
+#
+# Material shows a source in its own search only when its fixed list names it
+# (search-field.js SEARCH_OTHER: Qobuz, TIDAL, Spotty, ...). Until that list
+# has "discography", Material does not show this entry; other LMS search
+# screens do.
+# ---------------------------------------------------------------------------
+sub globalSearchItem {
+    my ($client, $tags) = @_;
+    my $q = ref $tags eq 'HASH' ? ($tags->{search} // '') : '';
+    utf8::decode($q) unless utf8::is_utf8($q);
+    $q =~ s/^\s+|\s+$//g;
+    return unless length $q;
+    return {
+        name        => cstring($client, 'PLUGIN_DISCOGRAPHY'),
+        image       => ICON,
+        itemActions => { items => { command => ['discography', 'items'],
+            fixedParams => { search => $q } } },
+        items       => [{
+            name        => cstring($client, 'ARTISTS'),
+            type        => 'link',
+            image       => 'html/images/artists.png',
+            url         => \&_globalSearchWalk,
+            passthrough => [{ q => $q }],
+        }],
+    };
+}
+
+# A client that walks into the entry's "Artists" row (see globalSearchItem):
+# the same search, no features.
+sub _globalSearchWalk {
+    my ($client, $callback, $args, $pt) = @_;
+    _artistSearchView($client, $callback, '', ref $pt eq 'HASH' ? $pt->{q} : undef);
 }
 
 # Search every source, merge, render result rows. The MERGED list is cached

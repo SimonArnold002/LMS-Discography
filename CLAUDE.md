@@ -182,6 +182,8 @@ because line numbers rot on the next edit.
 | MB's artist lookup listing only first-credited groups; omitting an empty `release-groups`; a combined `inc=` returning less; a 50-id `reid:` search being too long | A3 | `MEASURED FOR STAGE 1` |
 | A non-UUID album id tag spoiling a `reid:` batch | A3 | `LMS VALIDATES MB ID TAGS AT SCAN` |
 | Paging the `arid:` search as a complete list; the search carrying group aliases; the artist read's group list as incomplete under 25; the by-id search's URL or release lists being cut short | A3 | `MEASURED FOR STAGE 2` |
+| The plugin's logo is Material's `album-multi` stack everywhere: plugin icon, the artist-menu action (`svg`, no `icon`), the "Search on…" entry. Never a second logo (Simon, 2026-10-03) | log | `ONE LOGO, THE STACK` |
+| A global search entry (`Browse::globalSearchItem`) carrying its own `url` coderef: it cost every LMS search list its session id, so every source opened from a search came back Empty (0.56.47; the coderef sits one row down since 0.56.48) | A3 | `EVERY SOURCE OPENED FROM A SEARCH CAME BACK EMPTY` |
 
 **Two standing rules that kill most repeat findings:**
 
@@ -1582,6 +1584,7 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 | The full search soak's `fewer_matches` verdict (the search row's page matching fewer releases than the artist row's) means the search path loses matches (13 artists on 0.56.42, none on 0.55.0) | **WRONG** — THE SOAK'S ARTIST-ROW PAGE IS A FIRST VISIT (measured 2026-10-02 on 0.56.42, rig on the mirror, `sweep/mirror-0.56.42`, scratchpad `probe_after.py fresh`) | The soak renders the artist row first, on a cold page (ListenBrainz's list, A2 `THE ARTIST PAGE DRAWS FROM LISTENBRAINZ AND THE COMMUNITY API`), and drills the search row later, a fresh entry with the completed list. Cleared by clearing the cache, then a first visit against a fresh entry: Laufey ("A Matter of Time: The Final Hour" folds into "A Matter of Time"), Daft Punk ("Random Access Memories (10th Anniversary Edition)" folds, and RAM then reads Local/Qobuz), Phosphorescent ("Muchacho de Lujo" folds, a 2026 group arrives), Bobbie Gentry ("Live At The BBC" is tagged with the box set's release id 29dd272a, so the completed page lists it under "The Girl From Chickasaw County" tile, Local (2); MusicBrainz's own "Live at the BBC" group 2ada61c5 holds no releases). Nothing stopped playing. Not a stale mirror: Laufey's ListenBrainz list holds nothing the mirror lacks. Compare a soak's paths only once both are completed lists. |
 | The full search soak's falling Local and matched counts against 0.55.0 (37 artists with fewer Local tiles: ABC 4 -> 1, Dean Martin 2 -> 0, Bob Dylan 1 -> 0) mean owned albums dropped off their pages | **WRONG** — THE SOAK COUNTS ONLY THE FIRST 30 TILES of each section of the Albums view (measured 2026-10-02 on 0.56.42, scratchpad `probe_after.py screen/dump`) | Two deliberate causes: an owned VA track makes only its SINGLE Local (A2 `A TRACK LINKS ITS SINGLE ONCE`, 0.56.39), and the soak never opens the Singles view; longer lists (0.56.7/0.56.8) push owned tiles behind "Show more" (Dean Martin's Compilations 279, Bob Dylan's Albums 45). Every section opened in both views: all 41 flagged artists at or above 0.55.0's Local count (ABC 5 + 3 singles "from <album>", Bob Dylan 8 of 8, Dean Martin 9). Of 20 lower matched counts, 13 are the singles move; the other 7, compared tile by tile with July's whole pages (`sweep/raw/browse`), lost nothing (Selecter 17 -> 22, Barry Adamson 26 -> 28) except The Cranberries' "Stars" single, which July matched to Qobuz's best-of album (a wrong match, now gone). |
 | A failed Qobuz search (timeout, HTTP error) reaches our callback as undef, so DSC can tell "Qobuz failed" from "Qobuz has nothing" | **WRONG** — QOBUZ CACHES A FAILED SEARCH AS AN EMPTY ONE (read 2026-10-03 in the Qobuz plugin 3.7.2 source, the installed version, `API.pm` `search` and `_get`; Perl behaviour tested) | `_get`'s error callback logs `Error: $error` at WARN and calls `$cb->()`. `search`'s callback then tests `$results->{albums}` and `$results->{tracks}->{items}` on the undef result, which AUTOVIVIFIES it into `{tracks => {}}` (`perl -Mstrict -we 'my $r; my $x = 1 if $r->{albums}; my $y = 1 if $r->{tracks}->{items}; print keys %$r'` prints `tracks`), then `$cache->set($key, $results, 300)` stores that TRUE value and hands it on. So for 300 s every `search(lc name, 'artists')` for that text answers "no artists" without asking Qobuz: our page pool AND the search page's Qobuz rows (same key). DSC cannot see the difference: a page with a spine settles it UNRESOLVED (`CAND_ERR_TTL`, 1 h); with no spine `_searchQobuz` falls back to the album search. Seen as Imogen Heap in the 0.56.42 soak (dev log, soak entry, item (a)). An upstream bug (one guard before the cache set); not ours to patch. |
+| A global search entry is an ordinary OPML item, so it can carry its own `url` coderef like any row | **WRONG — EVERY SOURCE OPENED FROM A SEARCH CAME BACK EMPTY** (0.56.47 on the rig, 2026-10-03; XMLBrowser.pm public/9.2 read the same day) | XMLBrowser gives a list its session id, the 8-hex prefix every row's item_id walks back by, ONLY when no TOP-LEVEL item has a ref url (`my $refs = scalar grep { ref $_->{url} } @{ $feed->{items} }; if (!$refs) { $sid = createUUID() }`). With 0.56.47's entry (`url => \&_globalSearchWalk`) the whole `globalsearch items` list came back without one: `item_id:_Massive%20Attack.5` instead of 0.56.46's `1a41356a_Massive%20Attack.4`. `getSID` needs 8 hex characters, so a walk read `_Massive%20Attack` as the first row number and went into "My Music". Qobuz and BBC Sounds opened "Empty", and our own index opened My Music's "Songs". The same walks with `ffffffff_` in front opened Qobuz's Releases / Artists / Songs / Playlists and our results. That breaks Material's own search too: its Qobuz and TIDAL rows are these items. Fixed in 0.56.48 with Qobuz's shape: no url on the entry, the coderef one row down (`items => [{ ... url => ... }]`); `t_globalsearch.pl` §1 pins it. |
 
 ### B. KNOWN-OPEN AND ACCEPTED — do not re-report as new
 
@@ -2304,6 +2307,137 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   counterpart there.
 
 ## Development Log
+
+### 0.56.49 (2026-10-03) — ONE LOGO, THE STACK: the plugin's logo is Material's album-multi everywhere — INSTALLED + VERIFIED LIVE 2026-10-03 with Material 6.4.10.11 (sha 868ca4f3; Simon: *"installed it works"*)
+- **Confirmed over HTTP (13:40):** the plugins page shows "Discography (v0.56.49)". Material serves revision 6.4.10.11, and
+  its `material.min.js?r=6.4.10.11` holds `deezer:{svg:"deezer"},discography:{svg:"album-multi"}`.
+  `["material-skin","plugin-actions"]` holds our `artist` action as `{svg: album-multi, title: Discography}`, with
+  `lmsbrowse.type` artist and no `icon`, so the 0.56.49 module is the one running. Simon checked the screens:
+  the step-2 search entry and the one logo.
+- **Source:** Simon, on Material test build 6.4.10.11 giving the "Search on…" entry Material's `album-multi` (stack of
+  albums): *"can we change discography icon for the plugin match to the stack icon, dont want to show two different
+  logos for the plugin"*; *"yes"* to 0.56.49 (asked with the three places listed).
+- **Change:**
+  - **Logo files:** `DiscographyIcon.svg` is now Material's `album-multi.svg` path, byte for byte (24x24, `fill="#000"`,
+    a comment credits LMS-Material, MIT). The single vinyl disc is gone. `DiscographyIcon.png` is re-rendered 256x256
+    black on opaque white like the old one (AppKit via `osascript -l JavaScript`; no rasteriser is installed).
+    `DiscographyIcon_svg.png` is a byte-identical copy. install.xml's `<icon>` is unchanged.
+  - **Artist-menu action:** `Plugin::_materialAction` sends `svg => 'album-multi'` instead of the font icon `album`
+    (one disc), with no `icon` key, because navdrawer.js / iframe-dialog.js test `icon` before `svg`.
+  - **Where the stack now shows:** Material's Apps list and every DSC row using `ICON`, the "Discography" entry on
+    artist menus (registered once per run, so it changes at the restart), and Material's "Search on…" entry.
+  - **Plugin-manager list:** its icon comes from repo.xml's `<icon>` URL on GitHub's `dev` branch, so it keeps the old
+    disc until the new PNG is on `dev`.
+- **Tests:** `t_material_actions.pl` 42 (svg is `album-multi`; no `icon` beside it); 2 of 2 mutants (old icon,
+  both keys). 67 suites green; syntax_check clean; zip == tree (38 files) and carries all three new files.
+- **Live check after install (then a full refresh of Material on the device):** the Apps entry, the artist-menu
+  "Discography" entry and "Search on…" all show the same stack.
+
+### 0.56.48 (2026-10-03) — fixes 0.56.47's regression: every source opened from an LMS search came back Empty — INSTALLED + VERIFIED LIVE 2026-10-03 (sha d51057eb)
+- **Source:** 0.56.47's live check (below), first install. The regression is on Simon's rig while 0.56.47 runs:
+  Material's own search lists Qobuz and TIDAL through these same items.
+- **Cause (A3 `EVERY SOURCE OPENED FROM A SEARCH CAME BACK EMPTY`):** XMLBrowser creates a list's session id only
+  when no top-level item has a ref url. 0.56.47's entry had `url => \&_globalSearchWalk`, so the whole search list
+  lost its id prefix and every walk into it misread the words as a row number.
+- **Change:** `Browse.pm` `globalSearchItem` uses Qobuz's shape: no `url`/`passthrough`/`type` on the entry, which
+  keeps its param-addressed tap (`itemActions`). It has ONE row, "Artists" (`cstring 'ARTISTS'`, LMS's
+  `html/images/artists.png`), carrying the `_globalSearchWalk` coderef. XMLBrowser applies `itemActions` per item,
+  whatever the item holds (read: XMLBrowser.pm ~1278), so Material's tap still goes straight to the results.
+  CACHE_VERSION 0.56.48.
+- **Tests:** `t_globalsearch.pl` 37 (§1: no ref url on the entry, the XMLBrowser rule itself; one walk row with the
+  coderef). 12 of 12 mutants, including "0.56.47: coderef on the entry" and "walk row loses its coderef". 67 suites
+  green; syntax_check clean; zip == tree (38 files).
+- **Live check after install:** 0.56.47's items 1-5 again, plus:
+  6. The list's ids carry an 8-hex session prefix again, and walking Qobuz's id opens Releases / Artists / Songs /
+     Playlists (the CONTROL that failed on 0.56.47).
+  7. Walking our id opens one "Artists" row, and that row opens the plain results.
+- **Live check RESULTS (2026-10-03 13:12-13:16; plugins page "Discography (v0.56.48)", LMS restarted 13:11:44, no DSC
+  warning; MacBook Pro player): ALL PASS.**
+  1. "Discography" is row 3 of 8 in `globalsearch items menu:1 search:Massive Attack`, in 0.03-0.04 s.
+  2. Its go action is `discography items search:Massive Attack` (menu:1).
+  3. Sent as Material builds it, it gives the search box's page exactly (Top Result `header-strip` + `artist-link`,
+     Artists + 2). A never-searched name proves nothing runs at list time: "Cocteau Twins" listed in 0.04 s, first tap
+     0.63 s (cold), second 0.03 s (cached).
+  4. Not separately re-run: the walk below is the plain-list route.
+  5. "Björk": the list's entry carries `search: "Björk"` intact. The tap found Björk (1.08 s cold). The walk
+     (`c2659d6b_Bj%C3%B6rk.3.0`, raw UTF-8 bytes after `Misc::unescape`) answered from the SAME cache entry in 0.09 s
+     with the same Björk page, so the decoded words matched the tap's exactly.
+  6. Ids are `bd072bc0_Massive%20Attack.N` again. From the list, Qobuz opens Releases / Artists / Songs / Playlists,
+     BBC Sounds opens Search Shows / Episodes / All, and My Music opens Artists / Albums / Works / Songs / Playlists.
+  7. Our id opens one "Artists" row, and `.3.0` opens the plain results, identical to the search box's own answer
+     to a client with no features (Top Result + Massive Attack).
+- **STEP 2: Material test build 6.4.10.11 BUILT 2026-10-03 (Simon: "yes"), INSTALLED with DSC 0.56.49 and WORKS
+  (Simon: *"installed it works"*; HTTP confirmation in the 0.56.49 entry). PR DRAFTED 2026-10-03, NOT submitted:
+  `docs/material-PR-search-source.md` (paste-ready, the one line plus why). Simon: *"i wont put this in at moment
+  though as given hi[m] enough for the time being, Will look at it before launch when everything else is in place."*
+  No fork branch or commit yet. Until it ships, only a Material test build shows the entry; stock Material leaves
+  it out.** One line in
+  `search-field.js` SEARCH_OTHER: `"discography":{svg:"album-multi"},` after deezer (the icon is Material's bundled
+  stack of albums, which DSC uses for Compilations; `release-album` is the alternative). Built with
+  `mkrel.py 6.4.10.11 --nocheck` on a `git archive` of upstream/master 520b19c26 in scratchpad `matbuild11`, so
+  Simon's checkout and `public.xml` are untouched and NOTHING is committed in the fork. Zip
+  `/Users/simona/Documents/GitHub/lms-material/lms-material-6.4.10.11.zip`, sha1 8c282e96, 447 files;
+  `material.min.js` holds `discography:{svg:"album-multi"}`. The base carries #1278 as merged (same code as
+  6.4.10.10's fork commit) plus 4 small upstream changes since: AudioMuse mixer support and a fix for its mix
+  lists, a French translation, dialog re-positioning limited to non-mobile. Material gives our entry a fallback
+  id from its position (browse-resp.js, no `item_id` in its go action), and a tap builds `discography items
+  search:<words> menu:1` plus `tags`/`features:hi`, which is check 3 above.
+  **Check after install (then a FULL refresh of Material on the device):** in Material's search, "Search on…" lists
+  Discography beside Qobuz/TIDAL as you type; it opens DSC's results page; Top Result opens the artist page;
+  Qobuz/TIDAL under "Search on…" still open. Then, if Simon likes it, a PR to Craig (branch off upstream/master,
+  the same line).
+
+### 0.56.47 (2026-10-03) — TEST BUILD: a "Discography" entry in LMS's own search — INSTALLED 2026-10-03 13:03; live check FOUND A REGRESSION (every source opened from an LMS search came back Empty), fixed in 0.56.48 (sha 0bcca876)
+- **Source:** Simon asked whether DSC's search could show results below the box as you type, the way Material's
+  library search does. Answered first: not from a plugin. Material sends nothing from a plugin's search box until
+  Enter (`text-field` has a `debounce` prop, and no caller passes it: browse-page.js:407,
+  player-settings-plugin.js:42), and it opens a plugin's answer as a new page. Even with Material's help it would be
+  costly: measured on the rig, DSC searches took 0.9 s for "Portishead", 3.4 s for "Portis" and 4.6 s for "Portish",
+  a fresh multi-service search for every half-word. The nearest thing that works is a "Discography" entry inside
+  Material's own as-you-type search. Simon: *"can we try and build a test of this to see if it would work"*, then
+  *"yes"* to step 1 (this build) and to 0.56.47.
+- **Read in source first (2026-10-03):**
+  - **LMS's hook:** `Slim::Menu::GlobalSearch->registerInfoProvider(name => (func => ...))`, the one Qobuz uses
+    (`qobuzSearch`). `cliQuery` rebuilds the whole menu for every search AND every tap into it, calling each
+    `func($client, {search, menuMode, apps})`. On a walk the words come from the item id via `Misc::unescape`, so
+    UTF-8 arrives as octets. Measured on the rig: `globalsearch items search:Massive Attack` answered in 0.11 s, so
+    the sources are lazy.
+  - **Material's search:** it runs `globalsearch items menu:1 search:<words>` on every 500 ms typing pause, and keeps
+    only sources named in its fixed list (`search-field.js` SEARCH_OTHER: Band's Campout, BBC Sounds, Deezer, Qobuz,
+    Spotty, TIDAL, YouTube, YouTube Music, WEFUNK Radio). So **Material shows this entry only after a one-line
+    Material change** (step 2: Craig's PR, or a hand-patched file on the rig).
+  - **Features on a tap:** Material adds `features:hi` to every command it builds from a plugin row's go action
+    (`browseBuildCommand`: everything except browselibrary, artistinfo and albuminfo). A WALK into a sub-feed is
+    handed only the parent menu's `query`, never the request (`XMLBrowser.pm`: `params => $feed->{'query'}`).
+- **Change:** `Browse.pm`: `globalSearchItem` builds the entry and searches nothing. Its tap is param-addressed
+  `discography items search:<words>`, the search box's route, so Material gets the full results page.
+  `_globalSearchWalk` handles a walking client (plain list, no features). The words are trimmed and decoded from
+  octets unless already characters, and there is no entry for blank words. `Plugin.pm` `initPlugin` registers it
+  under `discography`, inside an eval. CACHE_VERSION 0.56.47.
+- **Tests:** `t_globalsearch.pl` (new, 33) and 10 of 10 mutants (scratchpad `mut/run_mutants.py`). 67 suites green;
+  syntax_check clean; zip == tree (38 files).
+- **Live check after install (step 1, HTTP only, MacBook Pro player):**
+  1. `globalsearch items menu:1 search:Portishead` lists "Discography" and still answers in about 0.1 s, with no DSC
+     search in the log.
+  2. The entry's go action is `discography items search:Portishead`.
+  3. That command, sent as Material builds it (`features:hi`), gives the same results page as the search box.
+  4. A walk (`item_id:` of the entry) gives the plain results list.
+  5. "Björk" arrives intact both ways.
+- **Side effect to judge:** every LMS search screen that lists sources (not Material until step 2) now shows
+  "Discography".
+- **Live check RESULTS (2026-10-03 13:04-13:10; plugins page "Discography (v0.56.47)", LMS restarted 13:03:32, no DSC
+  warning in server.log; MacBook Pro player; `plugin.discography` at WARN, so timings stand in for log lines):**
+  1. PASS. `globalsearch items menu:1 search:Massive Attack` lists "Discography" (row 3 of 8, between BBC Sounds and
+     Artist information) in 0.03-0.05 s.
+  2. PASS. Its go action is `{"player":0,"cmd":["discography","items"],"params":{"menu":1,"search":"Massive Attack"}}`.
+  3. PASS. Sent as Material builds it (`tags:...`, `features:hi`), it took 0.78 s COLD, so the listing in item 1 had
+     searched nothing (the build emptied `kv`). It returns the search box's own page exactly: Top Result
+     (`header-strip`) + Massive Attack (`artist-link`), Artists + 2 rows. The box's own submission straight after
+     answered from cache in 0.04 s.
+  4. **FAIL, AND A REGRESSION.** The list's ids had lost their session prefix (`_Massive%20Attack.N`). A walk by our
+     id opened My Music's "Songs" (44 library tracks), and the CONTROL walks into Qobuz and BBC Sounds came back
+     "Empty". With `ffffffff_` in front, Qobuz opened its 4 rows and ours its results. Cause and fix: 0.56.48.
+  5. Not run (superseded by 0.56.48).
 
 ### 0.56.46 (2026-10-03) — an unplayable release with no cover is not listed (LBF's "artwork only"); carries 0.56.45 — INSTALLED + VERIFIED LIVE 2026-10-03 (sha 29a75d71; search item 8 not checked)
 - **Source:** Simon on 0.56.44, The Rolling Stones' tiles that do not fill in; then *"if no match to a cover I think

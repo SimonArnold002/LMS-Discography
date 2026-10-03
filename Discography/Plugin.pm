@@ -168,6 +168,17 @@ sub initPlugin {
         weight => 10,
     );
 
+    # A "Discography" entry in LMS's own search (TEST BUILD 0.56.47): see
+    # Browse::globalSearchItem. Guarded like the image routes below: an LMS
+    # without the global search menu simply has no entry.
+    eval {
+        require Slim::Menu::GlobalSearch;
+        Slim::Menu::GlobalSearch->registerInfoProvider( discography => (
+            func => \&Plugins::Discography::Browse::globalSearchItem,
+        ) );
+        1;
+    } or $log->warn("could not register the global search entry: $@");
+
     # Our own artist-thumbnail route (0.51.0): `imageproxy/dsc/artist/<name>`.
     # MAI's equivalent ends at one snapshot of Deezer and serves that snapshot's
     # placeholder when it has gone stale; ours runs the same lookup and then
@@ -349,10 +360,15 @@ our $REGISTERED = 0;
 # change is in (test build 6.4.10.10, branch plugin-artist-actions); an older
 # Material reads only the title and the command, so the field is ignored there
 # (ledger A3 `A CUSTOM ACTION PAGE NEVER GETS THE HEADER`).
+# svg => 'album-multi' (0.56.49; Simon, 2026-10-03: "dont want to show two
+# different logos for the plugin"): Material's own stack-of-albums icon, the
+# plugin's logo since 0.56.49 and its "Search on..." entry's icon. Was the font
+# icon 'album' (one disc). No `icon` key: some Material menus test `icon` before
+# `svg` (navdrawer.js, iframe-dialog.js), so a leftover would draw the old disc.
 sub _materialAction {
     return {
         title => 'Discography',
-        icon  => 'album',
+        svg   => 'album-multi',
         lmsbrowse => {
             command => [ 'discography', 'items' ],
             params  => [ 'artist_id:$ARTISTID', 'artist:$TITLE', 'menu:discography', 'features:hi' ],

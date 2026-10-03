@@ -137,7 +137,8 @@ my $LL_ALBUM = { title => 'Add to Listen Later', icon => 'playlist_add',
 # ===================================================================================
 section('1. the action is the one the file used to carry');
 ok($OURS->{title} eq 'Discography', '1: title is "Discography"');
-ok($OURS->{icon} eq 'album', '1: icon is album');
+ok(($OURS->{svg} // '') eq 'album-multi', "1: icon is Material's album-multi svg, the plugin's logo (0.56.49)");
+ok(!exists $OURS->{icon}, '1: no font icon beside it (some menus test icon first)');
 ok(join(',', @{ $OURS->{lmsbrowse}{command} }) eq 'discography,items', '1: lmsbrowse command');
 ok(join('|', @{ $OURS->{lmsbrowse}{params} })
        eq 'artist_id:$ARTISTID|artist:$TITLE|menu:discography|features:hi',
