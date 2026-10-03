@@ -150,8 +150,9 @@ my %SPINE = (
     ],
     # KRAFTWERK, the real cross-type collisions on the mirror (2026-09-19).
     # The 2009 remaster of the 2003 album is SOLD as "Tour de France" (Simon
-    # owns it), and two SINGLES carry that title; a hidden Remix single carries
-    # a single's English alias; two SINGLES share "Trans Europe Express".
+    # owns it), and two SINGLES carry that title; a Remix single (hidden until
+    # 0.56.45, listed since) carries a single's English alias; two SINGLES
+    # share "Trans Europe Express".
     $KRAFTX => [
         { id => 'rg-tdfs', title => 'Tour de France Soundtracks', 'first-release-date' => '2003',
           'primary-type' => 'Album', aliases => [ { name => 'Tour de France' } ] },
@@ -424,7 +425,7 @@ ok(!matches($byId{'rg-mensch'}, 'The Man-Machine Recreated'),
     ok(!scalar(grep { $_ eq 'Tour de France' } @{ $rg{'rg-tdfs'}{aliases} || [] }),
        'an alias another group carries is dropped even when that group is a lower-ranked SINGLE');
     ok(!scalar(grep { $_ eq 'Radioactivity' } @{ $rg{'rg-radsg'}{aliases} || [] }),
-       '... and even when that group is a hidden Remix (its releases must not route here)');
+       '... and even when that group is a Remix single (its releases must not route here)');
     ok(!scalar(grep { $_ eq 'Trans Europe Express' } @{ $rg{'rg-tees'}{aliases} || [] }),
        '... and, as ever, when it is the same rank');
 }

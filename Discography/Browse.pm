@@ -37,7 +37,7 @@ my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.42';
+use constant CACHE_VERSION => '0.56.46';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -104,14 +104,30 @@ use constant POOL_WAIT_MAX => 20;
 # (Calum Scott, James Arthur); TIDAL's own watchdog is SVC_TIMEOUT, 20 s.
 use constant POOL_WAIT_SHOWN => 6;
 
-# Secondary types NEVER shown (variant noise, not discography entries). Live
-# is deliberately NOT here — it's its own selectable section now.
-my %HIDE_SECONDARY = map { $_ => 1 } ('Remix', 'DJ-mix');
+# What a page NEVER lists (0.56.45; Simon, 2026-10-03: "only interested in the
+# true canonical catalogs of albums/singles not every recording made", "remixes
+# I dont mind including ... But broadcast and bootlegs and DJ mixes can go",
+# and interviews and spoken word with them). By secondary type: DJ mixes,
+# interviews, spoken word; by primary type: broadcasts. Bootleg-only groups go
+# by the official map. Remix and Live ARE listed (Live is its own section).
+my %HIDE_SECONDARY = map { $_ => 1 } ('DJ-mix', 'Interview', 'Spokenword');
+my %HIDE_PRIMARY   = map { $_ => 1 } ('Broadcast');
+
+# The one question every skip asks (the list, the rivals, the id placement, the
+# edition titles, "Also in your library"), so they never disagree on what is
+# hidden: an owned copy of a hidden group is claimed by no tile and lands in
+# "Also in your library".
+sub _hiddenType {
+    my ($rg) = @_;
+    return 1 if $HIDE_PRIMARY{ $rg->{type} // '' };
+    return (grep { $HIDE_SECONDARY{$_} } @{ $rg->{secondary} || [] }) ? 1 : 0;
+}
 
 # Section order for the grouped view (fixed, independent of the date sort).
 # MB primary types map: Album->ALBUMS, EP->EPS, Single->SINGLES; a secondary
-# "Compilation" or "Live" wins over the primary; Broadcast/Other/untyped ->
-# OTHER. Which sections actually show is the show_types pref (CSV of keys).
+# "Compilation" or "Live" wins over the primary; Other/untyped -> OTHER (a
+# Broadcast never reaches it, _hiddenType). Which sections actually show is the
+# show_types pref (CSV of keys).
 # Icons are Material's OWN release-type set, referenced via the MTL_svg_<name>
 # image-name convention (icon-mapping.js maps it to the named built-in svg;
 # the placeholder .png only exists so non-Material skins don't 404).
@@ -138,18 +154,33 @@ sub _groupOf {
     return 'OTHER';
 }
 
-# A release's type icon, the one its section header shows (0.56.26: a tile with
-# no cover the server holds shows it, see _caaHeld).
+# A release's type icon, the one its section header shows (0.56.26): a tile
+# whose archive cover does not exist, was given up or just failed shows it
+# (_releaseItem, Covers::tileImage).
 my %GROUP_ICON = map { $_->[0] => $_->[2] } @GROUP_ORDER;
 sub _typeIcon {
     my ($rg) = @_;
     return IMG_BASE . 'dsc_MTL_svg_' . $GROUP_ICON{ _groupOf($rg) } . '.png';
 }
 
+# 1 when ListenBrainz says the archive has no front cover for this group
+# ($flags from API::peekCoverFlags: 0 where `caa_id` is null). No flags, or a
+# group they do not list, is a maybe and answers 0, never a no. The list drops
+# an unplayable group with no cover (0.56.46); a tile still shown with none
+# gets its type icon.
+sub _noCover {
+    my ($flags, $mbid) = @_;
+    my $id = lc($mbid // '');
+    return ($flags && defined $flags->{$id} && !$flags->{$id}) ? 1 : 0;
+}
+
 # Release-groups grouped by the MATCHER's normalised title: the rivals that will
 # all title-match the same streaming candidate. Only groups that can actually be
-# rendered take part — a bootleg or a Remix/DJ-mix group must never win a
-# candidate away from the real album, which would then show nothing.
+# rendered take part — a bootleg or a never-listed type (_hiddenType) must never
+# win a candidate away from the real album, which would then show nothing. A
+# Remix group IS listed (0.56.45) and competes like any other: the plain group
+# sorts first (same type, earlier date) and a candidate dated in the remix's
+# year goes to the remix (_rivalOwner's year match).
 #
 # Order IS the ownership order (Sources::_rivalOwner takes rivals->[0] as the
 # default winner) and must be deterministic across rebuilds:
@@ -191,11 +222,11 @@ sub _rivalsByTitle {
 
     my %by;
     for my $rg (@$rgs) {
-        next if grep { $HIDE_SECONDARY{$_} } @{ $rg->{secondary} };
+        next if _hiddenType($rg);
         my $official = $officialMap ? $officialMap->{ $rg->{mbid} } : undef;
         next if defined $official && !$official;          # bootleg: can't own anything
         # AND NOT A GROUP THE USER HAS HIDDEN (0.46.8). This list already
-        # excludes what cannot be rendered — bootlegs, Remix/DJ-mix — for
+        # excludes what cannot be rendered — bootlegs, the never-listed types — for
         # exactly one reason: an invisible group must not win a candidate the
         # visible album would then never show. The user's own type filter was
         # missed, so with Singles hidden the single still claimed the album's
@@ -229,7 +260,7 @@ sub _rivalsByTitle {
 }
 
 # { rg-mbid => 1 } for the groups a local copy's MusicBrainz id may place it in
-# (Sources::_idGroup): every group except the hidden Remix/DJ-mix ones — the
+# (Sources::_idGroup): every group except the never-listed ones (_hiddenType) — the
 # same pool claimedLocalIds claims across, so a tile and "Also in your library"
 # never disagree about where an id-tagged copy belongs.
 sub _idGroups {
@@ -237,7 +268,7 @@ sub _idGroups {
     my %g;
     for my $rg (@{ $rgs || [] }) {
         next unless $rg->{mbid};
-        next if grep { $HIDE_SECONDARY{$_} } @{ $rg->{secondary} || [] };
+        next if _hiddenType($rg);
         $g{ $rg->{mbid} } = 1;
     }
     return \%g;
@@ -268,8 +299,10 @@ sub _unplacedReleases {
 # titled like the debut album. ONE exception, safe only because of the size
 # gate in Sources::matchesFor: when every group it clashes with is a plain
 # (visible) SINGLE, the title is kept for a non-single group but marked
-# album-only, so only an album-sized copy may use it. A clash with a hidden
-# Remix group drops it (that group's releases must not route here).
+# album-only, so only an album-sized copy may use it. A clash with a
+# never-listed group (_hiddenType: a DJ mix, an interview, a broadcast) drops
+# it (that group's releases must not route here). A Remix single is a plain
+# visible single since 0.56.45, so the album keeps the title album-only.
 sub _editionTitles {
     my ($rgs, $edMap) = @_;
     return {} unless $edMap && ref $edMap eq 'HASH';
@@ -291,8 +324,7 @@ sub _editionTitles {
                 push @{ $out{ $rg->{mbid} } }, [ $n, $raw, 0 ];
             }
             elsif (($rg->{type} // '') ne 'Single'
-                   && !grep { ($_->{type} // '') ne 'Single'
-                              || grep { $HIDE_SECONDARY{$_} } @{ $_->{secondary} || [] } } @others) {
+                   && !grep { ($_->{type} // '') ne 'Single' || _hiddenType($_) } @others) {
                 push @{ $out{ $rg->{mbid} } }, [ $n, $raw, 1 ];
             }
         }
@@ -902,8 +934,9 @@ sub _cid { my ($client) = @_; return $client ? $client->id : '_none' }
 sub topLevel {
     my ($client, $callback, $args) = @_;
 
-    # Somebody is looking: the archive cover fetch (Covers.pm) waits, then runs
-    # at its browsing width (0.56.27).
+    # Somebody is looking: the archive covers not on screen (Covers.pm) wait,
+    # then run at the browsing width (0.56.27; covers on screen do not wait,
+    # 0.56.44).
     Plugins::Discography::Covers::noteBrowse();
 
     my $params   = ref $args->{params} eq 'HASH' ? $args->{params} : {};
@@ -2375,6 +2408,11 @@ sub _buildList {
     # a present map was never classified — fail open, like undef.
     my $officialMap = Plugins::Discography::API->peekOfficial($mbid);
 
+    # Which groups the archive has a cover for, once per page (API::peekCoverFlags):
+    # read before the release loop, which drops an unplayable group with none
+    # (_noCover), and handed to every tile after it.
+    my $coverFlags = Plugins::Discography::API->peekCoverFlags($mbid);
+
     # { release-mbid => release-group-mbid }: lets a library album's
     # MUSICBRAINZ_ALBUMID match its tile by identity — the title matcher can't
     # get "The Beatles and Esher Demos" to the White Album. Two sources merged:
@@ -2430,7 +2468,7 @@ sub _buildList {
 
     my @shown;
     for my $rg (@$rgs) {
-        next if grep { $HIDE_SECONDARY{$_} } @{ $rg->{secondary} };
+        next if _hiddenType($rg);
         next unless $show->{ _groupOf($rg) };
         $typeOk++;
 
@@ -2468,9 +2506,14 @@ sub _buildList {
             # streaming was actually RESOLVED (cached) — never on unresolved.
             # Bootleg-only groups never show. Both live in the SAME snapshot so
             # a background resolve can't shift item_ids mid-visit.
+            # A miss shows only with hide_unmatched off AND a cover to show:
+            # one ListenBrainz says the archive has none for is dropped, as
+            # LBF's "artwork only" does (0.56.46; Simon: "if no match to a
+            # cover I think we should hide that release like we do in LBF").
             : ($snap->{ $rg->{mbid} } = $bootleg ? 0
                 : $localOnly ? (@$localSecs ? 1 : 0)
-                : (!$hideUnmatched || @{ $peek->{sections} } || !$peek->{resolved}) ? 1 : 0);
+                : (@{ $peek->{sections} } || !$peek->{resolved}) ? 1
+                : ($hideUnmatched || _noCover($coverFlags, $rg->{mbid})) ? 0 : 1);
         next unless $visible;
 
         push @shown, [ $rg, $localOnly ? $localSecs : $peek->{sections} ];
@@ -2668,8 +2711,10 @@ sub _buildList {
         @optRows,
         @bioRows);
 
-    # Which groups the archive has a cover for, once per page (API::peekCoverFlags).
-    my $coverFlags = Plugins::Discography::API->peekCoverFlags($mbid);
+    # This page's covers go in front of every earlier page's leftovers
+    # (0.56.44; Simon: "a visit to another artist must then pause that and move
+    # to the opened page").
+    Plugins::Discography::Covers::newPage();
     for my $g (_groupOrder($useH)) {
         my ($key, $token, $iconName) = @$g;
         my $rels = $bucket{$key} or next;
@@ -2704,7 +2749,11 @@ sub _buildList {
             my @kids = @$all;
             $hdr->{id}          = 'sect:' . $key;
             $hdr->{itemActions} = _listItemActions($opts, $hdr->{id});
-            $hdr->{url}         = sub { _wantCovers(\@kids); $_[1]->({ items => \@kids }) };
+            $hdr->{url}         = sub {
+                Plugins::Discography::Covers::newPage();   # the strip's own page is in front now
+                _wantCovers(\@kids);
+                $_[1]->({ items => \@kids });
+            };
             $hdr->{passthrough} = [{}];
         }
 
@@ -2716,15 +2765,12 @@ sub _buildList {
 
     # Safety net: library albums under this artist that NO release group
     # claimed (MB gaps, odd editions, matcher misses) — nothing owned may
-    # silently vanish. Claims run across ALL non-hidden-secondary RGs
+    # silently vanish. Claims run across ALL listable RGs (not _hiddenType)
     # (including type-filtered ones, so hiding e.g. Singles doesn't resurface
     # a matched single here). These tiles ARE the playable node (their feed is
     # the album tracklist), no MB detail to drill to.
     if ($prefs->get('show_library_extras')) {
-        my @rgPool = grep {
-            my $rg = $_;
-            !grep { $HIDE_SECONDARY{$_} } @{ $rg->{secondary} };
-        } @$rgs;
+        my @rgPool = grep { !_hiddenType($_) } @$rgs;
         my $claimed = ($local && @$local)
             ? Plugins::Discography::Sources->claimedLocalIds(\@rgPool, $opts->{artist}, $local, $relMap, $editions)
             : {};
@@ -4638,49 +4684,11 @@ sub _extid {
     return defined $id && length $id ? "$pfx:album:$id" : "$pfx:";
 }
 
-# THE ARCHIVE COVER ONLY WHEN THE SERVER ALREADY HOLDS IT (0.56.26; Simon
-# 2026-10-02: build it, and decide later when to fetch the missing covers). A
-# tile no source gives a cover to used to point at the Cover Art Archive, and
-# the image proxy then fetched it from archive.org while the user browsed.
-# Measured on the rig that day: about 3 s a cover with the whole server stalled
-# about 0.65 s each (LBF's "Slow artwork / server freezes": an LMS core HTTPS
-# read blocks the event loop); 13 at once held a status request 11 s; an
-# archive.org 500 held the server 14 s, and a failed cover is never cached, so
-# it was fetched (and stalled) again on every visit. Such a tile now shows its
-# release-type icon unless the proxy's own cache holds the cover, and the cover
-# is fetched in the background after the visit (0.56.27, Covers.pm), so the
-# NEXT visit shows it.
-#
-# THE KEY IS THE PROXY'S, NOT proxiedImage's: Slim::Web::HTTP strips the leading
-# slash and URL-decodes the path before getImage caches under it (pinned live by
-# LBF 1.0.17); the extension is the url's (`.jpg` since 0.56.27, API::caaImage;
-# an extensionless url is proxied as `.png`, proxiedImage). The specs: the unsized request Material 6.4.10 sends for an `icon` row, then the
-# sizes it asks once that is fixed (list 150/300, grid 300/600). A held cover a
-# device asks at ANOTHER size is still fetched once, from a source known to
-# answer. A failed fetch is never cached (`_artworkError` sends no-cache), so a
-# hit is always a real cover. A read costs ~0.05 ms (LBF measured 6,543 reads).
-my @CAA_HELD_SPECS = ('', '_300x300_f', '_150x150_f', '_600x600_f');
-my $proxyCache;
-sub _caaHeld {
-    my ($url) = @_;
-    return 0 unless defined $url && length $url;
-    $proxyCache ||= eval { require Slim::Web::ImageProxy; Slim::Web::ImageProxy::Cache->new() }
-        or return 0;
-    # The extension exactly as proxiedImage picks it (LMS 9.1).
-    my $ext = $url =~ /(\.(?:jpg|jpeg|png|gif))/ ? $1 : '.png';
-    $ext =~ s/jpeg/jpg/;
-    for my $spec (@CAA_HELD_SPECS) {
-        my $hit = eval { $proxyCache->get('imageproxy/' . $url . '/image' . $spec . $ext) };
-        return 1 if $hit;
-    }
-    return 0;
-}
-
 # Want the archive covers of the tiles a page SHOWS (0.56.27). Called with the
 # visible tiles of each section, and with a strip's full list when its header
 # is opened; a tile behind "Show more" is wanted when that page is drawn
-# (Show more rebuilds the list). Wanting only records: Covers fetches at 05:00
-# (0.56.30).
+# (Show more rebuilds the list). Covers queues them behind the tiles a device
+# is already asking for, and keeps them wanted for 05:00 (0.56.44).
 sub _wantCovers {
     my ($tiles) = @_;
     Plugins::Discography::Covers::want($_->{_caaWant})
@@ -4728,22 +4736,25 @@ sub _releaseItem {
         $image = $cover if defined $cover && length $cover;
     }
 
-    # No source cover: the archive's, only if the server holds it (_caaHeld),
-    # else the type icon. Never an archive fetch from browsing (0.56.26); a
-    # tile that shows the icon names its archive url in `_caaWant`, and the
-    # page wants the ones it shows for the 05:00 run (_wantCovers, 0.56.27;
-    # night only since 0.56.30). A private key, like the `_svc` on streaming
-    # rows: XMLBrowser sends none of them to the client. NOT when ListenBrainz
-    # says the archive has no cover for the group ($coverFlags 0, 0.56.30):
-    # the icon is then the final answer and nothing is ever fetched. No flags
-    # (ListenBrainz never answered for this artist) = maybe, as before.
+    # No source cover: the archive's, through our own image route
+    # (Covers::tileImage, 0.56.44; Simon 2026-10-03: they should "load albeit
+    # slowly in a view"). The device's request is held while Covers downloads
+    # the cover, so the tile fills in where it is, and the page wants the ones
+    # it shows (`_caaWant`, _wantCovers) so a page left early still gets them.
+    # A private key, like the `_svc` on streaming rows: XMLBrowser sends none
+    # of them to the client. The type icon when ListenBrainz says the archive
+    # has no cover for the group (_noCover, 0.56.30), or the cover was given up
+    # or failed within the hour (tileImage answers undef). An UNPLAYABLE group
+    # with no cover never gets here (the list drops it, 0.56.46): the icon is
+    # for a tile still shown, while streaming is unresolved. No flags
+    # (ListenBrainz never answered for this artist) = maybe. Nothing here reads
+    # a cache: whether the proxy holds the cover is the proxy's first question.
     my $caaWant;
     unless (defined $image) {
-        my $caa = Plugins::Discography::API->caaImage($rg->{mbid});
-        my $none = $coverFlags && defined $coverFlags->{ lc($rg->{mbid} // '') }
-                   && !$coverFlags->{ lc($rg->{mbid} // '') };
-        if (_caaHeld($caa)) { $image = $caa }
-        else                { $image = _typeIcon($rg); $caaWant = $caa unless $none }
+        my $id   = lc($rg->{mbid} // '');
+        my $tile = _noCover($coverFlags, $id) ? undef : Plugins::Discography::Covers::tileImage($id);
+        if (defined $tile) { $image = $tile; $caaWant = $id }
+        else               { $image = _typeIcon($rg) }
     }
 
     # Service names stay in line2 (Simon, 2026-09-24): the badge (_extid) shows

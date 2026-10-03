@@ -24,8 +24,9 @@
 #
 # The second half of the same finding: rivals included groups the user's TYPE
 # FILTER hides, so with Singles hidden the single still won and NEITHER row
-# appeared. That list already excludes bootlegs and Remix/DJ-mix for precisely
-# this reason; `show_types` had been missed.
+# appeared. That list already excludes bootlegs and the never-listed types
+# (Browse::_hiddenType: DJ-mix, Interview, Spokenword, Broadcast; Remix until
+# 0.56.45) for precisely this reason; `show_types` had been missed.
 #
 # Standalone -- no LMS install needed:  perl tools/t_rivals.pl
 #
@@ -172,8 +173,9 @@ ok(scalar(@{ $r->{$stKey} }) == 1 && $ownerOf->(1980, $r->{$stKey}) eq $SNG_ST->
    'hiding ALBUMS leaves the single owning it — the filter cuts both ways');
 
 # ---------------------------------------------------------------------------
-# 4. BOOTLEGS AND REMIX/DJ-MIX still cannot own a candidate (0.13.0 / 0.16.0),
-#    and an EP sits between album and single.
+# 4. BOOTLEGS AND THE NEVER-LISTED TYPES cannot own a candidate (0.13.0 /
+#    0.16.0 / 0.56.45), a REMIX now can, and an EP sits between album and
+#    single.
 # ---------------------------------------------------------------------------
 my $BOOT = { mbid => 'deadbeef-boot', title => 'Super Trouper', type => 'Album',
              date => '1980-01-01', secondary => [] };
@@ -181,10 +183,31 @@ $r = $rivalsBy->([ $BOOT, $ALB_ST ], { 'deadbeef-boot' => 0, '24944755-aaaa' => 
 ok(scalar(@{ $r->{$stKey} }) == 1 && $r->{$stKey}[0]{mbid} eq $ALB_ST->{mbid},
    'a BOOTLEG is still excluded from the rivals');
 
-my $REMIX = { mbid => 'remix-0001', title => 'Super Trouper', type => 'Album',
-              date => '1980-01-01', secondary => ['Remix'] };
+# A Remix group is LISTED since 0.56.45 (Simon: "remixes I dont mind
+# including"), so it competes like any visible group: the plain album still
+# sorts first (same type, earlier date) and owns an undated or other-year
+# candidate; a candidate from the remix's own year goes to the remix.
+my $REMIX = { mbid => 'remix-0001', title => 'Super Trouper (Remixes)', type => 'Album',
+              date => '1999-06-01', secondary => ['Remix'] };
 $r = rivals_for([ $REMIX, $ALB_ST ]);
-ok(scalar(@{ $r->{$stKey} }) == 1, 'a REMIX group is still excluded');
+ok(scalar(@{ $r->{$stKey} }) == 2, 'a REMIX group now competes (0.56.45: listed, so a rival)');
+ok($ownerOf->(1980, $r->{$stKey}) eq $ALB_ST->{mbid} && $ownerOf->(undef, $r->{$stKey}) eq $ALB_ST->{mbid},
+   '... the plain album still owns its own-year and undated candidates');
+ok($ownerOf->(1999, $r->{$stKey}) eq $REMIX->{mbid}, '... and a candidate from the remix year goes to the remix');
+
+# The never-listed types (Browse::_hiddenType) can never own one, each on its own.
+for my $h ( [ 'DJ-mix',     'Album', ['DJ-mix'] ],
+            [ 'Interview',  'Album', ['Interview'] ],
+            [ 'Spokenword', 'Album', ['Spokenword'] ],
+            [ 'Broadcast',  'Broadcast', [] ],
+            [ 'a Live interview', 'Album', ['Live', 'Interview'] ] ) {
+    my ($what, $type, $sec) = @$h;
+    my $HID = { mbid => 'hidden-0001', title => 'Super Trouper', type => $type,
+                date => '1979-01-01', secondary => $sec };   # EARLIER: would sort first
+    $r = rivals_for([ $HID, $ALB_ST ]);
+    ok(scalar(@{ $r->{$stKey} }) == 1 && $r->{$stKey}[0]{mbid} eq $ALB_ST->{mbid},
+       "a never-listed $what group is excluded from the rivals");
+}
 
 my $EP = { mbid => 'ep-000001', title => 'Super Trouper', type => 'EP',
            date => '1980-01-01', secondary => [] };
@@ -234,6 +257,12 @@ ok(join(',', map { $_->{mbid} } @{ $a->{$stKey} })
         { mbid => 'rg-man',   title => "Die Mensch\x{b7}Maschine",     type => 'Album',  secondary => [] },
         { mbid => 'rg-sgl',   title => 'Some Single',                type => 'Single', secondary => [] },
         { mbid => 'rg-other', title => 'Other Single',               type => 'Single', secondary => [] },
+        # Never listed (Browse::_hiddenType): a DJ-mix SINGLE and an Interview
+        # SINGLE, so only the hidden-type rule (not "not a single") can drop
+        # the titles they clash with.
+        { mbid => 'rg-alb2',  title => 'Second Album',               type => 'Album',  secondary => [] },
+        { mbid => 'rg-djx',   title => 'Club Mix',                   type => 'Single', secondary => ['DJ-mix'] },
+        { mbid => 'rg-ivw',   title => 'In Their Words',             type => 'Single', secondary => ['Interview'] },
     );
     my $ed = $edit ? $edit->(\@rgs, {
         'rg-tdfs'  => [ 'Tour de France Soundtracks', 'Tour de France' ],
@@ -241,6 +270,7 @@ ok(join(',', map { $_->{mbid} } @{ $a->{$stKey} })
         'rg-3cd'   => [ "The B-52's", 'Three Original CDs' ],
         'rg-man'   => [ 'The Man-Machine' ],
         'rg-sgl'   => [ 'Other Single' ],
+        'rg-alb2'  => [ 'Club Mix', 'In Their Words' ],
     }) : {};
     my %by = map { my $g = $_; ($g => { map { $_->[1] => $_ } @{ $ed->{$g} || [] } }) } keys %$ed;
     ok($by{'rg-tdfs'}{'Tour de France'} && $by{'rg-tdfs'}{'Tour de France'}[2],
@@ -248,8 +278,11 @@ ok(join(',', map { $_->{mbid} } @{ $a->{$stKey} })
     ok(!$by{'rg-tdfs'}{'Tour de France Soundtracks'}, '... the group\'s own name is not repeated');
     ok($by{'rg-man'}{'The Man-Machine'} && !$by{'rg-man'}{'The Man-Machine'}[2],
        'an edition title nothing else carries is kept, for any copy');
-    ok(!$by{'rg-rad'}{'Radio-Activity'},
-       'a clash with a HIDDEN Remix group drops it (its releases must not route here)');
+    ok($by{'rg-rad'}{'Radio-Activity'} && $by{'rg-rad'}{'Radio-Activity'}[2],
+       'a clash with a Remix SINGLE keeps it album-only, like any visible single (0.56.45: Remix is listed)');
+    ok(!$by{'rg-alb2'}{'Club Mix'},
+       'a clash with a never-listed DJ-mix single drops it (its releases must not route here)');
+    ok(!$by{'rg-alb2'}{'In Their Words'}, '... and with a never-listed Interview single');
     ok(!$by{'rg-rad'}{'Radioactivity'}, '... and one already an alias is not repeated');
     ok(!$by{'rg-3cd'}{"The B-52's"}, 'a clash with another ALBUM drops it (the B-52\'s box, as §8 of t_alias)');
     ok($by{'rg-3cd'}{'Three Original CDs'}, '... while the box keeps its other titles');
@@ -302,6 +335,21 @@ ok(join(',', map { $_->{mbid} } @{ $a->{$stKey} })
        'control: an unrelated group keeps its own edition title');
     ok(!$by{'rg-gh'}{'Greatest Hits'},
        'control: a group still does not repeat its own name');
+}
+
+# ---------------------------------------------------------------------------
+# 9. THE MUSICBRAINZ-ID PLACEMENT asks the same question (0.56.45): a copy's
+#    id may place it in a plain or a Remix group, never in a never-listed one
+#    (Browse::_hiddenType), or the owned album would sit on a tile nobody sees.
+# ---------------------------------------------------------------------------
+{
+    my $idg = \&Plugins::Discography::Browse::_idGroups;
+    my $g = $idg->([ map { { mbid => "m-$_->[0]", title => $_->[0], type => $_->[1], secondary => $_->[2] } }
+                     [ 'plain', 'Album', [] ],          [ 'remix', 'Single', ['Remix'] ],
+                     [ 'djmix', 'Album', ['DJ-mix'] ],  [ 'interview', 'Album', ['Interview'] ],
+                     [ 'spoken', 'Album', ['Spokenword'] ], [ 'radio', 'Broadcast', [] ] ]);
+    ok($g->{'m-plain'} && $g->{'m-remix'}, "9: a copy's MusicBrainz id may place it in a plain or a remix group");
+    ok(!grep({ $g->{"m-$_"} } qw(djmix interview spoken radio)), '9: ... never in a never-listed one');
 }
 
 print "\n$pass passed, $fail failed\n";

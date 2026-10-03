@@ -56,7 +56,7 @@ my $prefs = preferences('plugin.discography');
 # first module to call DB->store() sets it and later calls are ignored.
 # tools/syntax_check.sh asserts all three agree and match install.xml.
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.42';
+use constant CACHE_VERSION => '0.56.46';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 # The families DB.pm keeps across builds, by their CURRENT key prefix, so rows
 # written under an older key version are retired at open. Taken from the key
@@ -5460,16 +5460,14 @@ sub _officialById {
 }
 
 # CAA cover by release-group MBID — a plain URL; CAA redirects to the front
-# image of the group's representative release. A CAA miss 404s and the UI shows
-# its default art, which is the honest state.
+# image of the group's representative release. A CAA miss 404s.
 #
-# THE `.jpg` IS FOR THE IMAGE PROXY, NOT THE ARCHIVE (0.56.27, LBF's
-# API::coverArtUrl). The archive answers `/front-250` and `/front-250.jpg` alike
-# (probed 2026-10-02 on a release group: same 17,439 bytes, image/jpeg). LMS
-# names the proxied path after the url's extension and defaults to `.png`
-# (proxiedImage), and the proxy then stores every rendition as PNG: LBF measured
-# a 600 px cover at 648,081 B as PNG against 101,100 B as JPEG. The size is
-# rewritten to 1200 by the proxy handler (Covers::proxyHandler) either way.
+# Since 0.56.44 only Covers::_download uses it, at 1200 px, downloading the
+# cover itself (TLS 1.2, Covers.pm's header); tiles point at our own route,
+# whose `.jpg` makes the proxy store JPEG (LBF measured a 600 px cover at
+# 648,081 B as PNG against 101,100 B as JPEG). The archive answers
+# `/front-250` and `/front-250.jpg` alike (probed 2026-10-02: same 17,439
+# bytes, image/jpeg), so the extension here is harmless.
 sub caaImage {
     my ($class, $rgMbid, $size) = @_;
     return CAA_RG_BASE_URL . $rgMbid . '/front-' . ($size || 250) . '.jpg';

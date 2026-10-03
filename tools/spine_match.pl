@@ -63,9 +63,10 @@ my $file = shift || "$FindBin::Bin/../sweep/spines.json";
 die "no such file: $file\n(run tools/spine_fetch.py first)\n" unless -e $file;
 my $data = decode_json(do { local $/; open my $fh, '<', $file or die "$file: $!"; <$fh> });
 
-# The browse list hides these secondary types (%HIDE_SECONDARY), so a match
-# against one is real but invisible -- a different thing from a miss.
-my %HIDE = (Remix => 1, 'DJ-mix' => 1);
+# The browse list never lists these types (Browse::_hiddenType, 0.56.45), so a
+# match against one is real but invisible -- a different thing from a miss.
+my %HIDE         = ('DJ-mix' => 1, Interview => 1, Spokenword => 1);
+my %HIDE_PRIMARY = (Broadcast => 1);
 
 my %tally;
 for my $artist (sort { lc $a cmp lc $b } keys %$data) {
@@ -74,7 +75,7 @@ for my $artist (sort { lc $a cmp lc $b } keys %$data) {
     for my $owned (@{ $d->{albums} || [] }) {
         my (@hit, @via_alias);
         for my $rg (@{ $d->{rgs} }) {
-            my $hidden = grep { $HIDE{$_} } @{ $rg->{sec} || [] };
+            my $hidden = $HIDE_PRIMARY{ $rg->{type} // '' } || grep { $HIDE{$_} } @{ $rg->{sec} || [] };
             my $label  = sprintf('%s [%s%s]%s', $rg->{title}, $rg->{type} // '?',
                                  (@{ $rg->{sec} || [] } ? '/' . join('+', @{ $rg->{sec} }) : ''),
                                  $hidden ? '  <-- HIDDEN by the type filter' : '');

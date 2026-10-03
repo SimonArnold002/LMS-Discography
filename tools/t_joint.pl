@@ -50,6 +50,7 @@ use FindBin;
 our %CONTRIB;    # `artists search:` string -> [ { id, artist } ]
 our %ALBUMS;     # artist_id               -> [ { id, album, year } ]
 our @ALBUMQ;     # every artist_id an `albums` query was run for, in order
+our @CREDITQ;    # every artist_id the credits query (role_id:ALBUMARTIST,BAND) was run for
 
 BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
@@ -79,7 +80,12 @@ BEGIN {
         }
         my ($id) = map { my $x = $_; $x =~ s/^artist_id://; $x }
                    grep { /^artist_id:/ } @$args;
-        push @ALBUMQ, $id;
+        # The credits query (0.56.43, which albums the artist is credited TO)
+        # is logged apart, and answers every album as his: these cases are
+        # about which contributors are asked, not about the credit rule
+        # (t_otheralbum.pl).
+        if (grep { $_ eq 'role_id:ALBUMARTIST,BAND' } @$args) { push @CREDITQ, $id }
+        else                                                 { push @ALBUMQ, $id }
         return bless { albums_loop => $ALBUMS{ $id // '' } || [] }, 'T::Req';
     };
     for my $p (qw(Slim::Utils::Log Slim::Utils::Prefs JSON::XS::VersionOneAndTwo)) {
@@ -117,7 +123,7 @@ sub ok {
 }
 
 sub titles { join '|', map { $_->{_candTitle} // '?' } @{ $_[0] } }
-sub reset_lib { %CONTRIB = (); %ALBUMS = (); @ALBUMQ = () }
+sub reset_lib { %CONTRIB = (); %ALBUMS = (); @ALBUMQ = (); @CREDITQ = () }
 
 # ---------------------------------------------------------------------------
 # 1. THE FIELD CASE — MB has the duo, the library has the two members.
@@ -210,11 +216,13 @@ $out = $S->localAlbums(undef, 'Radiohead');
 ok(scalar(@$out) == 2, 'CONTROL: a plain artist is unaffected');
 ok(scalar(@ALBUMQ) == 1, '... and costs exactly ONE album query');
 
-@ALBUMQ = ();
+@ALBUMQ = (); @CREDITQ = ();
 $out = $S->localAlbums(700, 'Radiohead');
 ok(scalar(@$out) == 2, 'CONTROL: entry by artist_id is unchanged');
 ok(scalar(@ALBUMQ) == 1 && $ALBUMQ[0] == 700,
    '... and asks for that contributor alone, with no name lookup');
+ok(scalar(@CREDITQ) == 1 && $CREDITQ[0] == 700,
+   '... plus ONE credits query, for the same contributor (0.56.43)');
 
 reset_lib();
 ok(scalar(@{ $S->localAlbums(undef, 'Nobody At All') }) == 0,

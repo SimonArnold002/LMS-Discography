@@ -75,7 +75,7 @@ because line numbers rot on the next edit.
 | `localArtistsByMbid` and the attach pass are DSC-only call-site logic | A2 | ``localArtistsByMbid` and the attach pass are` |
 | "Also a member of" is deliberately FORWARD-only | A2 | `"Also a member of" is deliberately` |
 | Duplicate streaming artist entities are NOT folded by name similarity | A2 | `Duplicate streaming artist entities are NOT` |
-| Classical composer/performer credit conflation is PARKED deliberately | A2 | `Classical composer/performer credit` |
+| Classical composer/performer credit conflation is PARKED deliberately (a works-page PLAN exists since 2026-10-02: `docs/classical-plan.md`, not built) | A2 | `Classical composer/performer credit` |
 | The full `_discographyView` rebuild on every list-control tap is deliberately | A2 | `The full `_discographyView` rebuild on every` |
 | The officialness pass is deliberately NOT parallel with the release-group | A2 | `The officialness pass is deliberately NOT` |
 | The proxy name is deliberately NOT lowercased | A2 | `The proxy name is deliberately NOT lowercased` |
@@ -138,10 +138,16 @@ because line numbers rot on the next edit.
 | An act that is not the best-known one of its name gets its biography by its MusicBrainz id (the community API's answer for that mbid, accepted only when it names that mbid and a Wikidata page, read with MAI's Wikipedia reader), never by name; none when there is no such page; similar artists stay hidden (Last.fm, by name) (0.56.22, Muzz; CHECKED LIVE 2026-10-02) | A2 | `A SHARED NAME'S BIOGRAPHY COMES BY ITS MBID` |
 | The home page reads: cover banner, "Find an artist" as a LARGE TITLE (a text row; plain header for clients without headers), the search box, a small grey line naming what a search covers (MusicBrainz + the enabled sources), the About section headed "Discography" (0.56.25; was "About Discography"; its first paragraph Simon's 0.56.31 text). "Works best with" moved to the settings page (0.56.31). The box is never focused on arrival (Material focuses only a first-row box, never on phones/tablets) — KEPT by Simon 2026-10-02 ("leave it"): do not propose moving the box back to row 0 or a Material focus change (0.56.24, Simon; title + caption 0.56.31, his pick) | A2 | `THE SEARCH BOX SITS BETWEEN THE BANNER AND ABOUT` |
 | A first visit WAITS for a cold Qobuz/TIDAL pool whatever `hide_unmatched` says: at most 6 s with it off (`POOL_WAIT_SHOWN`), 20 s with it on (`POOL_WAIT_MAX`); reverses 0.44.8's "with the pref off, nothing waits" (0.56.26, Simon: tiles not playable, no badges, slow covers on a first visit) | A2 | `A FIRST VISIT WAITS FOR QOBUZ AND TIDAL` |
-| A tile with no source cover shows the Cover Art Archive cover ONLY when the server's image cache already holds it, else its release-type icon (and so does its release page) (0.56.26) | A2 | `NO ARCHIVE COVER IS FETCHED WHILE BROWSING` |
-| The missing archive covers are fetched AT 05:00 ONLY with LBF's resizing (`.jpg` url, every size from one 1200 px download, the four sizes in one turn): a page only records what it wants; at most 300 a night, newest first; a failure stays wanted, given up after 3 for 30 days; a group ListenBrainz flags as having no archive cover is never wanted; a helper process outside LMS DECLINED (0.56.30, Simon: *"okay do it"*, *"ignore the helper"*; was after the visit, 0.56.27) | A2 | `ARCHIVE COVERS ARE FETCHED AT 05:00` |
+| A tile with no source cover loads its archive cover IN THE VIEW: it points at our route `imageproxy/dsc/caa/<group>/image.jpg`, the device's request is held while Covers downloads the 1200 px cover over TLS 1.2 and hands the proxy the file; order = the page in front (tiles on screen first, 4 at a time, no grace; then the page in order), then pages left behind, then 05:00; background widths 2 browsing / 8 idle; bounded (400 queued, 1 h, 90 s wait, watchdog); type icon only when ListenBrainz says no cover, given up, or failed within the hour (an UNPLAYABLE one ListenBrainz says has no cover is not listed at all since 0.56.46, A2 `AN UNPLAYABLE RELEASE WITH NO COVER IS NOT LISTED`) (0.56.44; Simon 2026-10-03: *"load albeit slowly in a view"*, *"yes go and build it"*) | A2 | `ARCHIVE COVERS LOAD IN THE VIEW` |
+| ~~A tile with no source cover shows the archive cover ONLY when the server's image cache already holds it, else its type icon (0.56.26)~~ SUPERSEDED by 0.56.44 | A2 | `NO ARCHIVE COVER IS FETCHED WHILE BROWSING` |
+| ~~The missing archive covers are fetched AT 05:00 ONLY (0.56.30)~~ SUPERSEDED by 0.56.44 (05:00 kept as the catch-up; a helper process outside LMS stays DECLINED) | A2 | `ARCHIVE COVERS ARE FETCHED AT 05:00` |
+| An UNPLAYABLE release ListenBrainz says the archive has no cover for is not listed (unmatched shown or not); playable ones, and ones whose streaming is not resolved yet, stay whatever their cover (0.56.46; Simon 2026-10-03: *"if no match to a cover I think we should hide that release like we do in LBF"*) | A2 | `AN UNPLAYABLE RELEASE WITH NO COVER IS NOT LISTED` |
+| A page lists the canonical catalogue: never a DJ mix, an interview, spoken word or a broadcast (nor a bootleg-only group); a REMIX is listed (until 0.56.44 it was hidden). One test, `Browse::_hiddenType`, at all five skips (0.56.45; Simon 2026-10-03: *"only interested in the true canonical catalogs of albums/singles not every recording made"*, *"remixes I dont mind including ... But broadcast and bootlegs and DJ mixes can go"*) | A2 | `WHAT A PAGE LISTS` |
 | Background archive-cover fetching at a gentle pace (2 in flight while browsing) keeps the server responsive | A3 | `AN ARCHIVE FETCH FREEZES THE SERVER WHATEVER THE PACE` |
+| Any archive.org fetch made inside LMS freezes the server (so only the night can fetch) | A3 | `THE FREEZE IS TLS 1.3` |
+| An archive cover that fails under 0.56.44 fails because the download is forced to TLS 1.2 | A3 | `THE ARCHIVE'S OWN 500` |
 | MAI or the community API as a quicker or better cover source for unmatched tiles | A3 | `MAI'S COVERS ARE FOUND BY NAME` |
+| Apple Music artwork (Ben Dodson's Artwork Finder, Apple's iTunes Search API) as a cover source for unmatched tiles | A3 | `APPLE HAS NO COVER THE ARCHIVE LACKS` |
 | Artist rows (search results, same-name, Also a member of, Similar artists) are `type => 'artist-link'` on Material >= 6.4.10.9 with a header client: round images + Material's artist header; pages opened from the artist page inherit the header, the home page included: judged fine by Simon (0.56.29, PR #1276; CHECKED LIVE 2026-10-02) | A2 | `ARTIST ROWS ARE TYPED artist-link` |
 | `type => 'artist'` on our rows (Sven's Qobuz) gives round images and Material's artist header | A3 | `TYPE ARTIST ADDS A PLAY ENTRY` |
 | Material's online-artist header only shows on wide screens | A3 | `ONLINE ARTISTS GET THE HEADER ON PHONES` |
@@ -166,9 +172,13 @@ because line numbers rot on the next edit.
 | The ONE MusicBrainz act of the typed name is listed when no result row opens it (an act on no service and not owned: Jandek), as the Top Result unless something is owned or the typed name opens another act (C1's ELO), then under Artists (0.56.37, Part D step 1; Simon: "Top Result") | A2 | `THE ONE MUSICBRAINZ ACT NO ROW OPENS` |
 | A search that finds NOTHING (no row, no act of the name) lists up to 3 of the closest names MusicBrainz knows (one fuzzy request, about +1 s, only then): under Artists below "No artists found", never the Top Result; picked by edit distance (2, or 1 for 4 letters or fewer, "the" dropped, a swap = 1 edit), then score (0.56.38, Part D step 2; Simon: "okay") | A2 | `NOTHING FOUND: THE CLOSEST NAMES` |
 | An owned track on a VA compilation makes Local only a SINGLE of its title (never an album, EP or compilation named after the song), and only the first same-titled single; that tile says "from <album>". An Appearances row says MusicBrainz's type (Album / Soundtrack, Compilation), from the release lookup's own reply (0.56.39; Simon, Ella Fitzgerald) | A2 | `A TRACK LINKS ITS SINGLE ONCE` |
+| An owned album the artist is only credited ON (someone else's album, a compilation) never claims one of his tiles; it stays under Appearances as today. Credited TO him (album artist or band, incl. a co-credit; or filed under him) matches as before; a MusicBrainz id placing it in the group still matches (0.56.43; Simon, Dean Martin / Nancy Sinatra "Greatest Hits") | A2 | `ONE ALBUM NEVER CLAIMS ANOTHER` |
 | Various Artists / Various Composers / LMS's own name for them / MB's special entities are never one artist: a search for one is one line saying so, nothing asked; their rows are dropped from every search and from the closest names; their page (by name, by a special library tag or mbid) is that line + Search for another artist, nothing asked; the same-name set drops MB's special entities; `getReleaseGroups` answers an empty list for one. "Various Artsts", "VA", "Various" and names that only contain it are NOT covered (0.56.41; Simon: "A short message") | A2 | `NEVER ONE ARTIST: VARIOUS ARTISTS` |
 | A search row whose name has no Latin letter is titled "<name> (<English name>)", the English name being MusicBrainz's PRIMARY locale-en alias (never the first alias), from the search reply or the artist read's cache, no request; display only, a tap opens the real name; such a row drops its "aka"; Latin names (Björk, Kenshi Yonezu) never retitled; an owned untagged row gets none (0.56.42; Simon: "In the title") | A2 | `A NON-LATIN NAME IS TITLED WITH ITS ENGLISH ONE` |
 | `%MB_SPECIAL_ARTIST` kept MB's special entities (Various Artists 89ad4ac3) out of every MusicBrainz name lookup | A3 | `THE SAME-NAME SET KEPT THE SPECIAL ENTITIES` |
+| The search soak's `fewer_matches` (search path one match short of the artist row) means search loses matches | A3 | `THE SOAK'S ARTIST-ROW PAGE IS A FIRST VISIT` |
+| The search soak's falling Local / matched counts mean owned albums dropped off their pages | A3 | `THE SOAK COUNTS ONLY THE FIRST 30 TILES` |
+| A failed Qobuz search reaches us as a failure | A3 | `QOBUZ CACHES A FAILED SEARCH AS AN EMPTY ONE` |
 | MB's artist lookup listing only first-credited groups; omitting an empty `release-groups`; a combined `inc=` returning less; a 50-id `reid:` search being too long | A3 | `MEASURED FOR STAGE 1` |
 | A non-UUID album id tag spoiling a `reid:` batch | A3 | `LMS VALIDATES MB ID TAGS AT SCAN` |
 | Paging the `arid:` search as a complete list; the search carrying group aliases; the artist read's group list as incomplete under 25; the by-id search's URL or release lists being cut short | A3 | `MEASURED FOR STAGE 2` |
@@ -974,6 +984,24 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   Pinned in `t_tracklink.pl` §5, `t_extid.pl` §6, `t_view.pl` §11, `t_extras.pl` part D, `t_rel2rg.pl` §12; 17
   of 19 mutants caught, the 2 left equivalent (rivals arrive sorted compilations last; an owned ALBUM row carries
   no `_fromAlbum`) (scratchpad `mutTrack.py`).
+- **ONE ALBUM NEVER CLAIMS ANOTHER** (0.56.43; `Sources::localAlbums` `_otherArtist`, `matchesFor`'s `$gateArtist`,
+  `claimedLocalIds`' `$gate`; Simon 2026-10-03, on Dean Martin's "Greatest Hits" tile reading Local off Nancy
+  Sinatra's "Greatest Hits", where he sings one duet: *"all that needs to happen is to not try and claim tracks from
+  one album for another. That's it plain and simple. If Dean Martin is credited on a song on a Nancy Sinatra Album
+  we link the song from that album to appearances. If its a compilation album attributed to that artist its that
+  artists albums. If its VA compilation ... we can link tracks to artists singles. We dont need to handle guests any
+  different"*, and *"what we have now works for 99% of appearances and doesnt need changing"*). An owned album the
+  artist is only credited ON (not one of its album artists or its band, and not filed under him) is judged under
+  its OWN album artist, so it claims no tile of his and stays under Appearances, exactly as listed today. Credited
+  TO him = `role_id:ALBUMARTIST,BAND` (asked together: ALBUMARTIST alone makes LMS add ARTIST and returns VA
+  compilations) or the album's contributor id (`tags:S`) is his: so Raising Sand (Alison Krauss holds ALBUMARTIST,
+  shown as Robert Plant) keeps the 2026-07-11 co-credit rule, and his own compilation is his album. A MusicBrainz
+  id placing the copy IN the group still matches (the same album, not another): so a JOINT album MusicBrainz credits
+  to both acts shows on both pages from its id even when the tags name one album artist (Mermaid Avenue on Wilco,
+  Land of Plenty on Ryley Walker; Simon: *"Mermaid Avenue is a joint album should feature under both artists"*). Credits that cannot be read mark
+  nothing. NOT changed: the Appearances split, and the track link (VA compilations' songs -> singles, 0.56.39).
+  One more local DB query per page (`albums ... role_id:ALBUMARTIST,BAND`). Pinned in `t_otheralbum.pl` (23),
+  `t_joint.pl` (+1, the query's cost); 10 of 10 mutants caught (scratchpad `mutOther.py`).
 - **A NON-LATIN NAME IS TITLED WITH ITS ENGLISH ONE** (0.56.42; `Browse::_titleWithEnglish`, `_stampEnglish`,
   `_mbCandidateRow`, `_searchResultRow`; `API::_primaryEnglish`, `getArtistCandidates` and `_fuzzyPick` `en`,
   `_candKey` v8, `_fuzzyKey` v2; Simon 2026-10-02: *"we should look to display the default from MB but with english
@@ -1286,7 +1314,120 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   the 0.56.13 entry). Pinned in `t_chain.pl` §12 (9); mutants: pref-gated again, never awaited, 20 s with the pref
   off, 6 s with it on, timer fixed at 20 s, render not gated, all caught.
 
-- **NO ARCHIVE COVER IS FETCHED WHILE BROWSING** (0.56.26; `Browse::_releaseItem`, `_caaHeld`, `@CAA_HELD_SPECS`,
+- **AN UNPLAYABLE RELEASE WITH NO COVER IS NOT LISTED** (0.56.46, VERIFIED LIVE 2026-10-03; `Browse::_noCover`, the visibility rule in
+  `_buildList`'s release loop). Simon, 2026-10-03, on 0.56.44, The Rolling Stones' tiles that never fill: *"I am
+  still seeing album covers not updating in the view for Rolling Stones it seems some dont refreash in view is this
+  expected"*, then *"if no match to a cover I think we should hide that release like we do in LBF. The MB release
+  should indicate if it has artwork or not on Archive.org?"*. **What the tiles were (measured 2026-10-03, scratchpad
+  `rsviews.py`, the Stones' Albums view, Singles & EPs view and the Singles / EPs / Compilations / Live section
+  pages):** every type icon was a release the archive has NO cover for (HEAD `front-250` from the Mac: 404 for all
+  but one), the one exception a cover archive.org fails to serve (A3 `THE ARCHIVE'S OWN 500`); the archive tiles all
+  loaded (one more archive failure, "Love Is Strong"). **The signal:** MusicBrainz records `cover-art-archive {
+  artwork, front }` per RELEASE; for a GROUP, ListenBrainz's artist list gives `caa_id` (null = no front), which
+  Discography has kept per artist since 0.56.30 (`API::peekCoverFlags`, 30 d) - so no new request. LBF's equivalent
+  is its "artwork only" setting (`foryou_artwork_only` / `all_artwork_only`, on by default: `next if $artwork_only
+  && !coverArtUrl($rel)`). **The rule:** a group with no match (resolved, no Local or streaming section) that
+  ListenBrainz flags as having no cover is not listed, whatever `hide_unmatched` says; with `hide_unmatched` on it
+  was hidden anyway. KEPT: anything playable (its own cover), anything whose streaming is unresolved (it may still
+  match; a no-cover one shows its type icon), and anything ListenBrainz does not list (a maybe is not a no: its
+  tile tries the archive). The flags are now read ONCE before the release loop (were after it); `_releaseItem`'s
+  icon test uses the same `_noCover`. No setting of its own (LBF has one): it rides on "show unmatched". The empty
+  page follows from the rule: an artist left with nothing gets "No releases found" and the usual empty-artist
+  verdict (the same as with `hide_unmatched` on, its four guards unchanged). Pinned: `t_view.pl` §9 (updated) and
+  §13 (8), `t_tilecover.pl` §6 (the read's position); 20 of 20 mutants caught with 0.56.45's (scratchpad
+  `mut5646.py`).
+- **WHAT A PAGE LISTS** (0.56.45, VERIFIED LIVE 2026-10-03 in 0.56.46; `Browse::_hiddenType`, `%HIDE_SECONDARY`, `%HIDE_PRIMARY`). Simon, 2026-10-03,
+  shown The Rolling Stones' "Other releases" with unmatched releases on: *"i think we might need to limit what we
+  show. We have other releases section show up with broadcasts not sure I want to see this type of releases"*, *"only
+  interested in the true canonical catalogs of albums/singles not every recording made"*, then *"remixes I dont mind
+  including as I have some albums by All India roadio that fal under that. But broadcast and bootlegs and DJ mixes
+  can go"*, and asked about interviews and spoken word: hide them too. **The rule:** never listed = secondary type
+  DJ-mix, Interview or Spokenword (a Live interview too: the interview wins), or primary type Broadcast; bootleg-only
+  groups go by the official map as before (`warmOfficial`, unchanged). Listed = everything else, Remix included (it
+  was in `%HIDE_SECONDARY` with DJ-mix from the start, never a decision of Simon's). Demo, Mixtape/Street, Audiobook,
+  Audio drama, Field recording and Other/untyped are untouched (not raised; a rapper's mixtapes are catalogue).
+  **One question, five carriers:** the list loop, `_rivalsByTitle`, `_idGroups`, `_editionTitles`' clash test and
+  the "Also in your library" claim pool all call `_hiddenType`, so a hidden group never wins a candidate, never takes
+  an owned copy by its MusicBrainz id, and its owned copy lands in "Also in your library" (as DJ mixes always did).
+  **Effects:** an owned remix album (alt-J *Reduxer*, Jazzanova *Remixed*, Soft Cell *Non-Stop Ecstatic Dancing*,
+  All India Radio's) gets its own tile instead of "Also in your library"; a remix competes for a same-title
+  candidate like any listed group (the plain group sorts first, same type and earlier date; a candidate from the
+  remix's year goes to the remix, `_rivalOwner`); a Remix SINGLE clashing with an album's edition title now keeps
+  the title album-only (Kraftwerk's "Radio-Activity"), the rule for any listed single. Measured on the mirror's
+  official sets: the Stones lose 31 Broadcasts ("Other releases" 34 -> 3) and 15 Interview/Spokenword albums;
+  remixes add 6 for All India Radio (5 albums, 1 single), 20 for Depeche Mode (17 singles). `tools/spine_match.pl`
+  mirrors the rule for its "HIDDEN" labels. Pinned: `t_view.pl` §12 (18: each type where it lists or nowhere, both
+  views, the library pool), `t_rivals.pl` §4/§7/§9 (rivals, edition clash, id placement); 13 of 13 mutants caught
+  (scratchpad `mut5645.py`, incl. the whole 0.56.44 rule: 21 failures).
+- **ARCHIVE COVERS LOAD IN THE VIEW** (0.56.44; `Covers.pm` rewritten: `tileImage`, `tileHandler`, `newPage`,
+  `want`, `_tick`/`_next`/`_before`/`_sweep`/`_trim`, `_download`, `_landed`/`_failed`, `_warm`, `_saveFile`;
+  `Browse::_releaseItem`, `_buildList`, the strip header's url; the route registered in `Plugin.pm`. Simon
+  2026-10-03: *"I am not happy with how we are back filling the artwork for non playable content. It feels wrong to
+  see all that blank tiles"*, *"they load albeit slowly in a view"*, *"load the quickest material first then look to
+  fill those, whilst not clogging up the server"*, *"when backed out it may load them in the bg like LBF does, but a
+  visit to another artist must then pause that and move to the opened page"*, *"The scheduler on LBF works really
+  well in this regard and this would stop this plugin potentially running out of control"*; then *"yes go and
+  build it"*). Supersedes `NO ARCHIVE COVER IS FETCHED WHILE BROWSING` and `ARCHIVE COVERS ARE FETCHED AT 05:00`
+  below (their LBF resizing, ListenBrainz flags, wanted row and give-up rule carry on). Each part, with its reason:
+  1. **No freeze: Covers downloads, over TLS 1.2.** The freeze was TLS 1.3 (A3 `THE FREEZE IS TLS 1.3`); the image
+     proxy's own fetch takes no socket options, so it never downloads an archive cover now. `SimpleAsyncHTTP` with
+     `options => { SSL_version => 'TLSv1_2' }` (LMS 9.0 and 9.1 pass it to every socket, redirects included),
+     `front-1200.jpg` (`API::caaImage`), the proxy's 30 s timeout, `Accept` as the proxy sends it; a 200 that is not
+     an image is a failure.
+  2. **Our own route, so the tile fills in where it is.** A tile with no source cover gets
+     `imageproxy/dsc/caa/<group>/image.jpg` (the `dsc/artist/` route's shape); Material sizes it like any path.
+     LMS 9.0+ lets an image handler answer later (`ImageProxy::getImage`: undef, then `$handleProxiedUrl`):
+     `tileHandler` holds the device's request and answers a `file:` url of the saved cover, which the proxy cuts
+     to the size asked and caches, as for a local cover. The pattern `qr/^dsc\/caa\//` is ours alone: Discography
+     no longer registers LBF's `coverartarchive.org` (0.56.27-0.56.43, Tie::RegexpHash keeps one handler per
+     pattern, whichever plugin loaded last), so neither plugin's covers go through the other's code.
+  3. **The order, LBF's scheduler.** The newest page first (`newPage`: `_buildList` once per build, and a strip's
+     own page); within a page, the covers a device is waiting for (oldest request first), then the page's other
+     shown tiles in page order (`want`, from `_wantCovers`); then older pages, newest first; the 05:00 run last
+     (page -1). Page before waiting: a browser need not cancel a page's image requests when the user leaves it,
+     and those must not hold up the page opened since; a request for an older page's cover brings it to the
+     current page (it is on screen now). Running downloads finish.
+  4. **Widths.** Covers on screen: at once, no grace, up to `ON_SCREEN_MAX` 4 (each held request is a browser
+     connection: browsers allow 6 per server). Everything else: after `DRAW_GRACE` 3 s from a Discography
+     request and while no page request is out (`API::_netFgBusy`), at LBF's widths, 2 while browsing, 8 after
+     `BROWSE_QUIET` 20 s.
+  5. **Bounded** (Simon: *"stop this plugin potentially running out of control"*): one download per cover
+     (later requests join it); at most `MAX_JOBS` 400 queued, the oldest page's last covers dropped first, never
+     one a device waits for or one downloading; a background job not reached within `BG_TTL` 1 h dropped (both
+     stay wanted for 05:00); a device waiting `WAIT_MAX` 90 s for its download to START gets the proxy's
+     placeholder (never cached; the download stays queued); a `WATCHDOG` 150 s on every download; at most
+     `SCAN_BUDGET` 25 jobs looked at per turn (a held cover costs four cache reads: LBF's 0.9.197 lesson).
+  6. **The sizes, LBF's resizing.** After a download, the four sizes the proxy is asked for (unsized, 150, 300,
+     600) are cut from the file into the proxy's cache (`Slim::Utils::ImageResizer->resize($file, $key, $spec,
+     $cb, $proxyCache)`, the call `_resizeFromFile` makes) under the proxy's own keys
+     (`imageproxy/dsc/caa/<group>/image<spec>.jpg`, the spec as `Slim::Web::Graphics` reads it from that name),
+     one per turn, skipping sizes held; so a cover fetched in the background shows on the next visit with no
+     second download. JPEG throughout (the route ends `.jpg`).
+  7. **The file:** `<cachedir>/DiscographyCovers/<group>.jpg`, written whole then renamed (a resizer daemon
+     holding the old one reads it whole), kept `FILE_TTL` 120 s (other sizes, other devices, no second download),
+     then deleted; `init` deletes leftovers. A background job for a cover whose file is still kept is skipped.
+  8. **Failures.** One retry 2 s later (an archive.org datanode answered a passing 500 the day this was measured);
+     then every device waiting gets the placeholder, and the tile shows its type icon for `MISS_SPACING` 1 h
+     (`tileImage`, `tileHandler` and `want` all hold back). A failure counts at most once per hour, so a cover
+     asked on every view cannot use up its three tries in an hour; three counted failures give it up for 30 days
+     (icon, never asked). Not reaching archive.org at all (no address, no route) holds the cover back but counts
+     nothing. Our own folder failing counts nothing.
+  9. **Nothing read while a page is built.** `tileImage` reads no cache (the proxy asks its own cache first, and a
+     held cover never reaches `tileHandler`); `want` only queues and arms a timer. 0.56.26's `_caaHeld` is gone.
+  10. **Kept from before:** a group ListenBrainz flags as having no archive cover shows its type icon and is never
+     wanted (0.56.30, `API::peekCoverFlags`); only the tiles a page SHOWS are wanted (a strip's full list when its
+     header is opened; Show more rebuilds the page); the wanted row (now `dsc:cvwant:v2`, by group) and the
+     05:00 run, newest first, at most 300, now the catch-up for a page left early, a restart, or the queue's
+     limits. A helper process outside LMS stays DECLINED.
+  **Known effects:** a cover fetched by an earlier version under the `coverartarchive.org` keys is fetched once more
+  under the route; a failed cover shows the proxy's placeholder (LMS's radio image, no-cache) in the view it failed
+  in, then its type icon; with LBF installed, LBF's covers are LBF's handler's alone. **Unverified until the live
+  check:** the TLS 1.2 fix on the rig's own OpenSSL (measured on the Mac with LMS's code). Pinned in `t_covers.pl`
+  (rewritten, 109), `t_tilecover.pl` (rewritten, 26), `t_view.pl` §8-9 (78); 52 of 52 mutants caught (scratchpad
+  `mut5644.py`, run on a copy of the repo).
+
+- **NO ARCHIVE COVER IS FETCHED WHILE BROWSING** — **SUPERSEDED by 0.56.44 (`ARCHIVE COVERS LOAD IN THE VIEW`); kept
+  for its measurements.** (0.56.26; `Browse::_releaseItem`, `_caaHeld`, `@CAA_HELD_SPECS`,
   `_typeIcon`, `%GROUP_ICON`; Simon 2026-10-02: *"build it and then we can decide on when to populate the missing
   artwork"*). A tile with no source cover (no match, or a match with no art) used to point at the Cover Art Archive,
   and the image proxy fetched it from archive.org when a device asked. Measured on the rig 2026-10-02 (scratchpad
@@ -1312,7 +1453,8 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   `jpeg` not folded, unguarded read, no url check, one icon for all, icon by primary type only, source cover not
   preferred), all caught; a 14th (the icon's `|| 'release'` fallback) survived as unreachable and was removed.
 
-- **ARCHIVE COVERS ARE FETCHED AT 05:00** (0.56.30; was `ARCHIVE COVERS ARE FETCHED AFTER THE VISIT`, 0.56.27.
+- **ARCHIVE COVERS ARE FETCHED AT 05:00** — **SUPERSEDED by 0.56.44 (`ARCHIVE COVERS LOAD IN THE VIEW`): covers are
+  fetched in the view; 05:00 stays as the catch-up; the helper process stays DECLINED.** (0.56.30; was `ARCHIVE COVERS ARE FETCHED AFTER THE VISIT`, 0.56.27.
   `Covers.pm`: `want`, `_nightTick`, `_tick`, `_launch`, `_paths`, `proxyHandler`, `WANT_KEY`, `MISS_KEY`;
   `Browse::_wantCovers`, `_caaWant`; `API::caaImage`, `peekCoverFlags`; the handler in `Plugin.pm`. Simon 2026-10-02:
   *"follow the same resizing we do in LBF as it works well"*, then *"After the visit"*; then, shown the measured
@@ -1425,6 +1567,8 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 | An unsized proxy request (`.../image.png`, what Material 6.4.10 sends for an `icon` row) for an https cover is redirected to the source, so a tile's Cover Art Archive cover is fetched by the DEVICE and never loads through, or stalls, the server | **WRONG on any server with ListenBrainz Fresh Releases installed** — LBF CLAIMS EVERY coverartarchive.org URL (read 2026-10-02) | LMS 9.1 `ImageProxy::getImage` redirects (301 to the original url) only when NO handler matches the url AND the spec is a bare extension. LBF's `Plugin.pm` registers `registerHandler(match => qr/coverartarchive\.org/)` (rewriting `front-<n>` to `front-1200`), and the match is by url, not by plugin, so Discography's archive covers take it too: the server downloads them from archive.org, at 1200 px (measured: 255-396 KB PNG answers for `front-250` requests). That is why they stalled the server on the rig (A2 `NO ARCHIVE COVER IS FETCHED WHILE BROWSING`). Without LBF the redirect applies to unsized requests only; a SIZED request (`_300x300_f`, the Default skin, Material once its `icon`-row sizing is fixed) is fetched by the server either way. So the redirect is not a fix to rely on. **Since 0.56.27 Discography registers the same handler itself**
 (`Covers::proxyHandler`), so this holds with or without LBF (A2 `ARCHIVE COVERS ARE FETCHED AT 05:00`). |
 | MAI (Last.fm, Discogs) or the community API is a quicker or better source for the covers of unmatched tiles than the Cover Art Archive | **WRONG for these tiles** — MAI'S COVERS ARE FOUND BY NAME (measured 2026-10-02, rig) | **Community API:** no images of its own; `/discography`'s `cover` is an archive.org url for 106 of Sam Smith's 112 groups (the full-size ORIGINAL, `archive.org/download/mbid-.../...jpg`, the host that stalls the server, larger than CAA's thumbnails); `/album/<t>/<a>/cover` the same. **MAI** (`["musicartistinfo","albumcovers","artist:..","album:.."]` on the server, MAI's own keys, nothing decoded): a cover for 15 of the 25 unmatched releases of Sam Smith, James Arthur and Calum Scott (Last.fm 9, Discogs 6, and CAA by release, archive.org again). Through the proxy, a ping every 50 ms: Discogs 0.28-0.47 s and Last.fm 0.06-10.0 s cold, neither stalling the server (worst ping 0.03 s); CAA 2.2-2.6 s, stalling 0.6-0.7 s. **But MAI looks covers up by NAME, and 3 of 3 checked were WRONG:** "Unholy (live version)" -> the studio "Unholy" cover, "Lay Me Down (Live from The BRITs)" -> the studio single's, "SOS (X Factor Performance)" -> a different James Arthur album. Unmatched tiles are mostly live, session and performance releases, exactly where a name lookup lands on the studio record. The archive cover by release-group mbid is the right cover. (Scratchpad `maicovers.py`, `maistall.py`, `covers/`.) |
+| Apple Music artwork (Simon asked 2026-10-03 about Ben Dodson's "Apple Music Artwork Finder", bendodson.com) would fill the tiles that have no source cover | **WRONG** — APPLE HAS NO COVER THE ARCHIVE LACKS (measured 2026-10-03, scratchpad `apple_cov.py`, the same 25 unmatched releases as the MAI test, storefront gb, calls 3.5 s apart, 31 calls, all 200) | **The site** is a front end for its author's PRIVATE backend (`api.bendodson.com/v1/artwork/apple-music/search` and `/lookup`, read in its `apple-music-2026-09-24.js`), not a public API: every install would be calling one person's server. The source behind it is Apple; the public, keyless route is the iTunes Search API. **Coverage:** one artist lookup (`lookup?id=<artistId>&entity=album&limit=200`: Sam Smith 140 albums, James Arthur 107, Calum Scott 91) finds 5 of the 25 by exact title ("Live from the Royal Albert Hall", "Unholy (live version)", "Too Good at Goodbyes (live at the BRITs)", "Apple Music Home Session: James Arthur", "Whistle (versions)"); one search per tile finds 3. **The archive has a front cover for 19 of the 25 (CAA HEAD, same day), including all 5 of Apple's,** so Apple adds none. The 6 the archive lacks (five "X Factor Performance" singles, "Stay With Me (live) Stripped") are not on Apple either. **Wrong by name, 2 of 7 hits:** brackets dropped as the shared `_norm` drops them, "Lay Me Down (Live from The BRITs)" lands on the studio "Lay Me Down - Single" and "The Power of Love (X Factor Performance)" on a different single; one search per tile ranks the studio "Unholy" above the live one. A real match ("You Are the Reason: Live From Abbey Road Studios (acoustic)" = Apple's "You Are the Reason (Acoustic, 1 Mic 1 Take / Live From Abbey Road Studios)") needs fuzzy matching, the wrong-cover risk. Apple also lists other artists of the same name (three Sam Smiths). **Terms:** Apple's Search API page allows its album art only "to promote store content and not for entertainment purposes", placed beside a store badge linking to the purchase page, at about 20 calls a minute. LBF reached the same verdict for its own rows (its `docs/artwork-and-event-loop-rework.md`, "Faster artwork origins": 57% found, 7% wrong album, 9 x 403 in a 60-call burst). The mzstatic CDN itself is fast (LBF: 0.052 s). The missing covers are the archive's, and the problem was how they were fetched (`THE FREEZE IS TLS 1.3`). |
+| An archive cover that fails under 0.56.44 (the radio placeholder, then the type icon) fails because Covers forces the download to TLS 1.2 | **WRONG** — THE ARCHIVE'S OWN 500 (measured 2026-10-03, the 0.56.44 live check) | 4 of 26 archive tiles failed on the rig across Ocean Colour Scene, Sam Smith and The Rolling Stones. Fetched again from the Mac with curl: **3 are archive.org's own error**: coverartarchive.org and archive.org redirect as normal (2 hops), then the datanode answers **500 after ~5.7 s**, for `front-1200` AND `front-500`, under TLS 1.2 AND under default TLS (`636e3c6b` "Live: One for the Road", `abc62fde` "Tumbling Dice / Hot Stuff (live at the El Mocambo 1977)"; `ee9a1175` "Moseley Shoals Live in Birmingham" the same at both sizes). The full-size original (`/front`) is a 500 too for 2 of the 3 and a 200 (58 KB) for `ee9a1175` only. **The 4th has no cover at all:** `bca9a7e0` "Stay With Me (live) Stripped" is a 404 at coverartarchive.org itself (ListenBrainz did not flag it). So the failures are the archive's, the type icon after them is the designed outcome (A2 `ARCHIVE COVERS LOAD IN THE VIEW`), and only falling back to `/front` would rescue one in three of the 500s. |
 | Sending `type => 'artist'` on our artist rows (as Sven's Qobuz does) makes Material draw them round and give the page they open its artist header | **WRONG** — TYPE ARTIST ADDS A PLAY ENTRY (read 2026-10-02, Material upstream master 31514817c + the live 6.4.10.8 bundle) | Material types an app row as an artist ONLY from `metadata.type` (slimserver #1452, stalled, never sent by LMS 9.1.2/9.2) or a favourites link starting `qobuz://artist:` / `tidal://artist:` / `deezer://artist:` / `spotify:artist:` (`browse-resp.js`), and LMS forwards that link only on a PLAYABLE row (`XMLBrowser.pm` `_favoritesParams` inside `if ($isPlayable)`: `play`, `playlist`, or type `audio`/`playlist`). `type` itself is never read for that. Worse, `type=="artist"` puts the row in Material's play block, and `hasPlayableId` accepts our go action's `artist:` parameter (live: Adele's row is `go` `{"artist":"Adele","menu":1}`), so the row gains a Play entry that runs its go action. Sven's rows work because he ALSO sends `favorites_url` + `playlist =>` the same link (his comment says so), and his Qobuz 30.7.3.6 plays `qobuz://artist:` (top tracks); stock Qobuz 3.7.2 turns it into one broken track, TIDAL plays top tracks. Plan: `docs/artist-rows-plan.md`; the Material PR draft uses a NEW type, `artist-link`. |
 | Material shows an online artist's (or online album's) header only on wide screens, `wide>=WIDE_COVER` (650 px) | **WRONG** — ONLINE ARTISTS GET THE HEADER ON PHONES (read 2026-10-02, same sources) | `showDetailedSubtoolbar` also admits `stdItem>=STD_ITEM_MAI` (200), and the online types are 300-302, so the `WIDE_COVER` clause beside it is redundant: an online artist row with an image gets the header from 350 px wide (and 400 px tall), phones included. The header photo has square corners even for library artists; only list, grid and strip images are drawn round (`circular`). |
 | A Discography page opened from Material's own Discography action (the library Artists view: an artist's menu or its page's menu) can be given the artist header by something in OUR response | **WRONG** — A CUSTOM ACTION PAGE NEVER GETS THE HEADER (read 2026-10-02 in the 6.4.10.9 bundle = upstream master b652e87b1; Simon reported the missing header as a bug the same day) | Material opens an `lmsbrowse` custom action's page with `fetchItems(cmd, {cancache:false, id, title})` only: no `image`, no `stdItem` (`browse-page.js`, the `act.custom` branch of the current page's menu and `itemCustomAction`). `showDetailedSubtoolbar` reads `current.stdItem` or `current.altStdItem`, both from the TAPPED item; `altStdItem` is only ever copied from a row's own `stdItem` (`browse-functions.js`), never from a response. So no field, row type or response flag of ours can turn the header on for that page. Only a Material change can (drafted 2026-10-02, test build 6.4.10.10, "Material PR status"): e.g. a custom action that asks for it opens its page with the item's image and `STD_ITEM_ONLINE_ARTIST`, as an `artist-link` row does. Our own rows (search results, Also a member of, Similar artists) are unaffected. **Ways round it, checked the same day (Simon: "we sure we cant work around this issue witout another PR?"):** a `script` custom action firing Material's `browse` bus event types the page from its params (`artist_id:` first = a LIBRARY artist, with Material's own artist actions) but gives it NO image: Material takes a page image only from the tapped row or its own library album lists (`resp.image`), never from a plugin response, so still no header; calling `fetchItems` directly would mean reaching into Material's component tree (breaks on any refactor; not offered); a one-row stop-off page costs a tap (Material never opens a single row by itself). **The one route that works without a PR:** a row in LMS's artist info menu (Material's More on a library artist; Qobuz's "On Qobuz", TIDAL's "On TIDAL" live there): that response keeps each row's `type` (read live on Paul Weller), and Material's `artist-link` typing runs on every SlimBrowse row, so a Discography row of that type with the artist's photo opens our page WITH the header. One tap more than the menu entry (More, then Discography). Offered to Simon. |
@@ -1434,6 +1578,10 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 | `%MB_SPECIAL_ARTIST` keeps MB's special entities (Various Artists 89ad4ac3, [unknown], [traditional]...) out of every MusicBrainz name lookup, so no search lists one and no page disambiguates through one (the comment at its definition; six call sites filter it) | **WRONG** — THE SAME-NAME SET KEPT THE SPECIAL ENTITIES (measured 2026-10-02, live on 0.56.40) | `getArtistCandidates` filtered by name only. Live: a search for "Various Artists" listed 89ad4ac3 ("add compilations to this artist · Other") and asked the community API for its discography (no answer in 30 s); a library Various Artists with a dead tag (159267) walked the set in `_disambiguateByLibrary` and browsed 89ad4ac3's six pages (14.2 s, 12 requests; the 2026-09-30 "15.5 s, 13 requests" was this). Fixed 0.56.41 (A2 `NEVER ONE ARTIST: VARIOUS ARTISTS` item 4). |
 
 | Fetching the archive covers in the background at a gentle pace (2 in flight while browsing, 8 idle, after a 3 s grace) keeps the server responsive (0.56.27's design) | **WRONG** — AN ARCHIVE FETCH FREEZES THE SERVER WHATEVER THE PACE (measured on the rig 2026-10-02, scratchpad `thumbprobe.py`: a page then its thumbnails at the phone's 600 px, 6 at a time, a `version` ping every 50 ms) | **Ocean Colour Scene, first visit:** page 3.1 s, 32 thumbnails in 2.3 s, then the server FROZE 11.4, 4.4, 12.8 and 4.4 s within the next minute (35 s of 60). **Paul Weller, first visit:** page 5.5 s, its 60 thumbnails 13.4 s because the background had started while they loaded (Qobuz covers 1.4 s each against 0.3-0.6 s with the server free), then 32 s frozen in 45 s, worst 3.4 s. **Second visit:** page 0.08 s, 61 thumbnails in 1.65 s, no freeze. The loop is held until archive.org answers, so in-flight width does not spread it: up to ~4 s for a cover it has, 11-13 s for one it fails. Fixed in 0.56.30 (A2 `ARCHIVE COVERS ARE FETCHED AT 05:00`). LMS's image proxy DOES share one download per url (`ImageProxy.pm` `%queue`), so the four sizes were not the cost. |
+| Any fetch from archive.org made inside LMS freezes the server while archive.org works out its answer, so archive covers can only be fetched at night | **WRONG for a TLS 1.2 fetch** — THE FREEZE IS TLS 1.3 (found 2026-10-03: LMS 9.1 source read + reproduced with LMS's own reader; the cause the LBF note left UNVERIFIED) | **The cause:** `Net::HTTPS::NB` (LMS `CPAN/`) does not override `can_read`; `Net::HTTP::NB` (plain http) returns 1 there. `Net::HTTP::Methods::my_readline` calls `can_read`, then `sysread`; when `sysread` gets EAGAIN it `redo`es, and `can_read` is a BLOCKING `select` with the socket timeout. With TLS 1.3 the server sends its session tickets right after the handshake: the socket turns readable, `sysread` consumes the tickets, finds no data and returns EAGAIN, and the loop then waits inside `select` until the HTTP answer arrives. So the freeze lasts as long as the server's think time. archive.org's `/download` and its datanodes think for seconds. **Reproduced** (scratchpad `tlsstall.pl`: LMS 9.1's `Net::HTTPS::NB` + `Net::HTTP::Methods` from GitHub `public/9.1`, a non-blocking select loop, every `read_response_headers` / `read_entity_body` call timed; the time spent inside one call is the time a server running it is frozen). One cover, default TLS (1.3): archive.org's 302 came at 14.2 s, all of it inside ONE call (13.85 s); its datanode's 500 came at 4.6 s, 4.27 s inside one call. The same cover forced to TLS 1.2: the longest call 0.001-0.137 s, and the datanode's 10.5 s answer passed with the loop free. **Ten Ocean Colour Scene covers, alternating order:** worst single call per cover, default 0.011-4.28 s (0.113, 0.417, 0.412, 0.012, 0.375, 0.011, 2.912, 0.105, 4.277, 0.270), TLS 1.2 0.000-0.139 s (the ~0.13 s is one round trip for a TLS record split across packets, bounded by the network, not by archive.org). Plain http does not help: coverartarchive.org and archive.org answer over http, but the datanode 301s to https (traced 2026-10-03). **What it means:** a cover Discography downloads ITSELF, with `SimpleAsyncHTTP`'s `options => { SSL_version => 'TLSv1_2' }` (passed to every socket, redirect hops included: `Async::HTTP::new_socket`, the 3xx path reuses the object), does not freeze the server. The image proxy's own fetch takes no options, so a cover the proxy downloads still does. The same cause is behind LBF's "Slow artwork / server freezes". **VERIFIED LIVE 2026-10-03 on the rig (0.56.44 installed, its own OpenSSL):** a `version` ping every 50 ms while two first visits downloaded 12 archive covers on screen (Ocean Colour Scene, then Sam Smith mid-fill; scratchpad `coverprobe.py`): worst 0.22 s, 1 ping over 0.2 s in 541 (0.56.27: 4-13 s). **Built on in 0.56.44** (A2 `ARCHIVE COVERS LOAD IN THE VIEW`); LBF to follow once it is verified live (Simon 2026-10-03: *"if this works then we should likely look to implement in LBF as well"*). |
+| The full search soak's `fewer_matches` verdict (the search row's page matching fewer releases than the artist row's) means the search path loses matches (13 artists on 0.56.42, none on 0.55.0) | **WRONG** — THE SOAK'S ARTIST-ROW PAGE IS A FIRST VISIT (measured 2026-10-02 on 0.56.42, rig on the mirror, `sweep/mirror-0.56.42`, scratchpad `probe_after.py fresh`) | The soak renders the artist row first, on a cold page (ListenBrainz's list, A2 `THE ARTIST PAGE DRAWS FROM LISTENBRAINZ AND THE COMMUNITY API`), and drills the search row later, a fresh entry with the completed list. Cleared by clearing the cache, then a first visit against a fresh entry: Laufey ("A Matter of Time: The Final Hour" folds into "A Matter of Time"), Daft Punk ("Random Access Memories (10th Anniversary Edition)" folds, and RAM then reads Local/Qobuz), Phosphorescent ("Muchacho de Lujo" folds, a 2026 group arrives), Bobbie Gentry ("Live At The BBC" is tagged with the box set's release id 29dd272a, so the completed page lists it under "The Girl From Chickasaw County" tile, Local (2); MusicBrainz's own "Live at the BBC" group 2ada61c5 holds no releases). Nothing stopped playing. Not a stale mirror: Laufey's ListenBrainz list holds nothing the mirror lacks. Compare a soak's paths only once both are completed lists. |
+| The full search soak's falling Local and matched counts against 0.55.0 (37 artists with fewer Local tiles: ABC 4 -> 1, Dean Martin 2 -> 0, Bob Dylan 1 -> 0) mean owned albums dropped off their pages | **WRONG** — THE SOAK COUNTS ONLY THE FIRST 30 TILES of each section of the Albums view (measured 2026-10-02 on 0.56.42, scratchpad `probe_after.py screen/dump`) | Two deliberate causes: an owned VA track makes only its SINGLE Local (A2 `A TRACK LINKS ITS SINGLE ONCE`, 0.56.39), and the soak never opens the Singles view; longer lists (0.56.7/0.56.8) push owned tiles behind "Show more" (Dean Martin's Compilations 279, Bob Dylan's Albums 45). Every section opened in both views: all 41 flagged artists at or above 0.55.0's Local count (ABC 5 + 3 singles "from <album>", Bob Dylan 8 of 8, Dean Martin 9). Of 20 lower matched counts, 13 are the singles move; the other 7, compared tile by tile with July's whole pages (`sweep/raw/browse`), lost nothing (Selecter 17 -> 22, Barry Adamson 26 -> 28) except The Cranberries' "Stars" single, which July matched to Qobuz's best-of album (a wrong match, now gone). |
+| A failed Qobuz search (timeout, HTTP error) reaches our callback as undef, so DSC can tell "Qobuz failed" from "Qobuz has nothing" | **WRONG** — QOBUZ CACHES A FAILED SEARCH AS AN EMPTY ONE (read 2026-10-03 in the Qobuz plugin 3.7.2 source, the installed version, `API.pm` `search` and `_get`; Perl behaviour tested) | `_get`'s error callback logs `Error: $error` at WARN and calls `$cb->()`. `search`'s callback then tests `$results->{albums}` and `$results->{tracks}->{items}` on the undef result, which AUTOVIVIFIES it into `{tracks => {}}` (`perl -Mstrict -we 'my $r; my $x = 1 if $r->{albums}; my $y = 1 if $r->{tracks}->{items}; print keys %$r'` prints `tracks`), then `$cache->set($key, $results, 300)` stores that TRUE value and hands it on. So for 300 s every `search(lc name, 'artists')` for that text answers "no artists" without asking Qobuz: our page pool AND the search page's Qobuz rows (same key). DSC cannot see the difference: a page with a spine settles it UNRESOLVED (`CAND_ERR_TTL`, 1 h); with no spine `_searchQobuz` falls back to the album search. Seen as Imogen Heap in the 0.56.42 soak (dev log, soak entry, item (a)). An upstream bug (one guard before the cache set); not ours to patch. |
 
 ### B. KNOWN-OPEN AND ACCEPTED — do not re-report as new
 
@@ -1616,7 +1764,7 @@ there is one, is that the owned copy is not MERGED with its MusicBrainz release 
 | Cause | Share | Example | Verdict |
 |---|---|---|---|
 | **Classical** (composer/performer entities) | **17 albums, 15 artists** | New York Philharmonic *The Complete Mahler Symphonies*; *Masters of Music: Berlioz* | **PARKED** with the classical cluster |
-| **Hidden by the type filter** (Remix / DJ-mix secondary) | 3+ confirmed | alt-j *Reduxer*, Jazzanova *Remixed*, Soft Cell *Non-Stop Ecstatic Dancing* | **BY DESIGN.** The RG matches; `%HIDE_SECONDARY` hides it, so the owned copy has no tile to attach to |
+| **Hidden by the type filter** (Remix / DJ-mix secondary) | 3+ confirmed | alt-j *Reduxer*, Jazzanova *Remixed*, Soft Cell *Non-Stop Ecstatic Dancing* | **BY DESIGN.** The RG matches; `%HIDE_SECONDARY` hides it, so the owned copy has no tile to attach to. **CHANGED 0.56.45 for Remix** (A2 `WHAT A PAGE LISTS`): Remix is listed, so these three get their own tiles; DJ-mix (and now Interview, Spokenword, Broadcast) still behaves as described |
 | **MB credits a BAND the artist is in** | sampled | Neko Case *Furnace Room Lullaby* -> MB credits **"Neko Case & Her Boyfriends"** | **BY DESIGN, and fully reachable** — see the correction below |
 | **MB uses the ORIGINAL-LANGUAGE title** | 5 albums | Kraftwerk *Radio-Activity* -> MB **"Radio‐Aktivität"** | **WRONG VERDICT — corrected below. Fixable with one query parameter.** |
 | **Spelling variant** | sampled | Pet Shop Boys *Behavior* (US) -> MB **"Behaviour"** (UK) | Real matcher gap |
@@ -1702,6 +1850,19 @@ in the same session as the outstanding `_norm`/`%FOLD` port debt from 0.44.26, n
 patch. Estimated value is low: roughly a dozen albums that are already visible and playable.
 
 ## PARKED — CLASSICAL NEEDS A DIFFERENT SPINE (Simon, 2026-07-22): evaluate Open Opus or similar
+
+> **2026-10-02: PLAN WRITTEN, not built — `docs/classical-plan.md`** (Simon: *"what I want now is a plan for
+> classical handling ... Open Opus ... lets look over that and MB to come up with a plan"*). The five questions
+> below, answered by measurement: (1) Open Opus gives composer -> works (220 composers, 24,975 works, genre +
+> popular/recommended flags, catalogue numbers in 10,258 titles) but no ids in its download and no MusicBrainz ids;
+> (2) no recordings in Open Opus, but Qobuz's release search by work words returns the work in 16-20 of the top 20
+> (18 works; TIDAL 12-20 of 6), and LMS's own Works data (425 works) gives the owned ones; (3) data CC0, no key, the
+> read API up, the project dormant (code last pushed 2024-02; its `dynapi` host's certificate expired 2026-08-28);
+> (4) coverage is the canon only (3 composers born after 1950) — which is exactly the set whose pages are broken;
+> modern composers (Max Richter 49 tiles, Philip Glass 51) already work; (5) detection by a shipped table of the
+> 220 composers' MusicBrainz ids (name + birth year: 14 of 14 sampled), plus MusicBrainz genres/tags on the artist
+> read for performers. Performer pages are thin from title matching, not missing data (Karajan: 36 of 1,047 groups
+> matched against 191 Qobuz albums).
 
 Simon, after a session of chasing classical bugs one at a time: *"I think we should perhaps look at
 a different approach for classical composers/music in general looking at OpenOpus or similar as they
@@ -2144,7 +2305,211 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
-### 0.56.42 (2026-10-02) — a search row with a non-Latin name is titled with its English one: "宇多田ヒカル (Hikaru Utada)" — BUILT (sha bd10797f), INSTALLED + CHECKED LIVE 2026-10-02 (Material's page title confirmed by Simon), NOT committed
+### 0.56.46 (2026-10-03) — an unplayable release with no cover is not listed (LBF's "artwork only"); carries 0.56.45 — INSTALLED + VERIFIED LIVE 2026-10-03 (sha 29a75d71; search item 8 not checked)
+- **Source:** Simon on 0.56.44, The Rolling Stones' tiles that do not fill in; then *"if no match to a cover I think
+  we should hide that release like we do in LBF"* (A2 `AN UNPLAYABLE RELEASE WITH NO COVER IS NOT LISTED`).
+- **Measured first (rig, 2026-10-03 ~12:00, scratchpad `rsviews.py`, browser-like: 6 at a time, `_300x300_f`, first 60
+  tiles per view):** Singles & EPs view 5 archive tiles, all loaded (<=3.2 s), 32 type icons, archive has a cover for
+  NONE; Singles section 13 of 14 archive loaded (<=4.9 s), "Love Is Strong" the placeholder (archive failure), 21
+  icons, none with a cover; EPs section 27 of 27 (<=5.2 s), 24 icons, none; Compilations 13 of 13 (already held), 16
+  icons, none; Live albums 33 of 33, 9 icons, 8 none + "Tumbling Dice" (A3 `THE ARCHIVE'S OWN 500`). Pings over
+  the run: worst 0.42 s (26 over 0.2 s of 816, during five big section builds). The downloader was alive throughout
+  (a fresh size fetched in 2.3 s at 11:57). Material asks 150/300/600 px (`constants.js` LMS_LIST_IMAGE_SZ /
+  LMS_IMAGE_SZ, grid via `changeImageSizing`): all three pre-cut by `Covers::_warm`, so sizes are not a cause.
+- **Change:** `Browse.pm`: `_noCover($flags, $mbid)`; the release loop's visibility drops a resolved, unmatched
+  group with `_noCover`; `peekCoverFlags` read once BEFORE the loop (moved, not added); `_releaseItem` uses
+  `_noCover`. CACHE_VERSION 0.56.46.
+- **Tests:** `t_view.pl` §9 updated, §13 new (8) -> 103; `t_tilecover.pl` §6 source check (one read, before the
+  loop) -> 26; 20 of 20 mutants (with 0.56.45's 13; `mut5646.py`). 66 suites green; syntax_check clean; zip == tree.
+- **Live check after install** (with 0.56.45's list below, items 1-5):
+  6. The Rolling Stones, show unmatched ON: no type-icon tiles left except a cover that just failed (the archive's
+     500s); the Singles & EPs view and the section pages likewise; section counts drop accordingly.
+  7. Sam Smith / Ocean Colour Scene: unchanged apart from "Stay With Me (live) Stripped" (archive 404) - it stays
+     until ListenBrainz flags it; a release ListenBrainz does not list keeps trying the archive.
+  8. Search: an artist whose page is now empty is dropped from search next time, as with show unmatched off.
+- **Live check RESULTS (2026-10-03; rig restarted 12:10:12 on 0.56.46, plugins page "Discography (v0.56.46)", no
+  Discography warning in server.log; show unmatched ON; browse only on the MacBook Pro player; scratchpad
+  `check5646.py` -> `check5646_run1.txt`, plus the section pages).** Type-icon tiles: **0** on both views of all six
+  artists below; no tile typed Broadcast / Interview / Spokenword / DJ-mix anywhere.
+  1. PASS. The Rolling Stones: Albums 37 -> **28**, Compilations 322 -> **141**, Live albums 83 -> **65**, Other
+     releases 34 -> **1**; Singles & EPs view EPs 131, Singles 206 (official 155 / 304), with 6 remix singles listed
+     (4 on Qobuz, 2 archive covers).
+  2. PASS. All India Radio, Albums section page (59): "A Low High: Ambient Remixes" Local, "Behind The Sky (Red Shadow
+     Landing Remixes)" Local, "The Silent (Ambient Remixes and Soundscapes)" Local/Qobuz, "The Inevitable Remixes"
+     Local/Qobuz, "Free Me" (Album / Remix) Qobuz; the page has no "Also in your library" section any more.
+  3. PASS, with the expectation corrected. Depeche Mode: 13 remix tiles on the Singles & EPs view ("Before We Drown
+     (remixes)", "My Favourite Stranger (remixes)", "Speak to Me (HI-LO remix)" on Qobuz). "Wagging Tongue still
+     matched to its own single" was a WRONG expectation: MusicBrainz has NO plain "Wagging Tongue" single for them
+     (mirror official set: only `28dfb637` "Wagging Tongue (remixes)", Single / Remix, 2023-07-07; ListenBrainz adds two
+     2025 Parralox remixes), so its one tile is that remix group (archive cover, not playable). "Ghosts Again" (Qobuz)
+     and "Ghosts Again (remixes)" are both listed.
+  4. PASS. Kraftwerk: "Radio‐Aktivität" (1975 album) Local; "The Mix" (Album / Remix) now a Qobuz album tile.
+  5./7. PASS. Sam Smith and Ocean Colour Scene: no type icons; Sam Smith's "The Lost Tapes - Remixed" (Album / Remix,
+     Qobuz) is now an album tile. OCS's no-cover compilations (Yesterday Today, The Collection, Anthology, Live
+     Acoustic at the Jam House) are gone.
+  6. PASS (see 1).
+  8. NOT CHECKED (no empty-page artist to hand).
+
+### 0.56.45 (2026-10-03) — a page lists the canonical catalogue: remixes in; DJ mixes, interviews, spoken word, broadcasts out — BUILT (sha dec933e1), not installed; carried by 0.56.46
+- **Source:** Simon during the 0.56.44 live check, on The Rolling Stones with unmatched releases shown (Albums 37,
+  Compilations 322, Live albums 83, Other releases 34): A2 `WHAT A PAGE LISTS` has his words. Asked one question
+  (interviews and spoken word): *"Hide them too"*.
+- **Measured first:** Discography already lists only MusicBrainz's official set (the bootleg map; the page's section
+  counts match `release-group-status=website-default` on the mirror: 929 of the Stones' 1,907 groups). In that set
+  the Stones have 31 Broadcasts, 13 Interviews, 2 Spokenword, 0 DJ-mix; Remix adds 6 for All India Radio, 20 for
+  Depeche Mode (scratchpad `rgtypes.py` + the counts in A2). The archive has no cover for 41 of the Stones' 42
+  icon tiles (mostly these Broadcasts and Interviews).
+- **Change:** `Browse.pm` only: `%HIDE_SECONDARY` = DJ-mix, Interview, Spokenword (Remix out); `%HIDE_PRIMARY` =
+  Broadcast; `_hiddenType($rg)` replaces the five inline `%HIDE_SECONDARY` greps (list, rivals, id groups, edition
+  clash, library pool). Comments that named "Remix/DJ-mix" corrected. `tools/spine_match.pl` mirrors the rule.
+  CACHE_VERSION 0.56.45 (as every build: the `kv` caches are emptied, so release-group lists, streaming pools, the
+  bootleg map, cover flags and the cover want/miss rows are rebuilt on the next visit; the first list comes from
+  ListenBrainz + the community API (`_fastSpine`), and that ListenBrainz answer rewrites the cover flags before the
+  page draws. Only the MusicBrainz ids (artist name -> mbid, release -> group, library contributor) live in the
+  `mbid` table and are kept, DB.pm `_mbidRoute`).
+- **Tests:** `t_view.pl` §12 (+18 -> 95), `t_rivals.pl` §4 (a remix competes and still loses its album's own-year
+  candidate; each hidden type excluded), §7 (Remix single = album-only clash; DJ-mix / Interview singles drop the
+  title), §9 (`_idGroups`) -> 39; `t_alias.pl` labels corrected (the alias prune stays type-blind, unchanged). 13 of
+  13 mutants caught (scratchpad `mut5645.py`). 66 suites green; syntax_check clean; zip == tree.
+- **Live check after install:**
+  1. The Rolling Stones (unmatched shown): "Other releases" has no Broadcast (34 -> about 3); no interview or spoken
+     word album under Albums ("The Rolling Stones Interviews", "WMMR Exclusive ...").
+  2. All India Radio: the remix albums ("A Low High: Ambient Remixes", "The Inevitable Remixes", ...) are tiles,
+     Local where owned, and gone from "Also in your library".
+  3. Depeche Mode, Singles & EPs view: the remix singles listed; "Wagging Tongue" still matched to its own single.
+  4. Kraftwerk: "Radio-Activity" still matches the album (the edition title, album-only).
+  5. Nothing else moves on an artist without these types (Sam Smith, Ocean Colour Scene: same tiles as 0.56.44).
+
+### 0.56.44 (2026-10-03) — archive covers load in the view, over TLS 1.2, LBF's scheduler order — INSTALLED + VERIFIED LIVE 2026-10-03 (sha 7e6c5783; 6 of 7 checks, the folder check needs the server's disk)
+- **Source:** Simon, the morning after 0.56.30's 05:00-only fetch: the blank (type-icon) tiles *"defeat what we are
+  trying to achieve"*; they should *"load albeit slowly in a view"*, LBF-like (*"When I open up a view in LBF it loads
+  them okay and doesnt stall everything else"*), the page's own covers first, the background going on after a
+  back-out and pausing for a new artist. Shown the plan: *"yes go and build it, if this works then we should likely
+  look to implement in LBF as well"*. Asked the same day about Ben Dodson's Apple Music Artwork Finder as a source:
+  measured and rejected (A3 `APPLE HAS NO COVER THE ARCHIVE LACKS`).
+- **Measured first:** the freeze's cause (A3 `THE FREEZE IS TLS 1.3`: LMS 9.1's `Net::HTTPS::NB` + TLS 1.3 tickets;
+  reproduced with LMS's own reader; TLS 1.2 at most 0.14 s per call against 0.4-13.8 s). Read in LMS `public/9.1`
+  (and 9.0): `ImageProxy::getImage` lets a handler answer later and takes `file:` urls; `SimpleAsyncHTTP`'s
+  `options` reach every socket, redirect hops included; `ImageResizer->resize` writes the proxy's cache under the
+  key given, with the spec as `Slim::Web::Graphics` derives it (`image_300x300_f.jpg` -> `300x300_f.jpg`,
+  `image.jpg` -> `.jpg`). Plain http does not help (the archive.org datanode 301s to https).
+- **Change:** A2 `ARCHIVE COVERS LOAD IN THE VIEW` (Covers.pm rewritten; Browse `_releaseItem` / `_buildList` / the
+  strip header; Plugin.pm registers `qr/^dsc\/caa\//` and no longer `coverartarchive.org`; API.pm comment only).
+  Supersedes A2 `NO ARCHIVE COVER IS FETCHED WHILE BROWSING` and `ARCHIVE COVERS ARE FETCHED AT 05:00`. Kv rows now
+  `dsc:cvwant:v2` / `dsc:cvmiss:v2` (keyed by group). CACHE_VERSION 0.56.44.
+- **Tests:** `t_covers.pl` rewritten (109: route, handler, TLS option, file hand-off, widths, page order, the
+  new-page rule, the sizes, failures, bounds, 05:00, clock, wanted row, init, the timer); `t_tilecover.pl` rewritten
+  (26: what a tile shows; no cache read while building); `t_view.pl` §8-9 updated (78). 52 of 52 mutants caught
+  (scratchpad `mut5644.py`, on a COPY of the repo; four survived the first run and each became a test: given up
+  with an old last failure, an upper-case id with letters, the rename seen by an open reader, a kept file not
+  downloaded twice). 66 suites green; syntax_check clean; zip == tree.
+- **Live check after install:**
+  1. A first visit with unmatched tiles (Sam Smith, Ocean Colour Scene): the page draws as fast as before, and its
+     unmatched tiles fill in where they are within seconds, top of the screen first.
+  2. The freeze: a `version` ping every 50 ms while (1) loads (scratchpad `thumbprobe.py` / `stallprobe.py`):
+     nothing over ~0.2 s (0.56.27 measured 4-13 s). This is the TLS 1.2 fix on the rig's own OpenSSL.
+  3. Open a second artist while the first is still filling: the second's covers come first.
+  4. Back out: the first page's remaining covers keep coming (debug `covers: N fetched`), and a revisit shows them
+     at once.
+  5. A cover the archive fails: the placeholder in that view, then the type icon for an hour, no repeat fetch.
+  6. LBF's views unchanged (its covers through its own handler).
+  7. server.log: no "could not register the archive cover handler"; `<cachedir>/DiscographyCovers` empties itself.
+- **Live check RESULTS (2026-10-03, rig restarted 11:01 on 0.56.44, plugins page "Discography (v0.56.44)"; browse only on
+  the MacBook Pro player; scratchpad `coverprobe.py` -> `coverprobe_run2.txt/.json`, `revisit.py`, `pingonly.py`,
+  `lbfcheck.py`).** Simon's `hide_unmatched` was ON at first (no archive tiles anywhere); he switched it off mid-check.
+  1. PASS. Ocean Colour Scene (page from cache, 7 archive tiles): 6 on screen, 4 real covers in 2.5-2.7 s, 2 failed
+     (15.8 s and 32.6 s, the placeholder; A3 `THE ARCHIVE'S OWN 500`). Page draw unchanged (0.04-0.06 s from cache).
+  2. PASS. Pings over phases A+B (541): worst 0.22 s, one over 0.2 s. During the 120 s back-out, 11 pings of 0.20-0.93 s
+     at +99..+122 s: Simon opening The Rolling Stones cold at that moment (log 11:08:39 "release-group list truncated
+     at 600 of 1907", Simon: "I opened Rolling Stones"), i.e. a 1,907-group page build, not the covers. A ping-only run
+     right after (90 s, 11:11:18) while that page's covers filled: worst 0.30 s, one over 0.2 s.
+  3. PASS. Sam Smith opened while Ocean Colour Scene still had a cover queued: its 6 on-screen archive covers in
+     2.75-2.93 s (four, ON_SCREEN_MAX) and 4.95-5.08 s (the next two); all real covers.
+  4. PASS. After the back-out, the revisit: Ocean Colour Scene 5 of 5 archive tiles at once (<0.1 s), incl. the one
+     never on screen; Sam Smith 7 of 7, incl. the background one; The Rolling Stones (Simon's visit) 19 of 19 at once,
+     126 tiles in 2.1 s.
+  5. PASS. The failed tiles were the placeholder in that view and the type icon on the revisit (OCS 2, Sam Smith 1,
+     Stones 1); a request for one inside the hour got the placeholder at once (0.06 s), no fetch.
+  6. PASS. LBF's "W/C 28 September 2026": first 24 tiles all real covers (20 archive), median 0.04 s. Expected: DSC's old
+     handler was a copy of LBF's under the same pattern (LBF CLAUDE.md), so LBF's covers ran the same code before.
+  7. Register warning: none in server.log after the 11:01 start. The DiscographyCovers folder: NOT CHECKED (no shell on
+     the server; HTTP cannot see it).
+  The Stones' 42 type-icon releases: the archive has no cover for 41 (404, mostly Broadcasts and Interviews), so no
+  download was wasted on them; the 42nd is A3 `THE ARCHIVE'S OWN 500`.
+  **Follow-up decided in the same session, BUILT as 0.56.45** (A2 `WHAT A PAGE LISTS`): what a page lists. Simon, seeing the Stones' "Other
+  releases" with unmatched shown: *"only interested in the true canonical catalogs of albums/singles not every
+  recording made"*, then *"remixes I dont mind including as I have some albums by All India roadio that fal under
+  that. But broadcast and bootlegs and DJ mixes can go"*. Today: `%HIDE_SECONDARY` = Remix, DJ-mix (never shown);
+  bootleg-only groups never show (the official map); primary Broadcast goes to "Other releases". So: Remix comes OFF
+  the hidden list, Broadcast is hidden like DJ-mix. Measured on the mirror's official sets: the Stones lose 31
+  Broadcasts; Remix adds 6 for All India Radio (5 albums, 1 single) and 20 for Depeche Mode (17 singles). Interview /
+  Spokenword (13 + 2 for the Stones, filed under Albums) not yet decided.
+
+### 0.56.43 (2026-10-03) — one album never claims another: Nancy Sinatra's "Greatest Hits" no longer reads Local on Dean Martin's "Greatest Hits" — BUILT (sha 299ce6db), not installed
+- **Source:** the 0.56.42 soak follow-up (item (b) below). Simon: *"is Nancy Sinatras album not Deans thats a
+  mistake its an appearance/compilation only for Dean"*; the rule in his words is A2 `ONE ALBUM NEVER CLAIMS
+  ANOTHER`. He stopped a wider design (a flag steering the Appearances split): *"what we have now works for 99% of
+  appearances and doesnt need changing"*; songs on someone else's album link nothing (*"We do not link songs on
+  other peoples albums to singles, its an appearance only VA we do as the album is not attributed to one artist
+  but all"*), which is the code already (`localTracks` takes LMS's compilation flag only).
+- **Measured first (live, 2026-10-03):** `role_id:ALBUMARTIST` alone returns ARTIST too (Dean Martin 4 albums, two
+  VA compilations); `ALBUMARTIST,BAND` 2 (his own); Raising Sand is ALBUMARTIST for both Alison Krauss and Robert
+  Plant; across the 1,119 album artists, 821 "credited on" links (748 VA compilations, 73 someone else's album, 62
+  artists); 29 of them share a title with one of the artist's own MusicBrainz groups (mirror): Dean Martin and Frank
+  Sinatra (Nancy Sinatra's "Greatest Hits", the Rat Pack's "The Collection"), Louis Armstrong ("High Society", album
+  artist Cole Porter), Happy Mondays ("24 Hour Party People", VA, against a single: the size gate already stopped it),
+  Ryley Walker ("Land of Plenty", album artist Bill MacKay), Wilco ("Mermaid Avenue", album artist Billy Bragg).
+  LMS's compilation flag: 109 albums, 104 credited to Various Artists / Composers, 5 to a curator ("Back to Mine: New
+  Order", "Tim Burgess Presents ...") - left as they are (their songs are many artists').
+- **Change:** A2 `ONE ALBUM NEVER CLAIMS ANOTHER` (Sources.pm only). CACHE_VERSION 0.56.43.
+- **Tests:** `t_otheralbum.pl` NEW (23, with three controls: the same copy unmarked is taken, as before), `t_joint.pl`
+  33 -> 34 (the credits query logged apart; one per contributor). 10 of 10 mutants caught (scratchpad
+  `mutOther.py`). 66 suites / 3,299 green; syntax_check clean; zip == tree.
+- **Live check after install:** 1. Dean Martin: "Greatest Hits" (1988) and "The Collection" no longer Local; Nancy
+  Sinatra's "Greatest Hits" and the Rat Pack's albums listed under Appearances; "A Winter Romance" and "The Best of
+  Dean Martin" still Local. 2. Frank Sinatra the same. 3. Raising Sand still Local on Alison Krauss AND Robert
+  Plant. 4. Bobbie Gentry unchanged (11 Local + 2 singles "from"). 5. Louis Armstrong "High Society" (no MusicBrainz
+  id in the files, album artist Cole Porter): under Appearances, the tile no longer Local. 6. **Wilco "Mermaid
+  Avenue" and Ryley Walker "Land of Plenty" STAY Local** (corrected 2026-10-03, after Simon: *"Mermaid Avenue is a
+  joint album should feature under both artists"*): the files carry the MusicBrainz release id of the JOINT group
+  (Mermaid Avenue 0cc29c46 -> 9ae4e54c "Billy Bragg & Wilco", the tile on Wilco's page; Land of Plenty 10ee890a ->
+  92ccc465 "Bill MacKay & Ryley Walker", the 2015 tile; MB also holds an undated duplicate group 09703a1d), and an
+  id match still counts. My first prediction listed both as moving: wrong, made from titles without reading the
+  ids. Simon also retagged Mermaid Avenue the same day; LMS still showed Billy Bragg as its only album artist
+  (no rescan yet), and once scanned with both it matches by name as well.
+
+### (2026-10-02, tooling — no version bump) — full search soak on 0.56.42, rig on the mirror, against 0.55.0: nothing lost
+- **Source (Simon):** *"Okay lets run the sort test use the mirror as not to overload MB"* (the sweep before release,
+  resolver plan §7 step 5; deferred earlier the same day).
+- **How:** the soak tool with the name-only entry and `compare`, which lives ONLY in `stash@{0}` (the 0.56.0/0.57.0
+  tree reverted 2026-09-25; the repo's `tools/search_soak.py` predates it), run from the scratchpad, repo untouched.
+  Compared BY NAME: library ids moved since September (Radiohead 145092 -> 154055), so `compare` (by artist_id) calls
+  every artist new. One worker on the Mac's player (browse only), 2 h 40 min for 1,119 album artists. For the run
+  `mb_base_url` = the mirror and `hide_unmatched` = 0, put back (public, 1) by the wrapper on exit. TIDAL is off in
+  Discography (`svc_priority_tidal` 0), so Local + Qobuz, as in September. Output `sweep/mirror-0.56.42/search-soak/`.
+- **Result:** 1,097 of 1,119 ok (0.55.0: 1,111 of 1,117). As in September: All India Radio & Josh Roydhouse
+  ranked_low, The Art of Noise lost_local, Debussy SQ and HouseCurve drill_error, LSO and Berliner wrong_artist
+  (classical, PARKED). New, all explained: Hallé Orchestra wrong_artist (classical, PARKED); Various Artists no_rows
+  (0.56.41); 13 fewer_matches and 37 Local drops (A3 `THE SOAK'S ARTIST-ROW PAGE IS A FIRST VISIT`, `THE SOAK COUNTS
+  ONLY THE FIRST 30 TILES`); Jack and Muzz, whose artist row now opens the owning act (C2), name-only entry unchanged.
+- **OBSERVED, NOT FIXED:** (a) **Imogen Heap**: no Qobuz on her search row, 1 of 41 matched (0.55.0: 8). Qobuz lists
+  her (its own search, first artist); clearing her cache brought back a 43-album pool and the matches. **Cause
+  (2026-10-03, Simon: "why we get an empty reply"):** a Qobuz request failed while the soak was on her (~21:08; her
+  visit took 19.4 s against ~8, Qobuz's plugin times out at 15 s; its search page showed ONE row where a working
+  "imogen heap" artist search gives 13), and the Qobuz plugin passes a failed search on as an empty result and caches
+  it 5 minutes (A3 `QOBUZ CACHES A FAILED SEARCH AS AN EMPTY ONE`). Our page, with MusicBrainz's list as its spine,
+  then settled Qobuz as UNRESOLVED, kept one hour (`CAND_ERR_TTL`), NOT the day I first reported. The server log of
+  that minute had rotated (log.txt starts 00:00:42), so the Qobuz plugin's own `Error:` line was not read.
+  (b) **Dean Martin's "Greatest Hits"** (1988) tile is Local from Nancy Sinatra's "Greatest Hits" (1990), where he is a
+  track artist: local candidates gate on the browsed artist (`gate LOCAL candidates on the BROWSED artist`), so a
+  guest album claims a same-titled tile. Not new. **FIXED in 0.56.43** (A2 `ONE ALBUM NEVER CLAIMS ANOTHER`). (c) **The Cranberries' "Stars: The Best of 1992–2002"** (not
+  owned; a streaming-only tile, so hidden when `hide_unmatched` is on) misses Qobuz's "Stars: The Best Of The
+  Cranberries 1992-2002", which IS in the pool (Qobuz lists it among the band's 51 releases). **DECLINED 2026-10-03
+  (Simon: "Qobuz is wrong so we dont fix that"):** Qobuz's title is its own bad data, not a matcher gap; do not
+  re-raise it, and do not widen the matcher for an artist's name inside a service title. Not new (unmatched in July).
+- **Side effect:** the run filled the 05:00 cover want list with its own pages (300 a night, newest first).
+
+### 0.56.42 (2026-10-02) — a search row with a non-Latin name is titled with its English one: "宇多田ヒカル (Hikaru Utada)" — BUILT (sha bd10797f), INSTALLED + CHECKED LIVE 2026-10-02 (Material's page title confirmed by Simon), COMMITTED (463e087) + dev PUSHED 2026-10-02
 - **Source (Simon):** *"2. we should look to display the default from MB but with english translation as well if
   thats easy to do."* -> measured (below) -> asked where: **In the title**.
 - **Measured on 0.56.41** (scratchpad `nlsearch.py base0.56.41`, `nlsearch_base0.56.41.json`): 米津玄師, 宇多田ヒカル,
@@ -4178,7 +4543,9 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 - **MERGED 2026-09-27** (#1270, upstream commit 34743899d; upstream ChangeLog 6.4.11 item 5, "Let a plugin show a
   row of tiles on a list page"). 6.4.11 NOT released as of 2026-10-02 (latest tag 6.4.10). The `_useStrips`
   change below is now due before 6.4.11 ships.
-- **Third PR (#1278, custom-action artist pages) OPEN since 2026-10-02:** an
+- **Third PR (#1278, custom-action artist pages) MERGED 2026-10-03** as upstream c731e8a0e (same code as fork
+  d82a637be; only the base moved). 6.4.11 still not released (latest tag 6.4.10, checked 2026-10-03). Opened 2026-10-02:
+  an
   `lmsbrowse` custom action with `"type":"artist"` opens its page as an online artist's (`STD_ITEM_ONLINE_ARTIST` +
   the artist's photo: the item's image, or the current page's on Material's own artist page), so Discography opened
   from the library Artists view gets the header (A3 `A CUSTOM ACTION PAGE NEVER GETS THE HEADER`). Branch
@@ -4189,7 +4556,7 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   0.56.34. INSTALLED on the rig with Discography 0.56.35; Simon: *"that works"*, then *"draft the PR"*. PR text:
   **`docs/material-PR-artist-actions.md`** (paste-ready). COMMITTED d82a637be on `plugin-artist-actions` and
   PUSHED to the fork (SimonArnold002/lms-material) 2026-10-02 (Simon: *"yes"*). **PR #1278 OPENED by Simon 2026-10-02**
-  (https://github.com/CDrummond/lms-material/pull/1278), open. Until it ships, the header from the library Artists
+  (https://github.com/CDrummond/lms-material/pull/1278), merged 2026-10-03. Until 6.4.11 ships, the header from the library Artists
   view needs the 6.4.10.10 test build; Discography sends the field regardless (ignored by older Material).
 - **Second PR (#1276, `artist-link`) MERGED 2026-10-02** as upstream b652e87b1 (identical to fork 3b92941cc); not yet in
   the 6.4.11 ChangeLog. Test build 6.4.10.9 from it (dev log 0.56.29). Discography sends it from 0.56.29.

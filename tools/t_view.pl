@@ -137,7 +137,6 @@ if ($ENV{T_VIEW_STRIPS}) {
     my @wanted;
     no warnings qw(redefine once);
     local *Plugins::Discography::Covers::want = sub { push @wanted, $_[0] };
-    local *Plugins::Discography::API::caaImage = sub { "caa-$_[1]" };
     my $items = build([ map { rg("Album $_", 'Album') } 1 .. 40 ]);
     my ($hdr) = grep { ($_->{id} // '') eq 'sect:ALBUMS' } @$items;
     ok(scalar($hdr && ($hdr->{type} // '') eq 'header-strip'), '8s: the Albums section is a tile strip');
@@ -274,18 +273,21 @@ for my $v (['albums', $tog2], ['singles', $tog]) {
     ok(scalar(!@dup), "7: $v->[0] view: row ids are unique (" . join(',', @dup) . ')');
 }
 
-# 8. The covers a page SHOWS are queued for the fetch after the visit
-#    (0.56.27): the visible tiles of a paged section, not the ones behind
-#    "Show more"; a tile with its own cover queues nothing.
+# 8. The covers a page SHOWS are queued (0.56.27; downloaded by day since
+#    0.56.44): the visible tiles of a paged section, not the ones behind
+#    "Show more"; a tile with its own cover queues nothing. The page takes the
+#    front of the cover queue once, before its sections want anything.
 {
     my @wanted;
+    my $pages = 0;
     no warnings qw(redefine once);
     local *Plugins::Discography::Covers::want = sub { push @wanted, $_[0] };
-    local *Plugins::Discography::API::caaImage = sub { "caa-$_[1]" };
+    local *Plugins::Discography::Covers::newPage = sub { $pages++; return };
     my @many = map { rg("Album $_", 'Album') } 1 .. 35;
     my $cov = { %{ cand('Covered', 'q-cov') }, _cover => 'https://static.qobuz.com/c.jpg' };
     local %MATCH = (%MATCH, 'Covered' => [ { svc => 'Qobuz', items => [ $cov ] } ]);
     my $items = build([ @many, rg('Covered', 'Album') ]);
+    ok(scalar($pages == 1), "8: one build -> one new cover page (got $pages)");
     my %shown = map { ($_->{_caaWant} // '') => 1 } grep { ref $_ eq 'HASH' && $_->{_caaWant} } @$items;
     my $shownWant = grep { ref $_ eq 'HASH' && $_->{_caaWant} } @$items;
     ok(scalar(@wanted == $shownWant && $shownWant >= 29 && $shownWant <= 30),
@@ -293,12 +295,14 @@ for my $v (['albums', $tog2], ['singles', $tog]) {
     ok(scalar(!grep { !$shown{$_} } @wanted), '8: every queued cover is a tile on the page');
     my $coveredMbid = (grep { $_->{title} eq 'Covered' } map { $_->{passthrough}[0]{rg} // () }
                        grep { ref $_->{passthrough} eq 'ARRAY' } @$items)[0];
-    ok(scalar(!$coveredMbid || !grep { $_ eq "caa-$coveredMbid->{mbid}" } @wanted),
+    ok(scalar($coveredMbid && !grep { $_ eq lc $coveredMbid->{mbid} } @wanted),
        '8: the album with its own cover is not queued');
+    ok(scalar(!grep { !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/ } @wanted),
+       '8: what is queued is the group mbid, lower case');
     open my $fh, '<', "$FindBin::Bin/../Discography/Browse.pm" or die "Browse.pm: $!";
     my $src = do { local $/; <$fh> };
-    ok(scalar($src =~ /\$hdr->\{url\}\s*=\s*sub \{ _wantCovers\(\\\@kids\);/),
-       "8: a strip header's own page queues its full list");
+    ok(scalar($src =~ /\$hdr->\{url\}\s*=\s*sub \{\s*Plugins::Discography::Covers::newPage\(\);[^\n]*\n\s*_wantCovers\(\\\@kids\);/),
+       "8: a strip header's own page takes the front of the queue, then queues its full list");
     local $ENV{T_VIEW_STRIPS} = 1;
     my $out = qx{"$^X" "$0" 2>&1};
     ok(scalar($? == 0 && $out =~ /\b3 passed, 0 failed/), '8: as tile strips, only the strip\'s shown tiles are queued');
@@ -306,25 +310,27 @@ for my $v (['albums', $tog2], ['singles', $tog]) {
 }
 
 # 9. ListenBrainz's cover flags reach the tiles (0.56.30): the page asks once
-#    for ITS artist, and a release flagged as having no archive cover keeps its
-#    icon and is not wanted; flagged or unlisted ones are wanted as before.
+#    for ITS artist, and a release flagged as having no archive cover is not
+#    wanted; flagged or unlisted ones are wanted as before. Since 0.56.46 an
+#    UNPLAYABLE one flagged none is not listed at all (section 13).
 {
     my (@wanted, @asked);
     no warnings qw(redefine once);
     local *Plugins::Discography::Covers::want = sub { push @wanted, $_[0] };
-    local *Plugins::Discography::API::caaImage = sub { "caa-$_[1]" };
     my @rgs = map { rg("Flag $_", 'Album') } 1 .. 6;
     my %flags = (lc $rgs[0]{mbid} => 0, lc $rgs[1]{mbid} => 0, lc $rgs[2]{mbid} => 1);
     local *Plugins::Discography::API::peekCoverFlags = sub { push @asked, $_[1]; \%flags };
     my $items = build(\@rgs);
     ok(scalar("@asked" eq 'artist-mbid'), "9: the flags are read once, for the page's own artist (got '@asked')");
     my %w = map { $_ => 1 } @wanted;
-    ok(scalar(!$w{"caa-$rgs[0]{mbid}"} && !$w{"caa-$rgs[1]{mbid}"}), '9: the two flagged with no cover are not wanted');
-    ok(scalar($w{"caa-$rgs[2]{mbid}"} && $w{"caa-$rgs[3]{mbid}"} && $w{"caa-$rgs[5]{mbid}"} && @wanted == 4),
+    ok(scalar(!$w{lc $rgs[0]{mbid}} && !$w{lc $rgs[1]{mbid}}), '9: the two flagged with no cover are not wanted');
+    ok(scalar($w{lc $rgs[2]{mbid}} && $w{lc $rgs[3]{mbid}} && $w{lc $rgs[5]{mbid}} && @wanted == 4),
        '9: the one flagged with a cover and the three unlisted are (' . scalar(@wanted) . ')');
     my ($t0) = grep { ref $_ eq 'HASH' && ($_->{name} // '') eq 'Flag 1' } @$items;
-    ok(scalar($t0 && ($t0->{image} // '') !~ /^caa-/ && !exists $t0->{_caaWant}),
-       '9: a flagged-none tile shows its type icon and names nothing to fetch');
+    my ($t2) = grep { ref $_ eq 'HASH' && ($_->{name} // '') eq 'Flag 3' } @$items;
+    ok(scalar($t2 && ($t2->{image} // '') eq 'imageproxy/dsc/caa/' . lc($rgs[2]{mbid}) . '/image.jpg'),
+       '9: a wanted tile points at our cover route');
+    ok(scalar(!$t0), '9: an unplayable tile flagged none is not listed (0.56.46)');
 }
 
 # 10. OPTIONS COLLAPSED (0.56.32; Simon 2026-10-02: hide the options "like we do
@@ -455,6 +461,123 @@ for my $v (['albums', $tog2], ['singles', $tog]) {
     my %rt = map { ($_->{mbid} => $_->{type}) } @{ $single->{rivals} || [] };
     ok(scalar(($rt{ $g[1]{mbid} } // '') eq 'Single' && ($rt{ $g[0]{mbid} } // '') eq 'Album'),
        "11: the same-title rivals carry each group's type");
+}
+
+# 12. WHAT A PAGE LISTS (0.56.45). Simon, 2026-10-03, on the Stones' "Other
+#     releases": "only interested in the true canonical catalogs of
+#     albums/singles not every recording made", "remixes I dont mind including
+#     ... But broadcast and bootlegs and DJ mixes can go", and interviews and
+#     spoken word with them. Through the REAL _buildList, unmatched shown, so
+#     nothing here hides for being unplayable: each tile is where its type
+#     puts it, or nowhere.
+{
+    my $where = sub {    # tile title -> the section header it sits under
+        my ($items) = @_;
+        my ($sec, %at);
+        for my $it (@$items) {
+            my $id = $it->{id} // '';
+            if ($id =~ /^sect:/) { $sec = $id; next }
+            $at{ $it->{name} } //= $sec if defined $it->{name} && defined $sec;
+        }
+        return \%at;
+    };
+    my @page = (rg('Studio LP', 'Album'), rg('LP Remixed', 'Album', 'Remix'),
+                rg('Remix Comp', 'Album', 'Compilation', 'Remix'), rg('Live Show', 'Album', 'Live'),
+                rg('Odd One', 'Other'), rg('No Type', undef),
+                rg('Mix Tape', 'Album', 'DJ-mix'), rg('Talking', 'Album', 'Interview'),
+                rg('Reading', 'Album', 'Spokenword'), rg('Live Talk', 'Album', 'Live', 'Interview'),
+                rg('Radio Show', 'Broadcast'),
+                rg('Plain Single', 'Single'), rg('Remix Single', 'Single', 'Remix'),
+                rg('Remix EP', 'EP', 'Remix'), rg('Interview Single', 'Single', 'Interview'));
+
+    my $items = build(\@page);
+    if (my $back = row($items, 'act:view:albums')) {   # an earlier section left the Singles view stored
+        $back->{url}->(undef, sub { }, {}, $back->{passthrough}[0]);
+        $items = build(\@page);
+    }
+    my $at = $where->($items);
+    ok(scalar(($at->{'Studio LP'} // '') eq 'sect:ALBUMS'), '12: a studio album is listed under Albums (control)');
+    ok(scalar(($at->{'LP Remixed'} // '') eq 'sect:ALBUMS'), '12: a REMIX album is listed, under Albums');
+    ok(scalar(($at->{'Remix Comp'} // '') eq 'sect:COMPILATIONS'), '12: a remix compilation is listed under Compilations');
+    ok(scalar(($at->{'Live Show'} // '') eq 'sect:LIVE'), '12: a live album is still listed under Live (control)');
+    ok(scalar(($at->{'Odd One'} // '') eq 'sect:OTHER' && ($at->{'No Type'} // '') eq 'sect:OTHER'),
+       '12: an Other or untyped group still lists under Other releases');
+    ok(scalar(!exists $at->{'Mix Tape'}),   '12: a DJ mix is not listed');
+    ok(scalar(!exists $at->{'Talking'}),    '12: an interview is not listed');
+    ok(scalar(!exists $at->{'Reading'}),    '12: spoken word is not listed');
+    ok(scalar(!exists $at->{'Live Talk'}),  '12: a LIVE interview is not listed (the interview wins over Live)');
+    ok(scalar(!exists $at->{'Radio Show'}), '12: a broadcast is not listed');
+
+    my $tog = row($items, 'act:view:singles');
+    ok(scalar($tog), '12: the page has a Singles view to switch to');
+    $tog->{url}->(undef, sub { }, {}, $tog->{passthrough}[0]) if $tog;
+    my $s = build(\@page);
+    my $sat = $where->($s);
+    ok(scalar(($sat->{'Plain Single'} // '') eq 'sect:SINGLES'), '12: a single is listed under Singles (control)');
+    ok(scalar(($sat->{'Remix Single'} // '') eq 'sect:SINGLES'), '12: a REMIX single is listed, under Singles');
+    ok(scalar(($sat->{'Remix EP'} // '') eq 'sect:EPS'), '12: a remix EP is listed under EPs');
+    ok(scalar(!exists $sat->{'Interview Single'}), '12: an interview single is not listed');
+    if (my $back = row($s, 'act:view:albums')) { $back->{url}->(undef, sub { }, {}, $back->{passthrough}[0]) }
+
+    # "Also in your library" claims across the LISTED groups only: an owned copy
+    # of a hidden group is claimed by no tile, so it stays in that section; an
+    # owned remix is claimed by its own tile now.
+    no warnings 'redefine'; no strict 'refs';
+    my @pool;
+    local *{'Plugins::Discography::Sources::claimedLocalIds'} = sub {
+        @pool = map { $_->{title} } @{ $_[1] || [] }; { 77 => 1 } };
+    $B->can('_buildList')->(undef, { %$opts }, 'artist-mbid', \@page, undef,
+                            [ { _albumid => 77, _candTitle => 'Owned', _candArtist => 'Radiohead' } ]);
+    my %in = map { $_ => 1 } @pool;
+    ok(scalar($in{'Studio LP'} && $in{'LP Remixed'} && $in{'Remix Single'}),
+       '12: the library claims run across the remix groups (they are tiles now)');
+    ok(scalar(!grep { $in{$_} } 'Mix Tape', 'Talking', 'Reading', 'Live Talk', 'Radio Show', 'Interview Single'),
+       '12: ... and never across a hidden group (its owned copy stays in "Also in your library")');
+}
+
+# 13. AN UNPLAYABLE RELEASE WITH NO COVER IS NOT LISTED (0.56.46). Simon,
+#     2026-10-03, on the Stones' type-icon tiles: "if no match to a cover I
+#     think we should hide that release like we do in LBF" (LBF's "artwork
+#     only"). ListenBrainz's flag decides (_noCover); what can be played, or
+#     may yet be, stays whatever its cover.
+{
+    no warnings qw(redefine once); no strict 'refs';
+    my @g = (rg('Unmatched NoCover', 'Album'), rg('Unmatched WithCover', 'Album'), rg('Unmatched Unlisted', 'Album'),
+             rg('Matched NoCover', 'Album'), rg('Unresolved NoCover', 'Album'));
+    my %flags = (lc $g[0]{mbid} => 0, lc $g[1]{mbid} => 1, lc $g[3]{mbid} => 0, lc $g[4]{mbid} => 0);
+    local *Plugins::Discography::API::peekCoverFlags = sub { \%flags };
+    my $mc = { %{ cand('Matched NoCover', 'q-mnc') }, image => 'https://static.qobuz.com/images/covers/mnc_600.jpg' };
+    local $MATCH{'Matched NoCover'} = [ { svc => 'Qobuz', items => [ $mc ] } ];
+    my $real = \&Plugins::Discography::Sources::peekMatches;
+    local *{'Plugins::Discography::Sources::peekMatches'} = sub {
+        my $r = $real->(@_);
+        $r->{resolved} = 0 if ($_[2] // '') eq 'Unresolved NoCover';
+        $r };
+    my $tile = sub { my ($items, $t) = @_; (grep { ref $_ eq 'HASH' && ($_->{name} // '') eq $t } @$items)[0] };
+    my $items = build(\@g);
+    ok(scalar(!$tile->($items, 'Unmatched NoCover')), '13: unplayable, no cover: not listed');
+    my $wc = $tile->($items, 'Unmatched WithCover');
+    ok(scalar($wc && ($wc->{image} // '') =~ m{^imageproxy/dsc/caa/}), '13: unplayable WITH a cover: listed, on the archive route');
+    ok(scalar($tile->($items, 'Unmatched Unlisted')), "13: unplayable, ListenBrainz silent: listed (a maybe is not a no)");
+    my $m = $tile->($items, 'Matched NoCover');
+    ok(scalar($m && ($m->{image} // '') !~ m{^imageproxy/dsc/caa/}),
+       '13: PLAYABLE with no archive cover: still listed, with its own cover');
+    my $u = $tile->($items, 'Unresolved NoCover');
+    ok(scalar($u && ($u->{image} // '') =~ m{/html/images/dsc_MTL_svg_}),
+       '13: streaming not resolved yet, no cover: still listed (it may match), with its type icon');
+    {
+        local $PREF{hide_unmatched} = 1;
+        my $h = build([ rg('Hidden Unmatched', 'Album') ]);
+        ok(scalar(!$tile->($h, 'Hidden Unmatched')), '13: hide_unmatched on: an unplayable release is hidden as before');
+    }
+    my $up = { mbid => 'ABCDEF01-2345-6789-ABCD-EF0123456789', title => 'Upper NoCover', type => 'Album',
+               secondary => [], date => '2000-01-01' };
+    $flags{ lc $up->{mbid} } = 0;   # ListenBrainz's flags are keyed lower-case
+    ok(scalar(!$tile->(build([ $up, rg('Keeps Page', 'Album') ]), 'Upper NoCover')),
+       '13: an id with upper-case letters still finds its lower-case flag');
+    my $e = build([ $g[0] ]);
+    ok(scalar(@$e == 1 && ($e->[0]{type} // '') eq 'text' && ($e->[0]{name} // '') eq 'PLUGIN_DISCOGRAPHY_NO_RESULTS'),
+       '13: a page left with nothing but unplayable no-cover releases says "No releases found"');
 }
 
 print "\n$pass passed, $fail failed\n";

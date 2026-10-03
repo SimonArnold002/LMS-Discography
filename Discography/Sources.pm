@@ -34,7 +34,7 @@ my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.42';
+use constant CACHE_VERSION => '0.56.46';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
@@ -539,7 +539,7 @@ sub localAlbums {
         my $r = eval {
             Slim::Control::Request::executeRequest(undef,
                 ['albums', 0, 500, "artist_id:$id",
-                 'role_id:' . PERFORMANCE_ROLES, 'tags:ljyaW']);
+                 'role_id:' . PERFORMANCE_ROLES, 'tags:ljyaWS']);
         };
         next unless $r;
         for my $e (@{ $r->getResult('albums_loop') || [] }) {
@@ -568,6 +568,34 @@ sub localAlbums {
             { exclude => $explicitId });
     }
     return [] unless @rows;
+
+    # ONE ALBUM NEVER CLAIMS ANOTHER (0.56.43; Simon, 2026-10-03, on Dean
+    # Martin's "Greatest Hits" tile reading Local off Nancy Sinatra's "Greatest
+    # Hits", where he sings one duet: "all that needs to happen is to not try
+    # and claim tracks from one album for another"). The performance-role join
+    # also returns albums the artist is only CREDITED ON (someone else's album,
+    # a compilation), and matchesFor gates every Local candidate on the browsed
+    # artist, so one of those could claim a same-titled tile. An album credited
+    # TO the artist - he is one of its album artists or its band (Raising Sand:
+    # Robert Plant AND Alison Krauss), or LMS files it under him (no album
+    # artist tag) - keeps that gate. Any other is marked `_otherArtist` and
+    # matched under its OWN album artist, as a streaming copy is, so it claims
+    # nothing here and stays under Appearances, where it is listed today. The
+    # two roles are asked together: `role_id:ALBUMARTIST` alone makes LMS add
+    # ARTIST (measured 2026-10-03: Dean Martin 4 albums, two of them Various
+    # Artists compilations; ALBUMARTIST,BAND 2, his own). Credits that cannot
+    # be read mark nothing: today's matching, never a co-credit demoted.
+    my (%credited, $creditsRead);
+    $creditsRead = 1;
+    for my $id (@ids) {
+        my $r = eval {
+            Slim::Control::Request::executeRequest(undef,
+                ['albums', 0, 500, "artist_id:$id", 'role_id:ALBUMARTIST,BAND', 'tags:l']);
+        };
+        unless ($r) { $creditsRead = 0; last }
+        $credited{ $_->{id} } = 1 for grep { $_->{id} } @{ $r->getResult('albums_loop') || [] };
+    }
+    my %isId = map { $_ => 1 } @ids;
 
     # MUSICBRAINZ_ALBUMID off the tags, read straight from the schema: the
     # `albums` CLI query exposes no MusicBrainz tag (verified against LMS 9.0
@@ -607,11 +635,17 @@ sub localAlbums {
             _candTitle  => $title,
             _candArtist => $e->{artist} // $artist,
             _reltype    => $e->{release_type},   # RELEASETYPE tag (LMS default ALBUM) - _localSize
+            # Credited to someone else (above): matched under its own album
+            # artist. `artist_id` is the album's contributor (tags:S).
+            ((!$creditsRead || $credited{$id}
+              || grep { $isId{$_} } split /,/, ($e->{artist_id} // ''))
+                ? () : (_otherArtist => 1)),
         };
     }
     _dbg("local albums for artist_id=" . join("+", @ids) . ": " . scalar @out
         . (@out ? ' | ' . join('; ', map {
               ($_->{_candTitle} // '?') . ' mbid=' . ($_->{_mbid} // 'NONE')
+                  . ($_->{_otherArtist} ? ' (credited to ' . ($_->{_candArtist} // '?') . ')' : '')
           } @out) : ''));
     return \@out;
 }
@@ -2389,8 +2423,11 @@ sub matchesFor {
                 # the join: gate Local on the BROWSED artist (title must still
                 # match). _candArtist is left untouched so Browse's "Appearances"
                 # split still sees the true album-artist. (Simon: Raising Sand,
-                # 2026-07-11.)
-                my $gateArtist = $a->{local} ? $artist : $it->{_candArtist};
+                # 2026-07-11.) Only for an album credited TO the artist: one he
+                # is only credited ON (`_otherArtist`, localAlbums) is judged
+                # under its own album artist, so it never claims another
+                # album's tile (0.56.43, Nancy Sinatra's "Greatest Hits").
+                my $gateArtist = ($a->{local} && !$it->{_otherArtist}) ? $artist : $it->{_candArtist};
                 my $hit = $titleHit->($gateArtist, $it, $a->{local});
                 # A copy credited under another of the artist's MusicBrainz names
                 # is judged as that name's own page would judge it (C3).
@@ -2510,13 +2547,16 @@ sub claimedLocalIds {
             # artist), so gate on $artist not the collapsed _candArtist — same
             # co-credit reasoning as matchesFor. Keeps a co-credited owned album
             # from leaking into "Also in your library" when its tile matched.
+            # And the same exception as matchesFor: an album only credited ON
+            # the artist is judged under its own album artist (0.56.43).
+            my $gate = $it->{_otherArtist} ? $it->{_candArtist} : $artist;
             unless (_mbidMatch($it, $rg->{mbid}, $relMap)) {
                 next if defined _idGroup($it, $relMap, \%idGroups);
-                next unless _albumMatches($artistNorm, $albumNorm, $artist, $it->{_candTitle}, $rg->{title})
-                         || (grep { _aliasMatches($artistNorm, $_->[0], $_->[1], $artist,
+                next unless _albumMatches($artistNorm, $albumNorm, $gate, $it->{_candTitle}, $rg->{title})
+                         || (grep { _aliasMatches($artistNorm, $_->[0], $_->[1], $gate,
                                                   $it->{_candTitle}) } @alts)
                          # Edition titles, as matchesFor tries them.
-                         || (grep { _aliasMatches($artistNorm, $_->[0], $_->[1], $artist, $it->{_candTitle})
+                         || (grep { _aliasMatches($artistNorm, $_->[0], $_->[1], $gate, $it->{_candTitle})
                                     && (!$_->[2] || (_localSize($it) // '') eq 'album') }
                                   @{ ($editions || {})->{ $rg->{mbid} } || [] });
                 # Same size gate as matchesFor, or an album the single no longer

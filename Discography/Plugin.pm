@@ -183,22 +183,23 @@ sub initPlugin {
         1;
     } or $log->warn("could not register the artist image handler: $@");
 
-    # LBF's Cover Art Archive handler (0.56.27): every size of an archive cover
-    # cut from one 1200 px download (Covers::proxyHandler). The SAME pattern as
-    # LBF's, so LMS keeps one entry and either plugin's identical copy serves
-    # both. LBF's gate kept as it is: `useLocalImageproxy` is the image-proxy
-    # SELECTOR, truthy on every default install (LBF CLAUDE.md, "misleading,
-    # not broken"). Covers::init arms the 05:00 retry of failed covers.
+    # Our own archive-cover route (0.56.44): `imageproxy/dsc/caa/<group>`, a
+    # tile with no source cover. Covers::tileHandler holds the device's request
+    # while Covers downloads the cover over TLS 1.2 (an LMS HTTPS read under
+    # TLS 1.3 froze the server for archive.org's think time), then hands the
+    # proxy the file. Ungated, like the artist route above. No longer LBF's
+    # `coverartarchive.org` pattern (0.56.27-0.56.43): no tile points at the
+    # archive itself now, and with both plugins installed LBF keeps its own.
+    # Covers::init clears leftover downloads and arms the 05:00 run.
     require Plugins::Discography::Covers;
     eval {
         require Slim::Web::ImageProxy;
         Slim::Web::ImageProxy->registerHandler(
-            match => qr/coverartarchive\.org/,
-            func  => \&Plugins::Discography::Covers::proxyHandler,
+            match => qr/^dsc\/caa\//,
+            func  => \&Plugins::Discography::Covers::tileHandler,
         );
         1;
-    } or $log->warn("could not register the archive cover handler: $@")
-        if preferences('server')->get('useLocalImageproxy');
+    } or $log->warn("could not register the archive cover handler: $@");
     Plugins::Discography::Covers::init();
 
     # HTTP-triggerable cache clear — bust an artist's cached MusicBrainz data
