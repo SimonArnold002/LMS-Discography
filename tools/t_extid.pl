@@ -59,9 +59,20 @@ BEGIN {
     *{"${A}::peekArtistName"}      = sub { undef };
     *{"${A}::peekArtistAliases"}   = sub { undef };
     *{"${A}::peekArtistEnglishName"} = sub { undef };
+    *{"${A}::peekEponymous"}       = sub { undef };   # no band leader (Browse::_poolLeaders)
     *{"${S}::getCandidates"}       = sub { $_[-2]->({}) };
     *{"${S}::localAlbums"}         = sub { [] };
     *{"${S}::localTracks"}         = sub { [] };
+    # Sources::libraryAlbumActions' shape, filter off (t_localalbumtracks.pl tests the real one).
+    *{"${S}::libraryAlbumActions"} = sub {
+        my ($al, $ar) = @_;
+        return undef unless defined $al && $al =~ /^\d+$/;
+        return { allAvailableActionsDefined => 1,
+                 info  => { command => ['albuminfo', 'items'], fixedParams => { album_id => $al } },
+                 items => { command => ['browselibrary', 'items'],
+                            fixedParams => { mode => 'tracks', album_id => $al, ($ar ? (material_skin_artist_id => $ar) : ()) } },
+                 map { $_ => { command => ['playlistcontrol'], fixedParams => { cmd => ($_ eq 'play' ? 'load' : $_), album_id => $al } } } qw(play add insert) };
+    };
     *{"${S}::matchesFor"}          = sub { push @main::MF_OPTS, $_[8]; $main::SECTIONS };
 }
 
@@ -263,6 +274,62 @@ sub detail {
         ok(scalar($o && ($o->{rgType} // '') eq $case->[0] && ($o->{rgComp} // -1) == $case->[2]),
            "6: the release page passes rgType $case->[0] and rgComp $case->[2]");
     }
+}
+
+# 7. AN OWNED ALBUM OPENS AS A LIBRARY ALBUM (0.56.56; Simon 2026-10-07: "We need
+# to copy exactly how LMS does this"). A Local album row carries LMS's own album
+# actions (browselibrary mode:tracks to open, playlistcontrol to play), so Material
+# draws its native album page; every other row keeps its param-addressed actions.
+{
+    my $native = sub {
+        my ($r, $album) = @_;
+        my $a = $r->{itemActions} || {};
+        return join(' ', @{ $a->{items}{command} || [] }) eq 'browselibrary items'
+            && ($a->{items}{fixedParams}{mode} // '') eq 'tracks'
+            && ($a->{items}{fixedParams}{album_id} // '') eq "$album"
+            && join(' ', @{ $a->{play}{command} || [] }) eq 'playlistcontrol'
+            && ($a->{play}{fixedParams}{cmd} // '') eq 'load'
+            && ($a->{add}{fixedParams}{cmd} // '') eq 'add'
+            && ($a->{insert}{fixedParams}{cmd} // '') eq 'insert'
+            # every action defined + LMS's album `info`: no positional params, so
+            # Material under My Apps can id the row (the 0.56.57 empty-page fix)
+            && ($a->{allAvailableActionsDefined} // 0) == 1
+            && join(' ', @{ $a->{info}{command} || [] }) eq 'albuminfo items'
+            && ($a->{info}{fixedParams}{album_id} // '') eq "$album";
+    };
+    my $own = sub { join(' ', @{ $_[0]{itemActions}{items}{command} || [] }) eq 'discography items' };
+
+    local $T::Prefs::P{show_all_versions} = 0;
+    { local $SECTIONS = [ sec('Local', { %{ lib() }, _listedUnder => 154055 }), sec('Qobuz', qobuz()) ];
+      my @v = detail();
+      ok(scalar(@v == 1 && $native->($v[0], 29030)), '7: single-version detail: the Local row opens and plays as a library album');
+      ok(scalar(($v[0]{itemActions}{items}{fixedParams}{material_skin_artist_id} // '') eq '154055'),
+         '7: ... carrying the artist it was listed under (Material highlights its tracks)');
+      ok(scalar(($v[0]{play} // '') eq 'db:album.id=29030'), '7: ... its play string unchanged (clients that are not Material)'); }
+    { local $SECTIONS = [ sec('Qobuz', qobuz()), sec('Local', lib()) ];
+      my @v = detail();
+      ok(scalar(@v == 1 && $own->($v[0]) && !$native->($v[0], 29030)),
+         '7: a Qobuz-first detail: the streaming row keeps its own actions'); }
+
+    local $T::Prefs::P{show_all_versions} = 1;
+    { local $SECTIONS = [ sec('Local', lib()), sec('Qobuz', qobuz()) ];
+      my %by = map { ($_->{id} => $_) } detail();
+      ok(scalar($native->($by{'v:Local:0'}, 29030)), '7: all-versions: the Local row opens as a library album');
+      ok(scalar($own->($by{'v:Qobuz:0'})), '7: all-versions: the Qobuz row keeps its own actions'); }
+    { my $song = { name => 'Voices Green and Purple', type => 'audio', _svc => 'Local', _track => 1,
+                   _trackid => 7, _albumid => 9, play => 'db:track.id=7' };
+      local $SECTIONS = [ sec('Local', $song) ];
+      my %by = map { ($_->{id} => $_) } detail();
+      ok(scalar(!$native->($by{'v:Local:0'}, 9)), '7: an owned SONG (a track link) is not turned into its whole album'); }
+
+    my @t = grep { $_->{_albumid} } $B->can('_extraSection')->(undef, {}, 0, 'newest',
+        'PLUGIN_DISCOGRAPHY_APPEARANCES', 'x.png', 'APPEAR',
+        [ { name => 'Greatest Divas', type => 'playlist', _svc => 'Local', _albumid => 52249, _year => 2005,
+            _listedUnder => 151861, play => 'db:album.id=52249' } ]);
+    ok(scalar(@t == 1 && $native->($t[0], 52249)), '7: an Appearances tile opens and plays as a library album');
+    ok(scalar(($t[0]{itemActions}{items}{fixedParams}{material_skin_artist_id} // '') eq '151861'
+              && ($t[0]{id} // '') eq 'lib:52249'),
+       '7: ... with the artist it was listed under, and its lib: id kept');
 }
 
 print "\n$pass passed, $fail failed\n";

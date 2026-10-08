@@ -75,7 +75,7 @@ because line numbers rot on the next edit.
 | `localArtistsByMbid` and the attach pass are DSC-only call-site logic | A2 | ``localArtistsByMbid` and the attach pass are` |
 | "Also a member of" is deliberately FORWARD-only | A2 | `"Also a member of" is deliberately` |
 | Duplicate streaming artist entities are NOT folded by name similarity | A2 | `Duplicate streaming artist entities are NOT` |
-| Classical composer/performer credit conflation is PARKED deliberately (a works-page PLAN exists since 2026-10-02: `docs/classical-plan.md`, not built) | A2 | `Classical composer/performer credit` |
+| Classical composer/performer credit conflation is PARKED deliberately (a works-page PLAN exists since 2026-10-02: `docs/classical-plan.md`; its step 0 measured 2026-10-03, §8 there, `tools/classical/`; Simon's four decisions made 2026-10-03, §6; step 1, a composer's WORKS PAGE, BUILT 2026-10-07 in 0.56.50, §9; performers still parked) | A2 | `Classical composer/performer credit` |
 | The full `_discographyView` rebuild on every list-control tap is deliberately | A2 | `The full `_discographyView` rebuild on every` |
 | The officialness pass is deliberately NOT parallel with the release-group | A2 | `The officialness pass is deliberately NOT` |
 | The proxy name is deliberately NOT lowercased | A2 | `The proxy name is deliberately NOT lowercased` |
@@ -184,6 +184,25 @@ because line numbers rot on the next edit.
 | Paging the `arid:` search as a complete list; the search carrying group aliases; the artist read's group list as incomplete under 25; the by-id search's URL or release lists being cut short | A3 | `MEASURED FOR STAGE 2` |
 | The plugin's logo is Material's `album-multi` stack everywhere: plugin icon, the artist-menu action (`svg`, no `icon`), the "Search on…" entry. Never a second logo (Simon, 2026-10-03) | log | `ONE LOGO, THE STACK` |
 | A global search entry (`Browse::globalSearchItem`) carrying its own `url` coderef: it cost every LMS search list its session id, so every source opened from a search came back Empty (0.56.47; the coderef sits one row down since 0.56.48) | A3 | `EVERY SOURCE OPENED FROM A SEARCH CAME BACK EMPTY` |
+| A page opened by a dispatched row (a version's album, a library tile's tracks, a section's tiles, a work's album) carries its request's address: `query` + every row's own items/play/add/insert with its path (`_bindAddr`, `_boundCallback`, `_addrOf`; LBF 0.9.199's shape). The address is the request's params replayed, never rebuilt (0.56.51; Simon, Stan Getz, 2026-10-07) | A2 | `A DISPATCHED PAGE KEEPS ITS ADDRESS` |
+| One release-group browse per (artist, refresh) at a time; callers meanwhile are answered from it (`API::_rgFlight`, SingleFlight, watchdog 600 s) (0.56.51); each under its OWN `$NET_BG`, a page joining moves it forward, a read-path caller joins one started after a read without reading again (review 2026-10-08, `%BROWSE_RUN`) | A2 | `ONE RELEASE-GROUP BROWSE PER ARTIST AT A TIME` |
+| A copy whose title is EXACTLY another album on the page belongs to that album, if that album can take it (a Single never takes an album-sized copy) (`matchesFor` `pageTitles` = `_rivalsByTitle`) (0.56.51; Simon, Getz/Gilberto #2 / '76) | A2 | `A COPY TITLED EXACTLY LIKE ANOTHER ALBUM ON THE PAGE` |
+| Every version a service lists is shown: one row per album id, not per label; up to 20 per service (`MAX_PER_SVC`); a service's `version` field after the title (`_addVersion`; skipped when every word of it is already in the title, Simon 2026-10-07). Supersedes one-row-per-title (0.56.51; Simon: *"under all services we need to expose the versions they have and not throw them away"*) | A2 | `EVERY VERSION A SERVICE LISTS IS SHOWN` |
+| Rows on a page opened by a param-addressed row are themselves param-addressed | A3 | `A DISPATCHED PAGE'S ROWS KNEW ONLY THEIR POSITION` |
+| Material's Play on a list of plugin tracks sends one command | A3 | `MATERIAL PLAYS A TRACK LIST ONE COMMAND PER TRACK` |
+| Material runs every command of its per-track Play batch | A3 | `MATERIAL DROPS A BATCH WITH AN ACCENTED PARAM` |
+| A Qobuz artist's album list stops at the plugin's 200 | dev log 0.56.54 | `A QOBUZ ARTIST PAST THE PLUGIN'S 200 ALBUMS` (paged through the handler's `_get`; MEASURED LIVE: honours offset + total, +0.9 to +2.3 s cold; CAPPED at 1000 albums by Simon in 0.56.55) |
+| A page drawn partial and completed in the background for the next visit (back-filling), for new work | DECLINED 2026-10-07 ("a bad user experience") | `NO BACK-FILLING OF A PAGE` (dev log 0.56.54) |
+| Spotify's album list fetched album-first, then compilations, then singles, so a cap drops singles first | DECLINED 2026-10-07 on added time (built, tested, removed; see dev log 0.56.54) | `SPOTIFY ALBUM LIST STAYS ONE MIXED LIST AT 200` (dev log 0.56.54; REVERSED there) |
+| Refresh discography takes MusicBrainz's own list, awaited (0.56.7 decision 7) | SUPERSEDED 0.56.53 | dev log 0.56.53, `REFRESH TAKES THE FIRST LIST, NOT MUSICBRAINZ'S` |
+| The search readies its Top Result's page in the background (wasted requests when another row is tapped; no covers / matching / render in it; since 0.56.57 the bootleg check too, which a page arriving JOINS instead of 'busy') | ASKED FOR by Simon 2026-10-07, 0.56.56 INSTALLED + MEASURED (Oscar Peterson 1.6 s); the check added 0.56.57 ("if it has no knock on effects"), INSTALLED + VERIFIED LIVE (Duke Ellington 1.17 s) | `THE TOP RESULT IS READIED WHILE THE RESULTS ARE READ` (dev log 0.56.56, 0.56.57; Browse::_prefetchTop, API::warmOfficial `prefetch`) |
+| With no streaming service installed, `hide_unmatched` and the no-cover rule never apply, so the full MusicBrainz catalogue shows with archive covers — PARKED by Simon 2026-10-07 ("leave for now but may change it") | dev log 0.56.51 | `NO STREAMING SERVICE SHOWS THE FULL CATALOGUE` |
+| An UNTAGGED owned album no title claims goes on the ONE group whose tracklist it carries (ListenBrainz tracks, both ways, times known and agreeing, an outright winner); the tracklists are fetched OFF the page by a background library pass and kept, the page never asks or waits (0.56.62); measured 0 wrong in Simon's library, 6 of 1,193 with the real group hidden (0.56.61, Simon) | A2 | `THE TRACK MATCH` |
+| A manual match on the RELEASE page ("Match an album from your library" / "Remove the match to ..."), stored in DB `manual` by title + album artist; an id tag > the user's match > title claims > the track match (0.56.61, Simon) | A2 | `MATCHES MADE BY HAND` |
+| `defined && ...` before `&&` misparsing (TrackWarm `_untaggedArtists`, Sources `_trackArtistLines`) | A3 | `BOTH PARSE AS `defined($_) && ...`` |
+| `$fetchOnce`'s `? ... : push @{...}, $cb` dropping the second caller | A3 | `IS A LIST OPERATOR AND TAKES THE REST` |
+| `_addrDecode`'s `decode_utf8(..., FB_CROAK)` fallback getting a consumed (truncated) value | A3 | `THE SOURCE IS UNTOUCHED WHEN IT CROAKS` |
+| A works-page row for a work NOT held can carry the work icon and stay a plain, untappable row | A3 | `A TEXT ROW WITH AN IMAGE IS TAPPABLE IN MATERIAL` |
 
 **Two standing rules that kill most repeat findings:**
 
@@ -328,6 +347,22 @@ always with its reason, and those stay suppressed. The code a fix added is new a
     collaboration relation MB already had — no edit or mirror update needed.
   - **Known and left as-is:** those 7 false pickups already happen on the NAME path (a Similar-artists
     or name-only entry), since 0.48.6. Re-raise only with a stronger signal than the name.
+  - **RE-MEASURED with a stronger signal (2026-10-07, 0.56.58; Simon asked after Khruangbin's "Ali"
+    read Qobuz from the library page, Local from search).** Proposed gate: a joint contributor's album
+    counts on an id-entered page ONLY when it lands in a release group MusicBrainz lists under the
+    artist, never as an Appearance or "Also in your library". Replay first, same population: 1,119
+    album artists, 137 joint-credit pairings (DSC's own `_creditParts`/`_normKey`), **28 pages gain 35
+    albums: identical to September's**. Then every one of the 28 opened twice (by artist_id; by mbid,
+    which already picks joint credits up through the real matcher), every section in full
+    (`item:sect:KEY`, no view toggle). Result: **ONE album reaches a release group: Khruangbin "Ali"**
+    (Albums tile Local/Qobuz). **All 8 wrong-band albums land in Appearances / "Also in your library"**
+    (Love, Cake, Bob, Associates, Dean Martin, The Chameleons, The Roots), so the gate admits none. So
+    do the ~20 genuine joint appearances (Ella on "Caro Emerald Presents" via Chick Webb & Ella
+    Fitzgerald, Elvis Costello & The Attractions, Jack White on "Lemonade", Holly Golightly and The
+    Brokeoffs, Iggy and The Stooges "Raw Power"...): the gate leaves them off the library page, as
+    today. Not measured: All India Radio's two gains are a single and an EP (Singles view; the toggle is
+    player state, not flipped) and the 40 pages of non-album-artist contributors. Scratchpad `joint/`.
+    Simon's decision pending.
 
 - **The four WATCHDOG timers still built from core `time()` are deliberate** (2026-09-20).
   `Browse.pm` `POOL_WAIT_MAX` (20s) and `Sources.pm` `SVC_TIMEOUT` (20s) / `SEARCH_TIMEOUT` (10s) /
@@ -549,7 +584,9 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   `/album:(.*)/`, so an appended `?cover=` would break a saved favourite (settled the same way in LBF and PFR). LL
   therefore titles a Discography Spotify add from Spotify's album name, not the MB title (plan §4.9, LL's "show what
   it matched to"). (2) Spotty's `name` ("Album BY Artists", "Album (YYYY) BY Artists" with LMS `showYear`) is NOT reset to
-  `line1`. Versions dedupe on the RAW `name|line2` in `matchesFor`, and Spotty's `line2` is the artist. **CORRECTED
+  `line1`. **SUPERSEDED 0.56.51 for the dedupe** (A2 `EVERY VERSION A SERVICE LISTS IS SHOWN`): versions are kept one per
+  album id, so explicit + clean are two version rows whatever `showYear` says; the rest of this point is history.
+  Versions dedupe on the RAW `name|line2` in `matchesFor`, and Spotty's `line2` is the artist. **CORRECTED
   2026-09-25 (review):** this entry first said resetting would "merge two same-titled editions" — they ALREADY merge
   with `showYear` off (the LMS default): explicit + clean share `name|line2` and show as ONE version row, the first.
   Keeping Spotty's `name` only matters with `showYear` on, where the year keeps editions from different years apart.
@@ -822,7 +859,8 @@ always with its reason, and those stay suppressed. The code a fix added is new a
      MusicBrainz's special-purpose artists** (`%MB_SPECIAL_ARTIST`: Various Artists, [unknown], [traditional]...)
      keep the old path, on a cold page and a Refresh alike: Various Artists is 106 MB on ListenBrainz.
      **AMENDED 0.56.41:** they now take no path at all, page or Refresh (`NEVER ONE ARTIST: VARIOUS ARTISTS`).
-  7. **Refresh is MusicBrainz's own list, awaited** (`_refreshItem` -> `clearArtistCache(refresh => 1)` ->
+  7. **[SUPERSEDED 0.56.53: the Refresh row no longer passes `refresh => 1`; it draws from the first list like a cold
+     page.]** **Refresh is MusicBrainz's own list, awaited** (`_refreshItem` -> `clearArtistCache(refresh => 1)` ->
      `dsc:rgfull` for an hour, used once). The `clearcache` command does NOT set it: it is a plain cold start, which
      is the first-list path. **Since 0.56.8 a Refresh keeps the groups past the cap** (`API::_pastCap`; found live
      on 0.56.7: the browse is cut at 600 and nothing completes it, so a Refresh hid Johnny Cash's Live albums section
@@ -1527,6 +1565,141 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   **CHECKED LIVE 2026-10-02** with Material 6.4.10.9: round rows, the header with the bio first, no Play entry, and
   the home page under an artist's header judged fine (Simon: *"all good for these can be closed"*). Rule 4's effects are therefore ACCEPTED.
 
+- **A DISPATCHED PAGE KEEPS ITS ADDRESS** (0.56.51; `Browse::_addrOf`, `_addrAction`, `_bindAddr`, `_boundCallback`,
+  `topLevel`'s three `item:` branches: `rg` + item -> `_rgView`, `wka:`, list `item:` -> `_listItemDispatch`; Simon,
+  2026-10-07, Stan Getz on the phone: the first Qobuz version of Getz / Gilberto played a track from Come into the Cool,
+  then the page hung). A row run by `item:` answers with someone else's feed (the service's or the library's album, a
+  section's tiles, a work's album), and XMLBrowser gives that feed's rows only a position. Each part, with its reason:
+  1. **The page's `query` is the request's address** (`artist_id`/`artist`/`mbid`/`features`/`sort`/`local_only`/`rg`/
+     `item`, as they came), so XMLBrowser's BASE actions send it with every position (XMLBrowser.pm, 9.1: `if
+     ($feed->{'query'}) { $params = {%$params, %{$feed->{'query'}}} }` for go/play/add/add-hold/more; the top feed's
+     query holds at every depth because sub-feeds are spliced into it).
+  2. **Every row also gets its own items/play/add/insert** (`discography items` / `playlist <cmd>` + the address +
+     `item_id:<path>`), kept where the row has its own (`||=`), wrapped coderefs binding their children at `parent.N`,
+     inline `items` too, a window's `offset` honoured, no `items` for an audio or search row. Needed because the
+     long-press menu's play actions (`_makePlayAction`) read a row's itemActions and never the query, and Material
+     prefers a row's own action (`browseBuildCommand`: `item.actions[cmd]` first).
+  3. **Replayed, never rebuilt from `$opts`:** `_identParams` emits only an ENTRY mbid, so a rebuilt address would
+     drop a band link's mbid and re-resolve by name.
+  4. **Not bound:** the artist page and the release page themselves (every actionable row there already carries its
+     own param-addressed action; their weblinks Material opens itself) and the search page.
+  **Residual, stated:** an old client (Jive) offering "Play all songs" from a track's own menu (`_makePlayAction`'s
+  `playall`, only when the row carries `playall`) still sends a bare position; Material never sends it. The `%lastCtx`
+  walk itself is unchanged for legacy clients, so a bare position from them still walks the stashed artist page and
+  RUNS whatever row it lands on (toggles, Refresh), as before. Pinned in `tools/t_bindaddr.pl` (32); 15 of 15 mutants
+  caught (scratchpad `mut5651/run.py`).
+- **ONE RELEASE-GROUP BROWSE PER ARTIST AT A TIME** (0.56.51; `API::_rgFlight`, `RG_FLIGHT_MAX`, `getReleaseGroups`'
+  `$browse`). Measured 2026-10-07 (server log 10:00:32-10:01:14): 13 requests for Stan Getz, each finding the list
+  cleared by a Refresh, each started its own browse: 52 MusicBrainz requests at 1 req/s, 42 s, every page waiting. A
+  caller arriving while a browse of the same (mbid, refresh) runs is answered from it, through the fleet's
+  SingleFlight.pm (pools have done this since 0.56.15). The watchdog is 600 s: the queue settles every request itself,
+  so it only covers a lost callback, and must never turn a slow live browse into an error for everyone waiting.
+  Pinned in `tools/t_rgflight.pl` (21); `t_alias.pl` and `t_fastpage.pl` now hold back timers over 5 minutes (their
+  immediate-fire stub would otherwise fire the watchdog at once). 5 of 5 mutants caught.
+  **EACH CALLER UNDER ITS OWN FLAG; A PAGE MOVES IT FORWARD; A READ-PATH CALLER JOINS WITHOUT READING** (review
+  2026-10-08, after 0.56.62; `$mineOk` / `$mineErr`, `%BROWSE_RUN { job, fg, read }`, `_browseGroups`' `onJob`). The
+  registry answered everyone under the OWNER's `$NET_BG`, and since 0.56.56 the Top Result prefetch owns a browse
+  whenever its first list fails (the community API backing off after a search, a timeout, no ListenBrainz list): a tap
+  that joined it went on as background work (its pool, its bootleg check, its completion), never moved the browse
+  forward, and read the artist a second time (measured with `t_prefetch.pl`'s harness: 2 reads to the control's 1;
+  everything foreground in the control). Now: each caller is answered under its own flag (`_fastSpine`'s `$mine`
+  pattern), a foreground joiner `_netPromote`s the queued page and every page asked after it, and a `read => 1` caller
+  joins a browse that was started after a read (`read` in the run record, registry still holding the claim) without
+  reading again or asking for the first list again. A browse started WITHOUT a read (release page, disambiguation) is
+  not joined that way: the read is still owed. Pinned in `t_prefetch.pl` §E (28); 12 of 12 mutants caught (both fixes
+  of the round, scratchpad `mutate_fix.py`).
+- **A COPY TITLED EXACTLY LIKE ANOTHER ALBUM ON THE PAGE IS THAT ALBUM'S** (0.56.51; `Sources::matchesFor`'s
+  `pageTitles`, passed by `Browse::_buildList` and `_releaseDetail` as their `_rivalsByTitle` map; Simon 2026-10-07:
+  Getz / Gilberto listed "Getz/Gilberto #2" and "Getz / Gilberto '76" as versions). The edition-suffix rule reads
+  "<album> <extra>" as an edition, so "getz gilberto 2" and "getz gilberto 76" matched "getz gilberto", though each is
+  its own MusicBrainz album on the same page. A copy (not matched by id) whose `_norm` title differs from this group's
+  and equals another shown group's is skipped, **only when that group can take it**: a Single never takes an
+  album-sized copy, so Kraftwerk's album keeps its "Radio-Activity" copy (matched through its alias) though a single
+  has that title (caught while writing it; t_versions §3). Same set as the rival rule, so a hidden or bootleg group
+  owns nothing. DSC-only call-site logic: `_albumMatches` untouched. `claimedLocalIds` unchanged (its union is the
+  same: the exact owner claims the copy). Pinned in `t_versions.pl` §1/§3/§4, `t_extras.pl` E2, `t_detailshared.pl`
+  §9; 5 of 5 mutants caught.
+- **EVERY VERSION A SERVICE LISTS IS SHOWN** (0.56.51; `Sources::matchesFor`'s dedupe key, `MAX_PER_SVC` 20,
+  `_addVersion` in `_decorate`; Simon 2026-10-07: *"under all services we need to expose the versions they have and
+  not throw them away"*). Measured: Qobuz lists Stan Getz's 1964 Getz/Gilberto three times (tr097unrzq42a 18 tracks,
+  jzbek1vkmssja 8, np5innplc97oa 10), all rendered "Getz/Gilberto | Stan Getz, João Gilberto (1964)", so the
+  `name|line2` dedupe kept one; and the cap of 4 cut real editions. Now: one row per album id (a copy without one keeps
+  the old key); up to 20 per service (a bound against a generic title's tail, not a display choice); a copy past the
+  old cap or dedupe no longer counts as unclaimed, so it no longer reappears under "Also on streaming". A service's
+  album `version` ("Expanded Edition", "Remastered": Qobuz sends it, its plugin shows it for tracks only) goes on the
+  row's `line1` right after the title, unless the title already says it; `name` and `_candTitle` untouched (display
+  only). TIDAL's and Deezer's plugins read no such field; where nothing distinguishes two copies, both rows read the
+  same and either plays a real copy. Supersedes the one-row-per-title behaviour recorded under `SPOTIFY ROWS KEEP
+  SPOTTY'S OWN` (2). NOT changed: "Also on streaming"'s within-service merge of same name+year (a list of albums, off by
+  default). Pinned in `t_versions.pl` §2/§5/§6, `t_extras.pl` E1, `t_spotify.pl` §8 (rewritten), `t_tracklink.pl` (e);
+  7 of 7 non-equivalent mutants caught, 2 equivalent (the service in the key, `%seen` being per service, now removed;
+  the blank-version guard, which `index($l1, '')` also covers, kept for clarity).
+
+- **THE TRACK MATCH** (0.56.61; `Sources::trackShortlist` / `trackEvidence` / `trackPick` / `ownTracks`,
+  `Browse::_placements`, `API::warmGroupTracks` / `peekGroupTracks` / `groupTracksDue`, `TrackWarm` (0.56.62); a tester's "McCoy Tyner Plays John Coltrane" vs
+  MusicBrainz's "McCoy Tyner plays John Coltrane: Live at the Village Vanguard", 2026-10-08; Simon: match some of the
+  name, then the tracks, *"we could also base it on a weighting match"*). An owned album NO rule claims (title, alias,
+  edition title, id) and credited to the artist ("Also in your library", never Appearances) goes on the ONE group whose
+  tracklist it carries. Candidates: the page's shown groups (not hidden, not bootleg-only) sharing a title WORD, the
+  artist's words and the/a/an/of/and/s aside, the 5 with the most title evidence (0.75 x the owned title's words found
+  + 0.25 x the group title's, best of its title / aliases / edition titles). Tracks from ListenBrainz
+  (`metadata/release_group?inc=recording`, the canonical release, 25 groups a request). The group passes when your
+  tracks found >= 0.65 AND its tracks in your copy >= 0.9 (YOUR copy may carry bonus tracks; the GROUP may not: a
+  two-album set, an album + EP) AND running times are KNOWN for >= 80% of the pairs AND >= 80% of those agree within
+  max(4 s, 4%) (a live / demo / karaoke version with the same titles fails). Score 0.7 x (2 found + cover)/3 x (0.5 +
+  0.5 times) + 0.3 x title x `_titleWeight` (generic titles 0.5); the best passing group must reach 0.75 AND lead every
+  other passing one by 0.1, else nothing (the resolver's "a tie decides nothing"); the scores order the manual list.
+  **MEASURED before it was built** (`tools/leftover/`, CLAUDE.md `REPLAYED` under the 11 gaps): Simon's library 6
+  right + the tester's, 0 wrong, Dusty Springfield's "Best [Japan]" a tie (manual); with every matched album's real
+  group HIDDEN, the first rule matched **166 wrong** (two-album sets; tracks with no length), this one **6 of 1,193**,
+  each MusicBrainz holding the same or an overlapping tracklist under another group. Pinned to that replay:
+  `t_trackmatch.pl` §1 runs the plugin's code over its 245 real cases (`tools/fixtures/trackmatch_replay.json`,
+  `tools/leftover/make_fixture.py`). **ONLY AN UNTAGGED ALBUM (0.56.62):** an album with a MusicBrainz release id is its
+  tag's, right or wrong, and never goes to another group by its tracks; one still left over is tagged to a group the
+  page does not list (Thievery Corporation's "DJ-Kicks" -> its DJ-mix group `aceba45a`, hidden by design) or to a
+  release MusicBrainz no longer knows. Every album the replay matched was untagged; the 4 tagged leftovers with
+  candidates never matched. **THE PAGE NEVER ASKS FOR A TRACKLIST AND NEVER WAITS FOR ONE (0.56.62; Simon, 2026-10-08:
+  *"We cant afford hangups but also cant slow things down"*, and not *"so much being done on 2nd visits this will
+  confuse users"*).** 0.56.61 asked before the draw, beside the bootleg check, and the draw waited: LIVE 2026-10-08 a
+  slow ListenBrainz held Thievery Corporation 8.5 s past its check, and a cold page asked for albums the check then
+  placed by id (Kraftwerk, 9 tracklists; replayed cold: 44 pages ask, not 26). Now the answer is worked out AHEAD OF
+  THE VISIT, from the library: `TrackWarm`, a background pass (5 min after startup, after every rescan, then daily;
+  never during a scan; never while a page has a request out; one artist at a time) finds every artist with an
+  untagged album (LMS's own `albums` / `contributors` / `tracks` tables), works out its page the page's way
+  (`getArtistMbid`, the page's kept list or ListenBrainz's, `localAlbums`, `_placements` with `cands`) and asks for the
+  due tracklists as background work. Kept in DB.pm's `keep` table, which a build does not empty: a tracklist for good,
+  ListenBrainz's "none" asked again after a week (by background work only); per artist a mark (`dsc:trkwarm:2:<name>|<sig>`,
+  the sig a signature of its untagged albums' titles, track counts and lengths) so it is done again only when they change, after
+  30 days (MusicBrainz adds groups), or a day after a failure. The sig is IN THE KEY since the 2026-10-08 review (v1 was
+  the name alone: two library artists of one name, London Symphony Orchestra in Simon's library under ids 156286 and
+  151559, overwrote each other's mark and one of them was done again every pass); a mark is kept 30 days (RECHECK), so
+  one left behind by a change of albums goes. Not by contributor id: a full rescan renumbers them. The page (`_buildList`) only reads them; a group it finds
+  missing (an album added since the pass) is handed to the pass (`TrackWarm::want`, background, 10 s later) and its
+  album stays where it is on that visit. COST: no request and no wait on any page; in the background ~one
+  ListenBrainz list per artist with an untagged album (486 in the July data) and one tracklist request per artist with
+  candidates, once, then only for what changes. An album whose candidates are not ALL kept is never decided on part of
+  the evidence. The claims behind it are worked out once per render and reused by "Also in your library" (memo,
+  `PLC_MEMO_TTL` 120 s, keyed on the inputs incl. titles). Known misses, to the manual list: classical track names
+  that pair badly (Bavouzet's Debussy box: 104 = 104, times agree, 36 titles pair) and the 6.3% of tracklists missing a
+  length. NOT the shared matcher: `_albumMatches` untouched; DSC-only call-site logic, as `_aliasMatches`.
+- **MATCHES MADE BY HAND** (0.56.61; `Browse::_manualRows` / `_matchPicker` / `_manualAct`, `_rgView`'s `lm:` dispatch,
+  DB `manual`; Simon 2026-10-08: *"we probably may need to have a manual match option for cases where there are more
+  than one and it cant work out"*, placement agreed with *"yes lets build both"*). On the RELEASE page, after "Refresh
+  streaming matches": "Match an album from your library" (while the artist has albums in "Also in your library") opens
+  a list of them, those whose tracks point at THIS release first, best first, saying how many tracks agree, the rest by
+  year; a tap stores the match and goes back to the release page (`nextWindow` parent; Material shows the one-row
+  answer as a message). "Remove the match to <album>" for each owned album on this release by its tracks OR by hand
+  stores '-': no automatic match for it again until it is matched by hand. NOT on the owned album's row: it opens LMS's
+  own album page since 0.56.58, which takes no plugin rows, and a Material album action would show on every album.
+  Kept in the plugin's own database (`manual`, schema 2), never emptied by a build, Refresh or `clearcache`; per
+  artist mbid, keyed by the album's title + album artist (`Sources::albumKey`), NOT LMS's album id, which a rescan
+  renumbers. PRECEDENCE: a MusicBrainz id placing the copy on the page > the user's match > a title / alias / edition
+  claim > the track match (A TAG IS TRUSTED, RIGHT OR WRONG stands); a row naming a group the page no longer lists is
+  ignored. Rows are param-addressed (`lm:pick`, `lm:set:<album id>`, `lm:del:<album id>` with the release + artist);
+  `lm:set` / `lm:del` act from `_rgView` without building the page, since a picker row is out of `_findRow`'s reach.
+  KNOWN, by Material's history: the artist page a step back shows the old state until it is refreshed or re-entered.
+  Pinned in `t_trackmatch.pl` §3-§6, `t_db.pl` §12, `t_chain.pl` §14; 25 of 25 mutants caught.
+
 ### A3. DISPROVEN — a review WILL re-derive these from the code; each was measured
 
 **Why this section exists (Simon, 2026-09-19).** A finding that a review "checked and cleared"
@@ -1566,8 +1739,7 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 | `artist/<id>?inc=release-groups` lists a partial or different set from the browse, so it cannot stand in for the spine | **WRONG below 25** — MEASURED FOR STAGE 2 (public API, 2026-09-29) | Library artists under 25 groups: the same groups with the same title, type, secondary types, date and aliases as `release-group?artist=<id>&inc=aliases`, **10 of 10**, then **9 of 9** in the same order once sorted by group id. MB caps the list at 25 and gives no count (Califone lists 25 and has 25; Kings of Convenience 26, Orange Juice 36, The xx 47 all list 25), so exactly 25 means "maybe more" and the browse runs. **The ORDER differs** (type, then date; a one-page browse is in group-id order, 0 of 8 alike), which is why `_readArtist` sorts by id before caching it as the spine: the list's date sort keeps the input order for equal dates. |
 | The by-id search has a limit that bites: the URL is too long at 100 ids, or a big group's release list is cut short | **WRONG as measured** — MEASURED FOR STAGE 2 (public API, 2026-09-29) | 100 ids: a **5,160-character URL** with `-` left raw (5,960 with it encoded), HTTP 200 both ways, 100 of 100, ~190 KB (Kraftwerk). Release lists: `count` equalled the releases listed for all 600 Beatles page groups, and for Dark Side of the Moon (151), Nevermind (98) and Abbey Road (73). `warmOfficial` still treats a shorter list as unproven: a bootleg verdict needs the whole list. |
 | A community-API count asked with the placeholder name `_` (`/music/artist/_/discography?mbid=`) answers for another act, or not at all | **WRONG for a known mbid** — MEASURED FOR STAGE 3 (public, `X-LMS-Plugin-ID` sent, 2026-09-30, stage-3 review) | Radiohead a74b1b7f: 580 entries with its name and with `_`, the same mbid echoed; Kraftwerk 5700dcd4: 163 both ways. Load-bearing: `_hostedCount` fills the path with `_` when neither the candidate nor `peekArtistName` has a name, which is most search rows (a batch pick carries only its mbid). The `?mbid=` decides for a KNOWN mbid; an unknown one falls back to the NAME (A3 `silently falls back to the NAME`), and the echo check then sends it to MusicBrainz. The one difference is Cloudflare's cache, which is per URL: the `_` URL is its own entry (Radiohead 2.5 s cold against 0.14 s for the named URL an earlier run had warmed), shared by every Discography install that asks for that mbid. |
-| An unsized proxy request (`.../image.png`, what Material 6.4.10 sends for an `icon` row) for an https cover is redirected to the source, so a tile's Cover Art Archive cover is fetched by the DEVICE and never loads through, or stalls, the server | **WRONG on any server with ListenBrainz Fresh Releases installed** — LBF CLAIMS EVERY coverartarchive.org URL (read 2026-10-02) | LMS 9.1 `ImageProxy::getImage` redirects (301 to the original url) only when NO handler matches the url AND the spec is a bare extension. LBF's `Plugin.pm` registers `registerHandler(match => qr/coverartarchive\.org/)` (rewriting `front-<n>` to `front-1200`), and the match is by url, not by plugin, so Discography's archive covers take it too: the server downloads them from archive.org, at 1200 px (measured: 255-396 KB PNG answers for `front-250` requests). That is why they stalled the server on the rig (A2 `NO ARCHIVE COVER IS FETCHED WHILE BROWSING`). Without LBF the redirect applies to unsized requests only; a SIZED request (`_300x300_f`, the Default skin, Material once its `icon`-row sizing is fixed) is fetched by the server either way. So the redirect is not a fix to rely on. **Since 0.56.27 Discography registers the same handler itself**
-(`Covers::proxyHandler`), so this holds with or without LBF (A2 `ARCHIVE COVERS ARE FETCHED AT 05:00`). |
+| An unsized proxy request (`.../image.png`, what Material 6.4.10 sends for an `icon` row) for an https cover is redirected to the source, so a tile's Cover Art Archive cover is fetched by the DEVICE and never loads through, or stalls, the server | **WRONG on any server with ListenBrainz Fresh Releases installed** — LBF CLAIMS EVERY coverartarchive.org URL (read 2026-10-02) | LMS 9.1 `ImageProxy::getImage` redirects (301 to the original url) only when NO handler matches the url AND the spec is a bare extension. LBF's `Plugin.pm` registers `registerHandler(match => qr/coverartarchive\.org/)` (rewriting `front-<n>` to `front-1200`), and the match is by url, not by plugin, so Discography's archive covers take it too: the server downloads them from archive.org, at 1200 px (measured: 255-396 KB PNG answers for `front-250` requests). That is why they stalled the server on the rig (A2 `NO ARCHIVE COVER IS FETCHED WHILE BROWSING`). Without LBF the redirect applies to unsized requests only; a SIZED request (`_300x300_f`, the Default skin, Material once its `icon`-row sizing is fixed) is fetched by the server either way. So the redirect is not a fix to rely on. **Since 0.56.27 Discography registers the same handler itself** (`Covers::proxyHandler`), so this holds with or without LBF (A2 `ARCHIVE COVERS ARE FETCHED AT 05:00`). **Moot since 0.56.44:** no tile points at the archive any more; a cover with none from its source points at our own route `imageproxy/dsc/caa/<group>` (`Covers::tileHandler`), `proxyHandler` and our `coverartarchive.org` pattern are gone, and with LBF installed LBF keeps its own (A2 `ARCHIVE COVERS LOAD IN THE VIEW`). |
 | MAI (Last.fm, Discogs) or the community API is a quicker or better source for the covers of unmatched tiles than the Cover Art Archive | **WRONG for these tiles** — MAI'S COVERS ARE FOUND BY NAME (measured 2026-10-02, rig) | **Community API:** no images of its own; `/discography`'s `cover` is an archive.org url for 106 of Sam Smith's 112 groups (the full-size ORIGINAL, `archive.org/download/mbid-.../...jpg`, the host that stalls the server, larger than CAA's thumbnails); `/album/<t>/<a>/cover` the same. **MAI** (`["musicartistinfo","albumcovers","artist:..","album:.."]` on the server, MAI's own keys, nothing decoded): a cover for 15 of the 25 unmatched releases of Sam Smith, James Arthur and Calum Scott (Last.fm 9, Discogs 6, and CAA by release, archive.org again). Through the proxy, a ping every 50 ms: Discogs 0.28-0.47 s and Last.fm 0.06-10.0 s cold, neither stalling the server (worst ping 0.03 s); CAA 2.2-2.6 s, stalling 0.6-0.7 s. **But MAI looks covers up by NAME, and 3 of 3 checked were WRONG:** "Unholy (live version)" -> the studio "Unholy" cover, "Lay Me Down (Live from The BRITs)" -> the studio single's, "SOS (X Factor Performance)" -> a different James Arthur album. Unmatched tiles are mostly live, session and performance releases, exactly where a name lookup lands on the studio record. The archive cover by release-group mbid is the right cover. (Scratchpad `maicovers.py`, `maistall.py`, `covers/`.) |
 | Apple Music artwork (Simon asked 2026-10-03 about Ben Dodson's "Apple Music Artwork Finder", bendodson.com) would fill the tiles that have no source cover | **WRONG** — APPLE HAS NO COVER THE ARCHIVE LACKS (measured 2026-10-03, scratchpad `apple_cov.py`, the same 25 unmatched releases as the MAI test, storefront gb, calls 3.5 s apart, 31 calls, all 200) | **The site** is a front end for its author's PRIVATE backend (`api.bendodson.com/v1/artwork/apple-music/search` and `/lookup`, read in its `apple-music-2026-09-24.js`), not a public API: every install would be calling one person's server. The source behind it is Apple; the public, keyless route is the iTunes Search API. **Coverage:** one artist lookup (`lookup?id=<artistId>&entity=album&limit=200`: Sam Smith 140 albums, James Arthur 107, Calum Scott 91) finds 5 of the 25 by exact title ("Live from the Royal Albert Hall", "Unholy (live version)", "Too Good at Goodbyes (live at the BRITs)", "Apple Music Home Session: James Arthur", "Whistle (versions)"); one search per tile finds 3. **The archive has a front cover for 19 of the 25 (CAA HEAD, same day), including all 5 of Apple's,** so Apple adds none. The 6 the archive lacks (five "X Factor Performance" singles, "Stay With Me (live) Stripped") are not on Apple either. **Wrong by name, 2 of 7 hits:** brackets dropped as the shared `_norm` drops them, "Lay Me Down (Live from The BRITs)" lands on the studio "Lay Me Down - Single" and "The Power of Love (X Factor Performance)" on a different single; one search per tile ranks the studio "Unholy" above the live one. A real match ("You Are the Reason: Live From Abbey Road Studios (acoustic)" = Apple's "You Are the Reason (Acoustic, 1 Mic 1 Take / Live From Abbey Road Studios)") needs fuzzy matching, the wrong-cover risk. Apple also lists other artists of the same name (three Sam Smiths). **Terms:** Apple's Search API page allows its album art only "to promote store content and not for entertainment purposes", placed beside a store badge linking to the purchase page, at about 20 calls a minute. LBF reached the same verdict for its own rows (its `docs/artwork-and-event-loop-rework.md`, "Faster artwork origins": 57% found, 7% wrong album, 9 x 403 in a 60-call burst). The mzstatic CDN itself is fast (LBF: 0.052 s). The missing covers are the archive's, and the problem was how they were fetched (`THE FREEZE IS TLS 1.3`). |
 | An archive cover that fails under 0.56.44 (the radio placeholder, then the type icon) fails because Covers forces the download to TLS 1.2 | **WRONG** — THE ARCHIVE'S OWN 500 (measured 2026-10-03, the 0.56.44 live check) | 4 of 26 archive tiles failed on the rig across Ocean Colour Scene, Sam Smith and The Rolling Stones. Fetched again from the Mac with curl: **3 are archive.org's own error**: coverartarchive.org and archive.org redirect as normal (2 hops), then the datanode answers **500 after ~5.7 s**, for `front-1200` AND `front-500`, under TLS 1.2 AND under default TLS (`636e3c6b` "Live: One for the Road", `abc62fde` "Tumbling Dice / Hot Stuff (live at the El Mocambo 1977)"; `ee9a1175` "Moseley Shoals Live in Birmingham" the same at both sizes). The full-size original (`/front`) is a 500 too for 2 of the 3 and a 200 (58 KB) for `ee9a1175` only. **The 4th has no cover at all:** `bca9a7e0` "Stay With Me (live) Stripped" is a 404 at coverartarchive.org itself (ListenBrainz did not flag it). So the failures are the archive's, the type icon after them is the designed outcome (A2 `ARCHIVE COVERS LOAD IN THE VIEW`), and only falling back to `/front` would rescue one in three of the 500s. |
@@ -1578,13 +1750,19 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 | A MusicBrainz-only act listed in search (0.56.37, Jandek as the Top Result) opens an empty "No results" page when hide_unmatched is on, and records the 7-day empty verdict | **WRONG** — AN ACT ON NO SERVICE KEEPS ITS PAGE UNDER HIDE_UNMATCHED (measured live 2026-10-02 on 0.56.37, hide_unmatched = 1 on the rig) | A service that cannot identify the artist caches its pool as UNRESOLVED (`Sources::_cacheCands` `unresolved`), and `peekPool` does not count an unresolved pool as streaming checked, so `_buildList`'s visibility rule (`!$hideUnmatched || sections || !resolved`) shows every release and `$poolResolved` stays 0, so `markArtistEmpty` never runs. Jandek's page by mbid: bio + Albums (60), 78 rows, 0.64 s cold. The hide only bites an act a service DOES identify with nothing matching. |
 | Our own plugins caused the ListenBrainz and community API timeouts on Ella Fitzgerald's first visit after the 0.56.39 install (Simon: "be good to see if it wsnt us causing those timeouts with multiple calls going out from different plugins", "and on restart that could cause it") | **WRONG** — OUR PLUGINS DO NOT CALL OUT ON RESTART (measured 2026-10-02) | Of the fleet only Discography and LBF call ListenBrainz, the community API or MusicBrainz (grep of every repo). At startup Discography only probes for a same-host mirror (`autodetectMirror`) and arms the 05:00 covers; LBF probes the mirror and arms its warm/re-seed at `WARM_DELAY` 180 s. LMS was up at 17:03:37; Discography's page timed out at 17:04:10 (community) and 17:04:16 (ListenBrainz), before LBF's 17:06:37. The log holds no other plugin's call there. ListenBrainz itself was slow from OUTSIDE LMS (curl from the Mac, same request: no answer in 40 s, then 21 s, then 0.2 s; a small artist 5.9 s). Live afterwards, an uncached page (Sarah Vaughan) sent only Discography's requests, MusicBrainz ~1/s, ListenBrainz 0.26 s, community 2.6 s. |
 | `%MB_SPECIAL_ARTIST` keeps MB's special entities (Various Artists 89ad4ac3, [unknown], [traditional]...) out of every MusicBrainz name lookup, so no search lists one and no page disambiguates through one (the comment at its definition; six call sites filter it) | **WRONG** — THE SAME-NAME SET KEPT THE SPECIAL ENTITIES (measured 2026-10-02, live on 0.56.40) | `getArtistCandidates` filtered by name only. Live: a search for "Various Artists" listed 89ad4ac3 ("add compilations to this artist · Other") and asked the community API for its discography (no answer in 30 s); a library Various Artists with a dead tag (159267) walked the set in `_disambiguateByLibrary` and browsed 89ad4ac3's six pages (14.2 s, 12 requests; the 2026-09-30 "15.5 s, 13 requests" was this). Fixed 0.56.41 (A2 `NEVER ONE ARTIST: VARIOUS ARTISTS` item 4). |
-
 | Fetching the archive covers in the background at a gentle pace (2 in flight while browsing, 8 idle, after a 3 s grace) keeps the server responsive (0.56.27's design) | **WRONG** — AN ARCHIVE FETCH FREEZES THE SERVER WHATEVER THE PACE (measured on the rig 2026-10-02, scratchpad `thumbprobe.py`: a page then its thumbnails at the phone's 600 px, 6 at a time, a `version` ping every 50 ms) | **Ocean Colour Scene, first visit:** page 3.1 s, 32 thumbnails in 2.3 s, then the server FROZE 11.4, 4.4, 12.8 and 4.4 s within the next minute (35 s of 60). **Paul Weller, first visit:** page 5.5 s, its 60 thumbnails 13.4 s because the background had started while they loaded (Qobuz covers 1.4 s each against 0.3-0.6 s with the server free), then 32 s frozen in 45 s, worst 3.4 s. **Second visit:** page 0.08 s, 61 thumbnails in 1.65 s, no freeze. The loop is held until archive.org answers, so in-flight width does not spread it: up to ~4 s for a cover it has, 11-13 s for one it fails. Fixed in 0.56.30 (A2 `ARCHIVE COVERS ARE FETCHED AT 05:00`). LMS's image proxy DOES share one download per url (`ImageProxy.pm` `%queue`), so the four sizes were not the cost. |
 | Any fetch from archive.org made inside LMS freezes the server while archive.org works out its answer, so archive covers can only be fetched at night | **WRONG for a TLS 1.2 fetch** — THE FREEZE IS TLS 1.3 (found 2026-10-03: LMS 9.1 source read + reproduced with LMS's own reader; the cause the LBF note left UNVERIFIED) | **The cause:** `Net::HTTPS::NB` (LMS `CPAN/`) does not override `can_read`; `Net::HTTP::NB` (plain http) returns 1 there. `Net::HTTP::Methods::my_readline` calls `can_read`, then `sysread`; when `sysread` gets EAGAIN it `redo`es, and `can_read` is a BLOCKING `select` with the socket timeout. With TLS 1.3 the server sends its session tickets right after the handshake: the socket turns readable, `sysread` consumes the tickets, finds no data and returns EAGAIN, and the loop then waits inside `select` until the HTTP answer arrives. So the freeze lasts as long as the server's think time. archive.org's `/download` and its datanodes think for seconds. **Reproduced** (scratchpad `tlsstall.pl`: LMS 9.1's `Net::HTTPS::NB` + `Net::HTTP::Methods` from GitHub `public/9.1`, a non-blocking select loop, every `read_response_headers` / `read_entity_body` call timed; the time spent inside one call is the time a server running it is frozen). One cover, default TLS (1.3): archive.org's 302 came at 14.2 s, all of it inside ONE call (13.85 s); its datanode's 500 came at 4.6 s, 4.27 s inside one call. The same cover forced to TLS 1.2: the longest call 0.001-0.137 s, and the datanode's 10.5 s answer passed with the loop free. **Ten Ocean Colour Scene covers, alternating order:** worst single call per cover, default 0.011-4.28 s (0.113, 0.417, 0.412, 0.012, 0.375, 0.011, 2.912, 0.105, 4.277, 0.270), TLS 1.2 0.000-0.139 s (the ~0.13 s is one round trip for a TLS record split across packets, bounded by the network, not by archive.org). Plain http does not help: coverartarchive.org and archive.org answer over http, but the datanode 301s to https (traced 2026-10-03). **What it means:** a cover Discography downloads ITSELF, with `SimpleAsyncHTTP`'s `options => { SSL_version => 'TLSv1_2' }` (passed to every socket, redirect hops included: `Async::HTTP::new_socket`, the 3xx path reuses the object), does not freeze the server. The image proxy's own fetch takes no options, so a cover the proxy downloads still does. The same cause is behind LBF's "Slow artwork / server freezes". **VERIFIED LIVE 2026-10-03 on the rig (0.56.44 installed, its own OpenSSL):** a `version` ping every 50 ms while two first visits downloaded 12 archive covers on screen (Ocean Colour Scene, then Sam Smith mid-fill; scratchpad `coverprobe.py`): worst 0.22 s, 1 ping over 0.2 s in 541 (0.56.27: 4-13 s). **Built on in 0.56.44** (A2 `ARCHIVE COVERS LOAD IN THE VIEW`); LBF to follow once it is verified live (Simon 2026-10-03: *"if this works then we should likely look to implement in LBF as well"*). |
 | The full search soak's `fewer_matches` verdict (the search row's page matching fewer releases than the artist row's) means the search path loses matches (13 artists on 0.56.42, none on 0.55.0) | **WRONG** — THE SOAK'S ARTIST-ROW PAGE IS A FIRST VISIT (measured 2026-10-02 on 0.56.42, rig on the mirror, `sweep/mirror-0.56.42`, scratchpad `probe_after.py fresh`) | The soak renders the artist row first, on a cold page (ListenBrainz's list, A2 `THE ARTIST PAGE DRAWS FROM LISTENBRAINZ AND THE COMMUNITY API`), and drills the search row later, a fresh entry with the completed list. Cleared by clearing the cache, then a first visit against a fresh entry: Laufey ("A Matter of Time: The Final Hour" folds into "A Matter of Time"), Daft Punk ("Random Access Memories (10th Anniversary Edition)" folds, and RAM then reads Local/Qobuz), Phosphorescent ("Muchacho de Lujo" folds, a 2026 group arrives), Bobbie Gentry ("Live At The BBC" is tagged with the box set's release id 29dd272a, so the completed page lists it under "The Girl From Chickasaw County" tile, Local (2); MusicBrainz's own "Live at the BBC" group 2ada61c5 holds no releases). Nothing stopped playing. Not a stale mirror: Laufey's ListenBrainz list holds nothing the mirror lacks. Compare a soak's paths only once both are completed lists. |
 | The full search soak's falling Local and matched counts against 0.55.0 (37 artists with fewer Local tiles: ABC 4 -> 1, Dean Martin 2 -> 0, Bob Dylan 1 -> 0) mean owned albums dropped off their pages | **WRONG** — THE SOAK COUNTS ONLY THE FIRST 30 TILES of each section of the Albums view (measured 2026-10-02 on 0.56.42, scratchpad `probe_after.py screen/dump`) | Two deliberate causes: an owned VA track makes only its SINGLE Local (A2 `A TRACK LINKS ITS SINGLE ONCE`, 0.56.39), and the soak never opens the Singles view; longer lists (0.56.7/0.56.8) push owned tiles behind "Show more" (Dean Martin's Compilations 279, Bob Dylan's Albums 45). Every section opened in both views: all 41 flagged artists at or above 0.55.0's Local count (ABC 5 + 3 singles "from <album>", Bob Dylan 8 of 8, Dean Martin 9). Of 20 lower matched counts, 13 are the singles move; the other 7, compared tile by tile with July's whole pages (`sweep/raw/browse`), lost nothing (Selecter 17 -> 22, Barry Adamson 26 -> 28) except The Cranberries' "Stars" single, which July matched to Qobuz's best-of album (a wrong match, now gone). |
 | A failed Qobuz search (timeout, HTTP error) reaches our callback as undef, so DSC can tell "Qobuz failed" from "Qobuz has nothing" | **WRONG** — QOBUZ CACHES A FAILED SEARCH AS AN EMPTY ONE (read 2026-10-03 in the Qobuz plugin 3.7.2 source, the installed version, `API.pm` `search` and `_get`; Perl behaviour tested) | `_get`'s error callback logs `Error: $error` at WARN and calls `$cb->()`. `search`'s callback then tests `$results->{albums}` and `$results->{tracks}->{items}` on the undef result, which AUTOVIVIFIES it into `{tracks => {}}` (`perl -Mstrict -we 'my $r; my $x = 1 if $r->{albums}; my $y = 1 if $r->{tracks}->{items}; print keys %$r'` prints `tracks`), then `$cache->set($key, $results, 300)` stores that TRUE value and hands it on. So for 300 s every `search(lc name, 'artists')` for that text answers "no artists" without asking Qobuz: our page pool AND the search page's Qobuz rows (same key). DSC cannot see the difference: a page with a spine settles it UNRESOLVED (`CAND_ERR_TTL`, 1 h); with no spine `_searchQobuz` falls back to the album search. Seen as Imogen Heap in the 0.56.42 soak (dev log, soak entry, item (a)). An upstream bug (one guard before the cache set); not ours to patch. |
 | A global search entry is an ordinary OPML item, so it can carry its own `url` coderef like any row | **WRONG — EVERY SOURCE OPENED FROM A SEARCH CAME BACK EMPTY** (0.56.47 on the rig, 2026-10-03; XMLBrowser.pm public/9.2 read the same day) | XMLBrowser gives a list its session id, the 8-hex prefix every row's item_id walks back by, ONLY when no TOP-LEVEL item has a ref url (`my $refs = scalar grep { ref $_->{url} } @{ $feed->{items} }; if (!$refs) { $sid = createUUID() }`). With 0.56.47's entry (`url => \&_globalSearchWalk`) the whole `globalsearch items` list came back without one: `item_id:_Massive%20Attack.5` instead of 0.56.46's `1a41356a_Massive%20Attack.4`. `getSID` needs 8 hex characters, so a walk read `_Massive%20Attack` as the first row number and went into "My Music". Qobuz and BBC Sounds opened "Empty", and our own index opened My Music's "Songs". The same walks with `ffffffff_` in front opened Qobuz's Releases / Artists / Songs / Playlists and our results. That breaks Material's own search too: its Qobuz and TIDAL rows are these items. Fixed in 0.56.48 with Qobuz's shape: no url on the entry, the coderef one row down (`items => [{ ... url => ... }]`); `t_globalsearch.pl` §1 pins it. |
+| The stale-view fix (0.34.0/0.35.0) made every tap param-addressed, so the rows of a page opened by a param-addressed row (a version's Qobuz album) are param-addressed too | **WRONG** — A DISPATCHED PAGE'S ROWS KNEW ONLY THEIR POSITION (measured live 2026-10-07 on 0.56.49, Stan Getz) | `discography items rg:b248d212… item:v:Qobuz:0` answered with the Qobuz album whose track rows carried NO actions and params `{item_id:"0".."30"}`; the base `play` was `discography playlist play` with params `{menu}` only. So a track's play reached topLevel as a bare `item_id`, and the `%lastCtx` restore walked the ARTIST page: walking `item_id:0..8` on the Work Mac player landed on Options, the Albums switch (flipped to Singles), More options, "Show only what you own", **Refresh discography** (ran: Stan Getz's caches cleared). The phone's Play at 10:00:28 did exactly that (log: 20 paramless walks in 1 s, then `clearArtistCache`). 0.34.0 addressed the version row; nothing addressed the level below it. Fixed in 0.56.51 (A2 `A DISPATCHED PAGE KEEPS ITS ADDRESS`). **A bare `item_id` probe RUNS the row it lands on:** never probe a walk by hand on a player someone uses. |
+| Material plays a list of plugin tracks with one command (the album's) | **WRONG** — MATERIAL PLAYS A TRACK LIST ONE COMMAND PER TRACK (read 2026-10-07, `lms-material` `browse-functions.js`) | `browseDoListAction`: for items that are not library tracks (`track_id:`), it sends `play` for the first and `add` for each of the rest, each built by `browseBuildFullCommand` from the row's own action or the base action + the row's params, through `material-skin-client command-list`. It uses one parent command only when the page's base `playControl` params carry an `item_id` (`resp.allTracksItem`, `browse-resp.js`), which a param-addressed request (no `item_id`) never has. So every track row on a dispatched page must resolve on its own. |
+| Material runs every command in a `material-skin-client command-list` batch | **WRONG** — MATERIAL DROPS A BATCH WITH AN ACCENTED PARAM (measured live 2026-10-07) | `MaterialSkin/Plugin.pm` `command-list`: `eval { decode_json($json) }` on the CHARACTER string JSON-RPC hands it; a non-ASCII letter is not a UTF-8 octet, decode_json dies, the eval swallows it, `actioned` 0 and nothing runs (not even a leading `playlist clear`). Same one-command batch: plain name 1, "João Antônio" 0. Material's Play on a plugin track list IS such a batch, so every param on a bound row must be ASCII: `_addrOf` `<key>_u8` (0.56.52). Single commands (long-press Play, tap one track) and Qobuz's own pages (one all-tracks command) never hit it. |
+| `defined && ...` / `grep { defined && length }` parses as `defined(&& ...)` (a named unary followed by `&&`), so `TrackWarm::_untaggedArtists`' `utf8::decode($_) if defined && !utf8::is_utf8($_)` and `Sources::_trackArtistLines`' credit pick are broken | **WRONG** — BOTH PARSE AS `defined($_) && ...` (run 2026-10-08, review of 0.56.50-0.56.62, macOS perl) | `for ($name, $title) { utf8::decode($_) if defined && !utf8::is_utf8($_) }` on `("Bj\xc3\xb6rk", undef)` decodes the name to 5 characters and skips the undef; `grep { defined && length } @$h{qw(trackartist artist albumartist)}` on `(undef, '', 'X')` gives `X`. Not the A3 `a named unary binds tighter` case: that is a named unary's OPERAND swallowing a comparison, this is a bare one before `&&`. |
+| `return $m->{done} ? $cb->(...) : push @{ $m->{wait} }, $cb;` (`Sources::_resolveWithJoints`' `$fetchOnce`, 0.56.60) parses as `(... ? ... : push(@{...})), $cb`, so a second caller of an in-flight fetch is never queued | **WRONG** — `push` IS A LIST OPERATOR AND TAKES THE REST OF THE LIST (Deparse + run 2026-10-08, review of 0.56.50-0.56.62) | `perl -MO=Deparse,-p` gives `($d ? &$c(1) : push(@{$$m{'wait'};}, $cb))`; run, the not-done call queues `$cb` (wait list 1) and the done call calls back. |
+| `Browse::_addrDecode`'s fallback is broken: `Encode::decode_utf8($raw, FB_CROAK)` without `LEAVE_SRC` consumes `$raw` before it croaks, so `defined $dec ? $dec : $raw` falls back to a truncated value | **WRONG on the Mac's Encode 3.08** — THE SOURCE IS UNTOUCHED WHEN IT CROAKS (run 2026-10-08, review of 0.56.50-0.56.62; the SERVER's Encode version NOT read) | `uri_unescape` then `decode_utf8(..., FB_CROAK)` on `Ant\xF4nio` (not UTF-8) croaks `"\xF4" does not map to Unicode` and on a wide-character value croaks `Wide character`; in both `$raw` still equals its value before the call, so the fallback lands the whole value. The only writer of `<key>_u8` is our own `_addrOf` (`uri_escape_utf8`, always valid UTF-8), so the fallback only meets a hop that already unescaped it. Re-check on the server's Encode before relying on it there. |
+| A works-page row for a work NOT held (a `type => 'text'` row) can be given the work icon and stay a plain, untappable row (plan §10.5 item 1 offered "the work icon on the rest") | **WRONG** — A TEXT ROW WITH AN IMAGE IS TAPPABLE IN MATERIAL (read 2026-10-08, lms-material master `browse-resp.js`, `browse-functions.js`, `utils-deferred.js`) | `browse-resp.js`: "If this is a 'text' item with an image then treat as a standard actionable item" sets `i.type="other"`; `isTextItem` is then false, and `browseClick` falls through to `browseDoClick` -> `fetchItems` with the base go action (no `canClickItem` check on that path), so a tap walks to the row and opens a dead page. XMLBrowser's `itemNoAction` style does not stop it. So a work not held stays imageless (`Browse::_workRow`; pinned in `t_works.pl` §3, "no image"); the icon needs those works to open a page of their own (plan §10.5 item 5, waiting). |
 
 ### B. KNOWN-OPEN AND ACCEPTED — do not re-report as new
 
@@ -1596,6 +1774,19 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
   (the two differences are MB's `[unknown]` and "Treeboundstory", which MB cannot identify at all).
   The WRITER would be a tagged empty contributor beside an untagged owner; none exists. Re-raise only
   with a named artist whose name-entered page loses albums its id-entered page shows.
+  - **RE-RAISED WITH NAMED ARTISTS (2026-10-07, 0.56.58, Dining Room read-only), a NEIGHBOUR of the
+    case above: the tagged contributor is not empty, it is a JOINT one.** Opened as a Similar-artists
+    row opens them (`discography items artist:<name>`, no artist_id, no mbid; WRITER = every Similar
+    artists row, which carries the name only), the owner's albums lose Local: **Suzanne Vega** (her
+    three owned albums `Qobuz`; library: "Suzanne Vega" 155399 + "Suzanne Vega & Joe Jackson" 157765),
+    **Julien Baker** ("Little Oblivions", "Turn Out the Lights" `Qobuz`, while TRAИƧA, owned under her
+    joint feat. credit, reads Local), **The Cinematic Orchestra** ("To Believe", "Ma fleur", "Every
+    Day", "The Crimson Wing" `Qobuz`). By `artist_id` all read Local/Qobuz. Same result by `mbid:` with
+    no artist_id. INFERRED (the CLI exposes no contributor MB tag): the joint contributor carries the
+    artist's MBID and the owner does not, so `localArtistIdsByMbid` returns the joint one and the name
+    ladder never runs. Found by the joint-pickup measurement below; raised to Simon, who asked for the fix.
+    **FIXED in 0.56.59 (installed + verified live 2026-10-08):** the identity read adds the artist's own UNTAGGED
+    exact-name entries (`Sources::localArtistIdsByIdentity`); see the 0.56.59 dev log entry.
 
 ### C. CLOSED FINDINGS
 
@@ -1651,13 +1842,17 @@ curl -s http://plex:9000/jsonrpc.js -d '{"id":1,"method":"slim.request","params"
 ## File Structure
 ```
 Discography/
-├── Plugin.pm       # OPMLBased entry point (tag 'discography', is_app); prefs; canonical `dbg` (API/Browse/Sources delegate); Material custom action REGISTERED once (`_registerMaterialActions`) + old actions.json entry stripped at startup (`_clearMaterialActions`); Settings under WEBUI; registers the `imageproxy/dsc/artist/<name>` artwork handler and (0.56.27) LBF's `coverartarchive.org` handler (`Covers::proxyHandler`), and arms the 05:00 cover retry (`Covers::init`)
-├── Covers.pm       # (0.56.27; night only since 0.56.30) the archive covers a page showed an icon for, fetched AT 05:00 with LBF's resizing: `proxyHandler` (front-<n> -> front-1200), `want` (records only: `dsc:cvwant:v1`, written after 10 s, 30-day prune, 5,000 cap), `_nightTick` (newest first, at most 300), `_tick`/`_launch` (8 in flight, 2 if browsing, page grace + `_netFgBusy` wait; unsized + 150/300/600 in one turn), failure counts `dsc:cvmiss:v1` (3 in a row = given up 30 days), `_secsUntilNight` (05:00 local + per-install offset)
-├── Browse.pm       # artist rows typed `artist-link` on Material >= 6.4.10.9 + header clients (`_artistRowType`, `_materialAtLeast`, 0.56.29); topLevel ($VAR guard, %lastCtx stash+expand flags+page counts+visibility snapshot); app-root view (_rootView: _coverCollageRow responsive random-album-cover banner, "Find an artist" header + search box (0.56.24), About prose, "Works best with" as ONE strip of plugin tiles (badge + name + tick/cross, role as tooltip) w/ badgeSrc imageproxy normaliser); global artist search (_searchRow type=search item in the app root ONLY; the artist page's Options carries _searchButtonRow `act:search`, which opens _rootView; go action overridden w/ search:__TAGGEDINPUT__ fixedParams -> topLevel search-param dispatch GATED on item_id being absent, so a positional walk still reaches the row's own coderef; _artistSearchView w/ 10-min merged cache, only written when every source settled OK (the row check runs every time); `_distinctTitles` gives a repeated result name invisible word joiners so Material shows each (0.56.4); owned acts split by identity say how many albums they open on; the list is SERVICE-first, laid out by `_searchSections` as Top Result + Artists (MusicBrainz same-name acts first, then the other rows, then other spellings; `layout_search` split / all tiles on a strip-capable Material; the MusicBrainz-first redo is not in the code, see `THE SEARCH LIST IS MUSICBRAINZ-FIRST`), _searchResultRow name-drills, _mbCandidateRow mbid-drills); grouped list (bio header, Options/type/library-extras sections, Albums / Singles view toggle _viewToggleItem `act:view:<to>` (Singles view = EPs + Singles, a true tab; per-player ctx `view`), sort+Refresh, release sections as tile strips on a strip-capable Material (`header-strip`, `_useStrips`/`_stripsOn`, layout_albums/layout_singles), service badge via row `extid` (`_extid`), _pageSection 30-at-a-time Show more/less, "Also a member of" band links + "Similar artists" name-drill links w/ artist-photo thumbnails, both second-load, similar deduped against bands by _dropBandDupes — Material keys app rows by TITLE, so a repeated name loses a row); artist artwork resolver (artistImageProxy handler for `imageproxy/dsc/artist/<name>`: MAI local files -> MAI online picture w/ Deezer placeholder HEAD probe -> live service photo -> person icon, verdict cached 30d); tile covers (`_releaseItem`: the source's cover, else the archive cover only when the image proxy already holds it, `_caaHeld`, else the type icon, `_typeIcon`, 0.56.26; an icon tile names its archive url in `_caaWant` and `_wantCovers` queues the shown ones for `Covers`, 0.56.27); a cold streaming pool awaited on every first visit, at most `POOL_WAIT_SHOWN` 6 s with hide_unmatched off (0.56.26); release detail (review w/ inline expand, version rows w/ Show-other-versions toggle, MB links); `_poolOpts` (the streaming lookup's options, one helper for the artist page and the release page) and `_otherNames` (the artist's other MusicBrainz names, cache only), both 0.56.17; _proseRow avatar-column indent; bio/review prose ported from LBF (_cleanBio HTML->structure, _bioParagraphs heading/bullet/paragraph parser, _proseBlock one styled row per block, _proseSection shared collapse/expand shape, _cleanProse the one fetch-side entry point)
-├── API.pm          # Async MusicBrainz (base = mb_base_url pref, mirror-aware _mbBase; EVERY request, MusicBrainz and the community API's `hosted` bucket, through the one `_netGet` queue): artist MBID (library tag first, MB search score>=90; `_nameSearch` shares one `artist:"q"` reply between the resolver, the same-name set and the search), paginated release-group browse (the artist page skips it under 25 groups: `getReleaseGroups(read => 1)` takes the spine from the artist read), url-rels links; the artist page's first list (0.56.7: `_fastSpine` from ListenBrainz `_lbGroups` + the community `_hostedDisco`, `completeArtist` in the background, `promoteCompleted` on a fresh entry; `_pastCap` keeps a Refresh's groups past the cap (0.56.8); `_cmExtra` leaves the community's merged-away ids out; `_officialLater` the bootleg check's rest after the draw (`PREDRAW_RGID_MAX`); `_browseGroups` / `_officialById` the browse and by-id check, shared); filterRowsWithContent (the search's row check; since 0.56.9 the search runs it `known`: decided from the cache, `_rowKey` / `_rememberRow`, the full check after the reply as background work, `$NET_BG` inherited through answers, `_netPromote`; `_rowBatch`: the typed query's reply, then one combined search that also proves pass 1's unproven answers (0.56.6), then the community API by name for the rest (`_hostedByName`, 0.56.5), the resolver only where it cannot decide; proven answers written for the page (`_rememberProven`); counts community API first (`_hostedCount`); then the dead-end/empty-verdict row filter + alias fold, then the 0.51.3 tag attach: a kept row with no artist_id is claimed by its resolved mbid — AFTER the fold, so survivor choice is unchanged; among several tagged contributors the one OWNING the most albums wins, and an id another kept row already carries is never handed to a second row); peekOfficial/warmOfficial + _isOfficial (bootleg filter: the page's groups asked BY ID from the release-group search, `rgid:A OR …`, `RGID_BATCH_MAX` 100 to a request -> {rg=>official?} + {release=>rg} + edition titles, fail-open; its callback says done / 'busy' / 'failed'); peekLocalReleaseMap/warmLocalReleases (release->rg for the owned albums the bootleg check did not place, AFTER the render: one `reid:` OR-search per 50 ids, `REL_BATCH_MAX`, then the per-id lookup for whatever it leaves out); _readArtist (ONE `artist/<id>?inc=aliases+artist-rels+release-groups` read behind warmArtistAliases, warmBandMembers AND the page's spine, fills aliases, MB name, bands, collaboration candidates and, under 25 groups (`ARTIST_RG_LIST_MAX`), the spine, sorted by group id; a caller arriving mid-flight waits on it); _rgEntry/_pruneAliases (one spine entry / the alias prune, shared by the browse and the read); peekBands/warmBandMembers (member-of-band); _vetCollabs (one `inc=artist-rels+release-groups` lookup per candidate: size test + has-releases in one reply); CAA image URLs; caching
-├── Sources.pm      # Source engine: Q/T/D adapters (artist-FIRST candidate fetch, per-adapter query_enc, shared _renderAlbums + _albumArray envelope unwrap), Local pseudo-source (sync albums query, db:album.id play; localAlbums resolves IDENTITY FIRST — localArtistsByMbid/localArtistIdsByMbid read the library's own Contributor.musicbrainz_id tag, ALL matching contributors, before the name ladder; an explicit artist_id still outranks both UNLESS it performs on no album and the page builder opts in via `Browse::_idFallback` — then tag, then name, name never on a shared-name page); localTracks (the track-link pool: Various Artists compilation tracks ONLY, performance roles checked on the per-role ids from `tags:S` because `titles` ignores role_id, same empty-id fallback gated on owning no album), matcher (fleet-synced), matchesFor/peekPool+peekMatches/claimedLocalIds (`_otherNamesFor`: a copy credited under another of the artist's MusicBrainz names is judged under that name, 0.56.17), LL favurl handshake; global artist search (searchArtists parallel per-service artist-type legs + Local CLI leg, cb(\%bySvc, \%failed) — the 2nd arg names services that ERRORED/TIMED OUT, since a failure settles as an empty list and callers must not persist an incomplete set; mergeArtistHits pure norm-keyed dedupe/rank + relevance gate vs the typed query, rows carry the service's own artist photo); artistImage/_svcArtistImage/isPlaceholderImage (live per-service artist photo via each plugin's OWN url builder, priority order; an exact-name photo ends the walk, a token-subset photo is only a fallback when NO service knows the exact name, and an exact entity without a photo vetoes it; Deezer placeholders in both forms, md5('') and the empty `/images/artist//` hash; 30d cache); serviceStatus takes an OPTIONAL pre-built adapters list (omitted = probe); randomAlbumCovers (app-root banner, sort:random — measured ~20ms/2900 albums, cheap); splitOwnedByIdentity (one search result per owned MusicBrainz identity, 0.50.0; a same-name identity found only on the main act's albums merges into it, 0.56.5, via `_albumsFor`)
+├── Plugin.pm       # OPMLBased entry point (tag 'discography', is_app); prefs; canonical `dbg` (API/Browse/Sources delegate); Material custom action REGISTERED once (`_registerMaterialActions`) + old actions.json entry stripped at startup (`_clearMaterialActions`); Settings under WEBUI; registers the `imageproxy/dsc/artist/<name>` artwork handler and (0.56.44) the archive-cover route `imageproxy/dsc/caa/<group>` (`Covers::tileHandler`; LBF's `coverartarchive.org` pattern, 0.56.27-0.56.43, no longer), and starts `Covers::init` (leftover downloads cleared, the 05:00 run armed) and (0.56.62) `TrackWarm::init` (the track match's library pass)
+├── Covers.pm       # (0.56.44; the 05:00-only design of 0.56.30-0.56.43 superseded) the archive covers, LOADED IN THE VIEW: a tile with no source cover points at our route `imageproxy/dsc/caa/<group>/image.jpg` (`tileImage`); `tileHandler` holds the device's request (at most WAIT_MAX 90 s) while this module downloads the 1200 px cover itself over TLS 1.2 (`_download`, `TLS_VERSION`: LMS's HTTPS read under TLS 1.3 froze the server, A3 `THE FREEZE IS TLS 1.3`) and hands the proxy the file, writing the sizes it is asked for into its cache (`_warm`, SPECS). Order: covers on screen first (ON_SCREEN_MAX 4, no grace), then the page in order (`newPage`/`want`, after DRAW_GRACE and while no page request is out), then pages left behind, then the 05:00 run (`_nightTick`, NIGHT_MAX 300; 05:00 local + a per-install offset, `_secsUntilNight`/`_jitter`); background widths 2 browsing / 8 idle (BROWSE_QUIET 20 s); bounded (MAX_JOBS 400, BG_TTL 1 h, a watchdog per download); failures `dsc:cvmiss:v2` (3 counted = given up GIVEUP_TTL 30 days), wants `dsc:cvwant:v2` (30 days, 5,000 cap). Suites: tools/t_tilecover.pl, t_covers.pl
+├── TrackWarm.pm    # (0.56.62) the track match's LIBRARY PASS, off the page: `_untaggedArtists` (LMS's albums/contributors/tracks: albums with no MusicBrainz release id, by album artist; compilations and Various Artists out; a signature of titles, track counts, lengths), `_startPass` (5 min after startup, after every rescan via `['rescan'],['done']`, daily; never during a scan), `_next` (one artist at a time, 1 s apart, waits while a page has a request out, 120 s watchdog), `_artist` (getArtistMbid, the kept list or `API::listenBrainzGroups`, `Sources::localAlbums`, `Browse::_placements` with `cands`, `API::warmGroupTracks` background for the due groups), marks `dsc:trkwarm:2:<name>|<sig>` in DB.pm's `keep`, kept 30 days (done again on a changed signature, after 30 days, or a day after a failure; two library artists of one name keep a mark each), `want` (a page's missing groups, asked 10 s later in the background). Suite: tools/t_trackwarm.pl
+├── Browse.pm       # a page opened by a dispatched row carries its request's address (0.56.51: `_addrOf`/`_bindAddr`/`_boundCallback` in topLevel's item: branches); a composer's WORKS PAGE (0.56.50, plan §9: `_discographyView` branches to `_worksView` when Classical->composer($mbid) and the per-composer switch `works` in %lastCtx is not 'albums'; `_worksList` Options/bio/Popular/genres/Other works/Similar; `_worksToggleItem` act:works:<to>; `_libWorkLink` wk:/lw: rows -> the WORK PAGE `_workPage` (2026-10-08, plan §10.6: `_aboutWorkRow` / `_fetchWorkAbout` MAI's work review on tap, then `_workAlbumRows`, each album opening only the work's tracks via `Sources::libraryWorkActions`, other clients `wka:<album id>:<track ids>` in topLevel); `_composerSummaryRow` the line under the name; an "In your library" section first; owned works with their album's cover; `_resolveArtistMbid` trusts a composer's tag without a release-group check; the bio block is `_bioSection`, shared); artist rows typed `artist-link` on Material >= 6.4.10.9 + header clients (`_artistRowType`, `_materialAtLeast`, 0.56.29); topLevel ($VAR guard, %lastCtx stash+expand flags+page counts+visibility snapshot); app-root view (_rootView: _coverCollageRow responsive random-album-cover banner, "Find an artist" header + search box (0.56.24), About prose, "Works best with" as ONE strip of plugin tiles (badge + name + tick/cross, role as tooltip) w/ badgeSrc imageproxy normaliser); global artist search (_searchRow type=search item in the app root ONLY; the artist page's Options carries _searchButtonRow `act:search`, which opens _rootView; go action overridden w/ search:__TAGGEDINPUT__ fixedParams -> topLevel search-param dispatch GATED on item_id being absent, so a positional walk still reaches the row's own coderef; _artistSearchView w/ 10-min merged cache, only written when every source settled OK (the row check runs every time); `_distinctTitles` gives a repeated result name invisible word joiners so Material shows each (0.56.4); owned acts split by identity say how many albums they open on; the list is SERVICE-first, laid out by `_searchSections` as Top Result + Artists (MusicBrainz same-name acts first, then the other rows, then other spellings; `layout_search` split / all tiles on a strip-capable Material; the MusicBrainz-first redo is not in the code, see `THE SEARCH LIST IS MUSICBRAINZ-FIRST`), _searchResultRow name-drills, _mbCandidateRow mbid-drills); grouped list (bio header, Options/type/library-extras sections, Albums / Singles view toggle _viewToggleItem `act:view:<to>` (Singles view = EPs + Singles, a true tab; per-player ctx `view`), sort+Refresh, release sections as tile strips on a strip-capable Material (`header-strip`, `_useStrips`/`_stripsOn`, layout_albums/layout_singles), service badge via row `extid` (`_extid`), _pageSection 30-at-a-time Show more/less, "Also a member of" band links + "Similar artists" name-drill links w/ artist-photo thumbnails, both second-load, similar deduped against bands by _dropBandDupes — Material keys app rows by TITLE, so a repeated name loses a row); artist artwork resolver (artistImageProxy handler for `imageproxy/dsc/artist/<name>`: MAI local files -> MAI online picture w/ Deezer placeholder HEAD probe -> live service photo -> person icon, verdict cached 30d); tile covers (`_releaseItem`, 0.56.44: the source's cover, else our archive-cover route `Covers::tileImage` (it loads in the view), else the type icon `_typeIcon` when ListenBrainz says the archive has none (`_noCover`, `API::peekCoverFlags`) or the cover was given up or failed within the hour; an unplayable group with no cover is not listed (0.56.46); a tile names its group in `_caaWant` and `_wantCovers` hands the shown ones to `Covers::want` after `Covers::newPage`); a cold streaming pool awaited on every first visit, at most `POOL_WAIT_SHOWN` 6 s with hide_unmatched off (0.56.26); release detail (review w/ inline expand, version rows w/ Show-other-versions toggle, MB links); `_poolOpts` (the streaming lookup's options, one helper for the artist page and the release page) and `_otherNames` (the artist's other MusicBrainz names, cache only), both 0.56.17; _proseRow avatar-column indent; bio/review prose ported from LBF (_cleanBio HTML->structure, _bioParagraphs heading/bullet/paragraph parser, _proseBlock one styled row per block, _proseSection shared collapse/expand shape, _cleanProse the one fetch-side entry point); owned albums no title claims (0.56.61-0.56.62): `_placements` (one answer for the tiles, "Also in your library", the release page and its picker: id tag > the user's match (DB `manual`) > title claims > the track match, UNTAGGED albums only, from KEPT tracklists; claims memoised `PLC_MEMO_TTL`; a missing group handed to `TrackWarm::want`), the release page's `_manualRows` / `_matchPicker` / `_manualAct` (`lm:pick`, `lm:set:<id>`, `lm:del:<id>`); an owned album opens as a LIBRARY album (`_withLibraryActions` / `_libraryActions` -> `Sources::libraryAlbumActions`, 0.56.57-0.56.58); the search's Top Result readied as background work (`_prefetchTop`, stopped by `_prefetchYield`, 0.56.56-0.56.57); a band's eponymous leader handed to the pool (`_poolLeaders`, 0.56.60); a name-only page opens the library artist of that exact name (`Sources::libraryArtistIdByName` in `_discographyView`, 0.56.60)
+├── API.pm          # Async MusicBrainz; one release-group browse per (artist, refresh) at a time (0.56.51, `_rgFlight`; each caller answered under its OWN `$NET_BG`, a page joining `_netPromote`s every page of it, a read-path caller joins a browse started after a read without reading again: `%BROWSE_RUN`, review 2026-10-08) (base = mb_base_url pref, mirror-aware _mbBase; EVERY request, MusicBrainz and the community API's `hosted` bucket, through the one `_netGet` queue): artist MBID (library tag first, MB search score>=90; `_nameSearch` shares one `artist:"q"` reply between the resolver, the same-name set and the search), paginated release-group browse (the artist page skips it under 25 groups: `getReleaseGroups(read => 1)` takes the spine from the artist read), url-rels links; the artist page's first list (0.56.7: `_fastSpine` from ListenBrainz `_lbGroups` + the community `_hostedDisco`, one first list per artist at a time (0.56.56, flight `<mbid>|first`, `%FIRST_JOBS` promoted for a page joining the search's prefetch), `completeArtist` in the background, `promoteCompleted` on a fresh entry; `_pastCap` keeps a `refresh => 1` browse's groups past the cap (0.56.8; unused by the page since 0.56.53, when Refresh began taking the first list; kept, the suites exercise it); `_cmExtra` leaves the community's merged-away ids out; `_officialLater` the bootleg check's rest after the draw (`PREDRAW_RGID_MAX`); `_browseGroups` / `_officialById` the browse and by-id check, shared); filterRowsWithContent (the search's row check; since 0.56.9 the search runs it `known`: decided from the cache, `_rowKey` / `_rememberRow`, the full check after the reply as background work, `$NET_BG` inherited through answers, `_netPromote`; `_rowBatch`: the typed query's reply, then one combined search that also proves pass 1's unproven answers (0.56.6), then the community API by name for the rest (`_hostedByName`, 0.56.5), the resolver only where it cannot decide; proven answers written for the page (`_rememberProven`); counts community API first (`_hostedCount`); then the dead-end/empty-verdict row filter + alias fold, then the 0.51.3 tag attach: a kept row with no artist_id is claimed by its resolved mbid — AFTER the fold, so survivor choice is unchanged; among several tagged contributors the one OWNING the most albums wins, and an id another kept row already carries is never handed to a second row); peekOfficial/warmOfficial + _isOfficial (a prefetch's check, `prefetch => 1`, is JOINED by a page arriving, which gets its answer and moves its request forward, 0.56.57; bootleg filter: the page's groups asked BY ID from the release-group search, `rgid:A OR …`, `RGID_BATCH_MAX` 100 to a request -> {rg=>official?} + {release=>rg} + edition titles, fail-open; its callback says done / 'busy' / 'failed'); peekLocalReleaseMap/warmLocalReleases (release->rg for the owned albums the bootleg check did not place, AFTER the render: one `reid:` OR-search per 50 ids, `REL_BATCH_MAX`, then the per-id lookup for whatever it leaves out); _readArtist (ONE `artist/<id>?inc=aliases+artist-rels+release-groups` read behind warmArtistAliases, warmBandMembers AND the page's spine, fills aliases, MB name, bands, collaboration candidates and, under 25 groups (`ARTIST_RG_LIST_MAX`), the spine, sorted by group id; a caller arriving mid-flight waits on it); _rgEntry/_pruneAliases (one spine entry / the alias prune, shared by the browse and the read); peekBands/warmBandMembers (member-of-band); peekEponymous (0.56.60: the member a band is named after, the `eponymous` attribute on a backward member link in the same read, `dsc:eponym:v1:`; its albums fetched beside the band's to match its releases); group tracklists for the track match (0.56.61-0.56.62: `peekGroupTracks` / `groupTracksDue` / `warmGroupTracks`, ListenBrainz `metadata/release_group?inc=recording` 25 groups a request, kept in DB.pm's `keep` as `dsc:grptrk:2:<rg>` = { t, due }, a "none" due again after a week; asked by background work only, never by a page) and `listenBrainzGroups` (the first list's ListenBrainz half, for TrackWarm); _vetCollabs (one `inc=artist-rels+release-groups` lookup per candidate: size test + has-releases in one reply); CAA image URLs; caching
+├── Sources.pm      # Source engine (versions one per album id, up to MAX_PER_SVC 20, a copy titled exactly like another album on the page left to it, `_addVersion`: 0.56.51): Q/T/D adapters (artist-FIRST candidate fetch, per-adapter query_enc, shared _renderAlbums + _albumArray envelope unwrap), Local pseudo-source (sync albums query, db:album.id play; localAlbums resolves IDENTITY FIRST — localArtistsByMbid/localArtistIdsByMbid read the library's own Contributor.musicbrainz_id tag, ALL matching contributors, before the name ladder, and `localArtistIdsByIdentity` adds the artist's own UNTAGGED exact-name entries beside them (0.56.59, `_untaggedNamesakes`); an explicit artist_id still outranks both UNLESS it performs on no album and the page builder opts in via `Browse::_idFallback` — then tag, then name, name never on a shared-name page); localTracks (the track-link pool: Various Artists compilation tracks ONLY, performance roles checked on the per-role ids from `tags:S` because `titles` ignores role_id, same empty-id fallback gated on owning no album), matcher (fleet-synced), matchesFor/peekPool+peekMatches/claimedLocalIds (`_otherNamesFor`: a copy credited under another of the artist's MusicBrainz names is judged under that name, 0.56.17), LL favurl handshake; global artist search (searchArtists parallel per-service artist-type legs + Local CLI leg, cb(\%bySvc, \%failed) — the 2nd arg names services that ERRORED/TIMED OUT, since a failure settles as an empty list and callers must not persist an incomplete set; mergeArtistHits pure norm-keyed dedupe/rank + relevance gate vs the typed query, rows carry the service's own artist photo); artistImage/_svcArtistImage/isPlaceholderImage (live per-service artist photo via each plugin's OWN url builder, priority order; an exact-name photo ends the walk, a token-subset photo is only a fallback when NO service knows the exact name, and an exact entity without a photo vetoes it; Deezer placeholders in both forms, md5('') and the empty `/images/artist//` hash; 30d cache); serviceStatus takes an OPTIONAL pre-built adapters list (omitted = probe); randomAlbumCovers (app-root banner, sort:random — measured ~20ms/2900 albums, cheap); splitOwnedByIdentity (one search result per owned MusicBrainz identity, 0.50.0; a same-name identity found only on the main act's albums merges into it, 0.56.5, via `_albumsFor`); `libraryArtistIdByName` (0.56.60: the library artist a name-only page means, exact name, most albums); an owned album's actions in LMS's own BrowseLibrary shape (`libraryAlbumActions`, 0.56.57-0.56.58), narrowed to the listing artist under Material's "Filter album tracks" (`_albumNarrowing`, `_listedUnder`); `_localAlbumTracks` the plain-feed drill-in (works page `wka:` rows with `track_ids`, non-Material clients); `libraryWorkActions` (2026-10-08: a work's album, Material's own album page with only the work's tracks, `track_id:<list> work_id:-1`, play the same tracks); THE TRACK MATCH (0.56.61: `trackShortlist` / `trackEvidence` / `trackPick` / `ownTracks`, `albumKey` for the `manual` table; `matchesFor` / `claimedLocalIds` take `placed`); a Qobuz artist past the plugin's 200 albums paged through its handler (`_qobuzMoreAlbums`, 0.56.54-0.56.55, at most 1,000, 10 s budget); a band's eponymous leader fetched beside it (`_resolveWithJoints` `leaders`, `_leaderOnly` when the service has no entity of the band, one fetch per service artist via `$fetchOnce`, 0.56.60); every service copy one row per album id, with the service's `version` on line1 (`_addVersion`, 0.56.51)
+├── Classical.pm    # (0.56.50, plan docs/classical-plan.md §9) a composer's WORKS PAGE's data and matching: `composer($mbid)` (the 220-composer table, `classical/composers.json`), `works($mbid)` (one composer's works in display order, `classical/works/<mbid>.json`, memo of 8; each work's `id` = sha1(mbid|title|subtitle|genre)[:8], computed as build_data.py does, not shipped), the WORK-tag -> Open Opus rule (`match`, a line-for-line port of tools/classical/wrule.py, pinned by t_classical.pl's parity run against tools/fixtures/classical_parity.json; `_index`/`_candidates` score only the works that could raise a signal, an exact superset), `libraryWorks` (LMS `works artist_id:` for the page's artist_id, else the MusicBrainz tag, else the name as COMPOSER; rows whose composer is another contributor dropped, since the query lists works a contributor PERFORMED), `owned` (per composer, kept while his library works are unchanged), `albumsFor` (each album holding the LMS works, with the works' tracks in album order: `tracks work_id: performance:-1`, then one `albums album_id:<list>` read; 2026-10-08, the work page); a work's `year` / `instr` from the data's `y` / `i` (Wikidata, plan §10; `Browse::_workRow` shows them on line 2). Data built by tools/classical/build_data.py from Open Opus's dump + corrections.json + composers_mb.json + wikidata_works.json (wdfetch.py, joined by wdjoin.py)
+├── classical/      # (0.56.50) the shipped Open Opus copy (CC0) with our corrections: composers.json + works/<mbid>.json (220), built by tools/classical/build_data.py — never hand-edit, change corrections.json and rebuild
+├── SingleFlight.pm # the FLEET's request-coalescing registry (canonical copy here, byte-identical elsewhere but the `package` line): `join` (1 = you own it, 0 = parked behind it), `resolve`/`reject` answer every caller once, `inFlight`, a watchdog per key. Used by `Sources::_candFlight` (pools, 0.56.15) and `API::_rgFlight` (the release-group browse `<mbid>`/`<mbid>|refresh`, 0.56.51; the first list `<mbid>|first`, 0.56.56). It knows nothing of `$NET_BG`: callers wrap their callbacks to keep their own flag (`_fastSpine`'s `$mine`, `getReleaseGroups`' `$mineOk`). Suite: tools/t_rgflight.pl
 ├── Settings.pm     # Web settings: "Works best with" first (0.56.31, `Browse::worksBestStrip` via `dsc_works_best`), source priorities (detection), view options (type checkboxes->CSV), release page, integration
-├── DB.pm           # the plugin's OWN SQLite store, <cachedir>/discography.db (takes over the file LMS kept for the old cache namespace; migration 1 drops LMS's `cache` table). store(CACHE_VERSION) answers get/set/remove like Slim::Utils::Cache, so no call site changed. Tables: kv (every cache family; emptied when CACHE_VERSION changes, as the LMS namespace was), mbid (artist name -> artist mbid `dsc:mbid:`, owned release -> release group `dsc:rel2rg:`; NOT emptied by a build), artist (one row per artist mbid: canonical name `dsc:mbname:` + aliases `dsc:alias:`, each with its own key version, time and expiry — LBF's shape; NOT emptied by a build), meta (cache_version); all routed by key prefix. expires_at is an absolute epoch computed in Perl, 0 = never. Expired rows swept at open AND every 6h on a timer (PFR's kvSweep lesson); rows of an old key version in the kept tables retired at open (keepCurrent, fed by API's own key builders). Degrade-never-die. Suite: tools/t_db.pl
+├── DB.pm           # the plugin's OWN SQLite store, <cachedir>/discography.db (takes over the file LMS kept for the old cache namespace; migration 1 drops LMS's `cache` table). store(CACHE_VERSION) answers get/set/remove like Slim::Utils::Cache, so no call site changed. Tables: kv (every cache family; emptied when CACHE_VERSION changes, as the LMS namespace was), mbid (artist name -> artist mbid `dsc:mbid:`, owned release -> release group `dsc:rel2rg:`; NOT emptied by a build), artist (one row per artist mbid: canonical name `dsc:mbname:` + aliases `dsc:alias:`, each with its own key version, time and expiry — LBF's shape; NOT emptied by a build), meta (cache_version); manual (0.56.61, the user's own matches, by artist mbid + album title/album artist, '-' = never match it by its tracks; `manualFor` / `manualSet` / `manualRemove`, always UTF-8 octets; never emptied, never expires); keep (0.56.62: kv's shape for families a build must not empty, `dsc:grptrk:` tracklists and `dsc:trkwarm:` pass marks, by `%KEEP_FAMILY`); all routed by key prefix. expires_at is an absolute epoch computed in Perl, 0 = never. Expired rows swept at open AND every 6h on a timer (PFR's kvSweep lesson); rows of an old key version in the kept tables retired at open (keepCurrent, fed by API's and TrackWarm's own key builders). Degrade-never-die. Suite: tools/t_db.pl
 ├── install.xml     # <extension> + <optionsURL>; version lives here; repo.xml (repo root) points at the dev zip
 ├── strings.txt     # PLUGIN_DISCOGRAPHY_* UI strings
 └── HTML/EN/plugins/Discography/
@@ -1678,9 +1873,9 @@ Build the zip from the repo root: `zip -r -X Discography.zip Discography -x '*.D
 - **SUPERSEDED FOR THE ARTIST PAGE (0.54.4): the artist page no longer carries the search row (a button opens the home page instead), and the home page is always small, so it always draws inline. The note below is kept for the mechanism.**
 - **KNOWN, NOT PLUGIN-FIXABLE — the search row renders inline OR as a click-to-popup depending on the VIEW SIZE, not on anything the plugin sends (assessed 2026-07-23; Simon: "leave it alone").** Field: the `_searchRow` looks inline (an always-visible text box, the "home-page look") on some artists and as a clickable row that opens a text-entry popup on others (Stan Getz, British Sea Power — the look Simon prefers). Traced through Material source: a `type:'search'` item renders inline via a `<text-field>` in the normal list template (browse-page.js:406), BUT once a view exceeds `LMS_MAX_NON_SCROLLER_ITEMS` (~100 rows) Material switches to its virtual scroller (`useRecyclerForLists`, browse-page.js:674) where the row becomes a plain clickable row whose tap fires `promptForText` (browse-functions.js:1047-1055) — the popup. Same trigger for grid mode (`grid.use`). Big discographies (all type sections + extras + band/similar links) tip past 100 and get the popup; smaller ones stay inline; the home page is always small -> always inline. The item the plugin emits is BYTE-IDENTICAL in every view; there is **no per-item override** for the inline-vs-popup choice, so it cannot be forced from the plugin either way (a big artist ALWAYS exceeds 100 -> scroller). **The only fix is a ~2-line Material change** (exclude a marked search item from the inline-field branch at browse-page.js:406 + add `|| item.<flag>` at browse-functions.js:1048) — a local-patch/upstream-ask candidate, NOT built (Simon declined; would also need verifying a plugin-set marker survives XMLBrowser->Material). Do NOT re-investigate as a plugin bug.
 - **FIXED UPSTREAM in Material 6.4.6 — the entry on SEARCH results and on an artist page entered FROM search** (was "KNOWN LIMIT, NOT plugin-fixable", assessed 2026-07-15). Simon's upstream ask shipped as proposed: `browseActions` falls back to the item's own category when the view has none, and search builds `itemCustomActions` as a per-type map (`getCustomActions("artist")` per category, resolved per item from its `artist_id:` prefix). Verified in the live 6.4.10 bundle, 2026-09-24. No plugin change was needed; it reads the registered list as well as the file. **Not yet checked in a browser for this plugin** — see the 0.52.0 live-verify list.
-- **Params → feed**: XMLBrowser's `cliQuery` passes tagged request params to the top-level feed as `$args->{params}` (same path Material's own `browselibrary items … artist_id:` uses; LBF/PFR read it the same way).
+- **Params → feed**: XMLBrowser's `cliQuery` passes tagged request params to the top-level feed as `$args->{params}` (same path Material's own `browselibrary items … artist_id:` uses; LBF/PFR read it the same way). `topLevel` reads them through `Browse::_addrDecode` (0.56.52): a bound row's non-ASCII value rides percent-encoded as `<key>_u8` (A3 `MATERIAL DROPS A BATCH WITH AN ACCENTED PARAM`) and is decoded back to `<key>` there.
 - **Settings template vars → `beforeRender`, NOT `handler`.** `Slim::Web::Settings::handler` (verified against LMS source) does, in order: persist each `prefs()` pref from `$params->{pref_<name>}` → refresh `$params->{prefs}{<name>}` from the store → call `$class->beforeRender($params, $client)` → render. So anything the template derives from a pref must be built in `beforeRender`; built in `handler` before `SUPER::handler` it is read PRE-save and a save re-renders the old values (looks like a lost save) while the base's `prefs.*` rows on the same page show the new ones. Sanitising the incoming `$params->{pref_*}` still belongs in `handler`, before `SUPER::handler`. Fleet-wide rule — DSC/PFR/LBF all had this bug (fixed 2026-07-10).
-- **Local syntax gate**: `perl -c` with stubbed Slim modules (stubs in the session scratchpad; recreate as needed — Log, Prefs, PluginManager, Strings, Plugin::OPMLBased, Schema, JSON::XS).
+- **Local syntax gate**: `zsh tools/syntax_check.sh` (generates stub Slim modules in a temp dir and compiles every module against them; also asserts CACHE_VERSION in API/Sources/Browse matches install.xml and that repo.xml/install.xml parse). It is a zsh script (`${0:A:h:h}`): run under bash it fails every module with "Can't open perl script".
 
 ## Stale-view bug + param-addressed navigation plan (diagnosed 2026-07-15)
 
@@ -1852,8 +2047,70 @@ library title) live in `_albumMatches`, which is fleet-synced across DSC/LBF/PFR
 in the same session as the outstanding `_norm`/`%FOLD` port debt from 0.44.26, not as a DSC-only
 patch. Estimated value is low: roughly a dozen albums that are already visible and playable.
 
+**2026-10-08: REOPENED BY A FIELD CASE — a tester's, not Simon's library.** Owned *McCoy Tyner Plays John
+Coltrane* vs MB group `4b65bc2e` **"McCoy Tyner plays John Coltrane: Live at the Village Vanguard"** (one
+release `06d7a310`, 7 tracks). Simon asked for a partial-title match verified by track count and names. MEASURED
+the same day, before anything was built:
+- the bootleg check's reply (`_officialById`, a RELEASE-GROUP search by `rgid:`) lists each release's id, title
+  and status ONLY — **no track count**. A RELEASE search (`release?query=rgid:`) carries `track-count`, but that is
+  a request we do not make today;
+- ListenBrainz `/1/metadata/release_group/?release_group_mbids=<csv>&inc=recording` gave the full 7-track list
+  in **0.22 s, 2.5 KB**, one request for many groups; DSC has an `lb` bucket but no metadata call yet;
+- 5 of the 7 "library title shorter" rows above (McCoy Tyner, The Orchids, James, The Sleepy Jackson, Cliff
+  Martinez) are the owned title followed by a SUBTITLE on MB's side (`:` or `...`); Orange Juice and The Orb are
+  not prefixes at all (leading "The", the artist's possessive) and no prefix rule reaches them.
+Proposal put to Simon; nothing built. Simon also raised a MANUAL MATCH for what the rule cannot decide (2+
+candidates). Proposed placement, not yet agreed: a row on the RELEASE page beside "Refresh streaming matches",
+listing the artist's "Also in your library" albums; not on the owned row, which opens LMS's own album page since
+0.56.58 and takes no plugin rows. Simon then suggested a WEIGHTED match. Proposed: score each leftover against the
+page's groups (tracks from ListenBrainz as the backbone: titles, count, running time; title words, discounted by
+`Sources::_titleWeight`'s generic list; year a little), title alone never enough, an outright winner only (the
+resolver's "a tie decides nothing"), the same scores ordering the manual list. Weights and threshold to come from a
+replay over Simon's library; not built.
+
+**2026-10-08: REPLAYED (Simon: "use the mirror").** `tools/leftover/` (fetch_library, july_tags, fetch_spines,
+leftovers.pl, fetch_lb, score.pl; data + outputs in `sweep/leftover/`). Real `claimedLocalIds` / `_editionTitles` /
+`_norm`; groups from the mirror, UNCAPPED (the harness's first 600-group cap made Forty Licks, Elvis '68 and a Louis
+Armstrong volume look like leftovers - the page has no cap); release tags from the July logs (the CLI exposes none).
+Today: 2,831 owned albums claimed, 66 in "Also in your library" (24 of them Various Artists, which has no page), 26 with
+a title candidate. **RULE v3** (what survived): a group sharing a title word (artist words and the/a/of/and/s
+aside); tracks from ListenBrainz `inc=recording`; your tracks found >= 0.65 AND the group's tracks in your copy >= 0.9
+(your copy may carry bonus tracks, the group may not); running times KNOWN for >= 80% of the pairs and >= 80% within
+max(4 s, 4%); score 0.7 x tracks + 0.3 x title x `_titleWeight`, >= 0.75 and >= 0.1 ahead of any other passing group,
+else the manual list. Result: James, The House of Love (the 1990 one of THREE same-titled groups), The Psychedelic
+Furs, The Sleepy Jackson, The Waterboys, plus the tester's McCoy Tyner (synthetic, the release's own times +1.5 s) = 6
+matched, all right (the replay also counted Stevie Wonder's "Original Musiquarium": **a replay artefact, found LIVE
+2026-10-08** - its MusicBrainz release tag `660c019f` (group `6c6dec89`, the mirror) places it by id, so it was never
+in "Also in your library"; the replay looked the July logs' tags up by TITLE and they file it under "Wonder: Original
+Musiquarium"); Dusty Springfield's "Best [Japan]" to the manual list (two
+compilations hold her 24 tracks); 0 wrong. **HOLDOUT** (every claimed album with its real group hidden, 1,193 with a
+candidate left): v1 (found >= 0.9 OR cover >= 0.9, unknown times passing) matched **166 wrong** - two-album sets
+("Raintown / When the World Knows Your Name", found 1.00 cover 0.5) and live/demo/karaoke versions whose ListenBrainz
+tracks carry no length; v2 (both ways >= 0.65, times required) 9; **v3: 6 (0.5%)**, all MusicBrainz holding the same or
+an overlapping tracklist as another group (Dinah Washington 23/23, Harry Connick "Oh, My NOLA" / "My New Orleans",
+Long Ryders deluxe vs "10-5-60 / Native Sons"). Known misses: Bavouzet's Debussy box (104 = 104 tracks, times agree,
+but classical track names pair only 36) and the 6.3% of ListenBrainz tracklists missing a length - both manual.
+Cost: one ListenBrainz request on a page with such a leftover (26 of 1,114 pages here), ~0.3 s.
+**BUILT as 0.56.61 (Simon: "yes lets build both"), with the manual match: A2 `THE TRACK MATCH`, A2 `MATCHES MADE BY HAND`.**
+
 ## PARKED — CLASSICAL NEEDS A DIFFERENT SPINE (Simon, 2026-07-22): evaluate Open Opus or similar
 
+> **2026-10-07: STEP 1 BUILT, 0.56.50 (not yet installed):** a composer Open Opus knows opens on his works page
+> (`Classical.pm`, data in `Discography/classical/`), with a Works | Albums switch of its own; the album page is
+> today's. Plan §9.7 says what changed from the plan; the dev log has the rest. Performers (plan §4.4) still parked.
+>
+> **2026-10-03: STEP 0 MEASURED, nothing in the plugin changed** — plan §8: the composer table (all 220 mapped,
+> 11 doubtful hand-checked); the library's works (345 of 397 matched, 1 wrong); the work search over the 1,234
+> recommended works (found on Qobuz 95%, TIDAL 92%, either 96%; median 21 recordings a work on Qobuz; hand check of
+> 100 searches: on the 65 the rule had not seen, 1.8% of kept albums wrong and about 95% found, 0.4% / 98% after
+> fixing what they showed). Scripts in `tools/classical/`, raw data in `sweep/classical/`.
+>
+> **2026-10-03: DECISIONS MADE (plan §6, Simon):** ship our own corrected copy of Open Opus with a build tool that
+> re-applies our corrections to any newer dump; the composer page is works with a switch to today's album view (works
+> only if that gets messy); composers outside Open Opus get a works list built from the library, which must work for
+> libraries tagged unlike Simon's; performers ON HOLD. Step 1 (the composer page) planned in plan §9, awaiting
+> Simon's OK; nothing built.
+>
 > **2026-10-02: PLAN WRITTEN, not built — `docs/classical-plan.md`** (Simon: *"what I want now is a plan for
 > classical handling ... Open Opus ... lets look over that and MB to come up with a plan"*). The five questions
 > below, answered by measurement: (1) Open Opus gives composer -> works (220 composers, 24,975 works, genre +
@@ -2238,7 +2495,7 @@ Don't guess these; the adapters break silently when they drift. Sources fetched 
 | Call | Signature | Callback receives |
 |---|---|---|
 | Qobuz `search` | `($self,$cb,$query,$type,$args)` | whole result hash: `{artists}{items}`, `{albums}{items}` |
-| Qobuz `getArtist` | `($self,$cb,$artistId)` | result hash w/ `{albums}{items}` (`artist/get`, `extra=albums`, capped at `QOBUZ_DEFAULT_LIMIT`=200) |
+| Qobuz `getArtist` | `($self,$cb,$artistId)` | result hash w/ `{albums}{items}` (`artist/get`, `extra=albums`, capped at `QOBUZ_DEFAULT_LIMIT`=200; DSC pages past it through the handler's `_get`, `Sources::_qobuzMoreAlbums`, 0.56.54) |
 | Qobuz `_albumItem` | `($client,$album)` | — (album items normally carry a named `{artist}`; also `{artists}` w/ roles) |
 | TIDAL `search` | `($self,$cb,{type,search,limit})` | plain ARRAY (`$result->{items}`) |
 | TIDAL `artistAlbums` | `($self,$cb,$id,$type)` — `$type` defaults `'ALBUMS'`, also `EPSANDSINGLES`/`COMPILATIONS` | plain ARRAY |
@@ -2308,7 +2565,980 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 
 ## Development Log
 
-### 0.56.49 (2026-10-03) — ONE LOGO, THE STACK: the plugin's logo is Material's album-multi everywhere — INSTALLED + VERIFIED LIVE 2026-10-03 with Material 6.4.10.11 (sha 868ca4f3; Simon: *"installed it works"*)
+### 0.56.65 (2026-10-08) — a work row plays the work; FOUND: Play at the top of an artist page sends a load with no filter — INSTALLED 2026-10-08, VERIFIED LIVE by Simon ("installed and works"), sha 39f1c135
+- **Build (Simon: "yes" to building 0.56.65):** install.xml, repo.xml, CACHE_VERSION (API / Sources / Browse) 0.56.65;
+  zip 990,170 bytes, 256 files, byte-identical to the tree; sha `39f1c135bbf6467fcb8223874552748c145399c3`;
+  `syntax_check.sh` OK; 77 suites / 4,139, 0 failed. Carries only the work-row fix below over 0.56.64.
+- **LIVE CHECK, once installed:** Stravinsky > Petrushka (or Vivaldi > The Four Seasons) in Material from the artist's
+  Discography entry: the work page's top Play loads only the work's tracks (Petrushka 15; The Four Seasons 13 = HMV's 1
+  then Capella's 12, earlier album first), Append adds them, Next inserts them; the album rows' own menus unchanged.
+- **Source:** Simon on 0.56.64, Dining Room, a screenshot of Stravinsky > Petrushka's work page with Append / Next / Play
+  at the top: *"buttons at top dont do what they should"*, *"just pressed ply nothinf"* (and Append "only adds one track").
+- **Cause, MEASURED in the live 6.4.12** (headless Chrome over CDP, scratchpad `cdp/`, player commands logged, never
+  sent; `workpage.py` now opens the page as the real entry does, through Material's `customActionPage` with the
+  lmsbrowse `type:'artist'` of 0.56.34): the composer page is an online-artist page (`STD_ITEM_ONLINE_ARTIST`), so
+  Material gives EVERY row on it `STD_ITEM_ONLINE_ARTIST_CATEGORY` (302; browse-resp: `parent.stdItem ==
+  STD_ITEM_ONLINE_ARTIST`), and a page opened from a row with a stdItem gets toolbar [Append, Play] acting on that row
+  (`browseHandleListResponse`, "Select track -> More" branch). The work row had no play actions, so Material fell to the
+  list's base `discography playlist play|add|insert` + the row's `params` (a bound row has none): sent
+  `["discography","playlist","play","menu:discography",...]`, no address, so the plugin's ROOT view: XMLBrowser's play
+  cleared the queue and found nothing (the Dining Room's 75 tracks -> 0), add added the root's one playable thing.
+  My first replay drew no buttons because it opened the page WITHOUT `customActionPage`.
+- **Fix (in the tree):** `_libWorkLink` gives the work row (`wk:` and `lw:`) its own play / add / insert ->
+  `["discography","playcmd"]` `{ cmd, works => <its LMS work ids> }`; `Browse::playCommand`'s new `works` branch
+  (ids-only list, a player) takes `Classical::albumsFor` and executes `playlistcontrol cmd:load|add|insert
+  track_id:<every library track of the work, album by album as the work page lists them> work_id:-1` (the album rows'
+  own form). Asked on the press: the works page makes no extra query. Replayed: with those actions Material's top Play /
+  Append / Next send `discography playcmd cmd:play|add|insert works:<ids>`. `t_works.pl` 83 (+11); 9 of 9 mutants
+  caught (scratchpad `mutplay/`; one first survived as equivalent for its input, a mixed `7415,abc` test added);
+  77 suites / 4,139, 0 failed.
+- **FOUND, NOT FIXED (Simon to decide) — Play / Append at the top of a Discography ARTIST page:** the page item
+  Material makes for the custom action has no actions and no params, so the toolbar Play builds
+  `playlistcontrol cmd:load currentaction:0` (measured, Radiohead's page and the page "More options" redraws).
+  LMS 9.1 `playlistcontrolCommand` (read, NOT run): no recognised filter -> `_playlistXtracksCommand_parseSearchTerms`
+  with an empty hash -> `{ 'me.audio' => 1 }` = EVERY audio track (the player's virtual library if it has one), so
+  Play would replace the queue with the whole library and Append add it. Since 0.56.34/0.56.35 (2026-10-02). A composer's
+  works page draws no toolbar (its first row, the composer's line, is html), and section headings' pages none either.
+  **DECISION (Simon, 2026-10-08): "can we just do 1 for the composer pages as it works well for regular artists and dont
+  want to lose that"** — regular artist pages stay as they are (header and all). Option 1 (a line first) is ALREADY true
+  of every composer page: all 220 composers in the shipped data get the composer's line (birth year, epoch or works
+  count), so nothing to change there. The artist-page Play outcome stays UNVERIFIED (source-read); a LyrPlay test is
+  offered, not run.
+
+### 0.56.64 (2026-10-08) — a work not held drawn like an owned one; "the whole album" report measured — INSTALLED 2026-10-08 (feed checked: unowned rows carry the weighted title + line 2; The Four Seasons album rows still 12 / 1 tracks), sha f8316a7f
+- **Simon on 0.56.64, 2026-10-08:** *"If i use append from the top of the works it only adds one track, if I press play
+  here it doesnt do anything, if I use the contect on the works append or play works as planned."* REPLAYED in the REAL
+  Material 6.4.12 (headless Chrome driven over CDP, scratchpad `cdp/`: `prep.py mobile|desktop`, `workpage.py`;
+  `lmsCommand` patched so every player command is LOGGED, never sent), Vivaldi > The Four Seasons: the work page has
+  NO toolbar Play/Append (desktop and mobile; only Toggle view + Search). Each album opens with only the work's tracks
+  (Capella 12, HMV 1) and its toolbar is Append all / Play all (`browseDoList` over the tracks, as the page's
+  `current` id is `currentaction:...`): Append all = `playlistcontrol cmd:add track_id:<the work's ids> tags:...
+  features:hi work_id:-1 library_id:-1`; Play all = `playlist clear`, then the same with `cmd:load`. The row's own
+  context Play is `playlistcontrol cmd:load track_id:<ids> work_id:-1 menu:1`. The HMV album (49632) is a 16-track
+  compilation holding ONE movement of The Four Seasons (Spring I), so one track is that album's right answer. OPEN:
+  "Play does nothing" not explained by the commands; the Dining Room queue went from 75 tracks to 0 in that window
+  (clear sent, load not taking?). Needs a replay of the toolbar's two commands on the LyrPlay player; asked Simon.
+- **Build (Simon: "bump and build"):** install.xml, repo.xml, CACHE_VERSION (API / Sources / Browse) 0.56.64; zip
+  989,500 bytes, 256 files, byte-identical to the tree; sha `f8316a7fe6fb740b24e717314b6515291831e982`;
+  `syntax_check.sh` OK; 77 suites / 4,128, 0 failed. Carries only the change below over 0.56.63.
+- **Source:** Simon on 0.56.63: *"its still not isolating the individual works to play its the whole album"*, then *"It
+  needs to onky show the tracks in the works not the whole album, if its using L<S works it breaks it out nicely all
+  ready, Also for ones we dont own can the name of the works be in Bold lik it is when owned"*.
+- **Bold (built in the tree):** MEASURED in headless Chrome against the live 6.4.12 CSS: an owned row's title is
+  `--std-weight` 400 / 15px, its line 2 400 / 13px at opacity 0.7; a work not held, a `text` row, was 200 (Material's
+  `.browse-text .v-list__tile__title{font-weight:200!important}`). `Browse::_workTextHtml`: on a header client
+  (`_wantHeaders`, Material) the row's name is a title `<div>` at `var(--std-weight,400)` and a line-2 `<div>` in the
+  subtitle's style (weight, `--small-font-size`, `--icon-color`, `--sub-opacity`, one line cut at the edge); both
+  escaped; still a text row with no image and no id (an image would make it tappable). Re-measured: title 400 / 15px,
+  line 2 400 / 13px / 0.7, the owned row's values. Other clients keep the plain row. `t_works.pl` 72 (+4, and the
+  display-order check reads the shown title); 8 of 8 mutants caught (scratchpad `mutbold/`); 77 suites / 4,128, 0 failed.
+- **"The whole album" — NOT reproduced; every layer MEASURED as isolating (2026-10-08, 0.56.63 installed):**
+  (1) the live feed's work page (Vivaldi, The Four Seasons, `item:wk:67e80f20`): the album row's `go` is
+  `browselibrary items mode:tracks album_id:49612 track_id:<12 ids> work_id:-1`, `play` / `add` / `add-hold`
+  `playlistcontrol track_id:<12 ids> work_id:-1`; (2) the server answers that `go` with 12 tracks, and the `tracks`
+  command Material builds from it with 12; (3) Stravinsky: every owned work's rows are isolated (Petrushka 15 of 51, The
+  Firebird 7, Scènes de ballet 11, The Rite of Spring 14 of 51 and 14 of 25); (4) Material 6.4.12's LIVE bundle
+  (`material-deferred.min.js`) keeps every param on the browselibrary-to-`tracks` rewrite; the row has no `stdItem`, so
+  `browseDoClick` takes the row's own `go`; Play, the toolbar Play on the album page and "Play release starting at
+  track" all take the row's `play` (+ `play_index`); (5) LMS 9.1 `playlistcontrol`: `work_id:-1` skips the work branch
+  (`$workId ne '-1'`) and `track_id` loads exactly those ids in order. The HQPlayer player's queue held The Rite of
+  Spring's 14 tracks of album 49645's 51, so an isolated play has happened. Likeliest cause: a work page drawn by the
+  previous build still on screen (Material keeps a page's rows across a server restart, and Back never re-fetches; the
+  pre-0.56.63 work page opened whole albums). Asked Simon which screen and button.
+
+### 0.56.63 (2026-10-08) — the works page: the year written + the instrumentation (Wikidata), and the layout items 1-4 (covers, the composer's line, "In your library" first, the WORK PAGE); also carries the review fixes below and all of 0.56.62 — BUILT sha 15c951fb, NOT installed
+- **Build (Simon: "lets build this"):** install.xml, repo.xml and CACHE_VERSION (API / Sources / Browse) 0.56.63;
+  bumped without asking, since 0.56.62's zip had been handed over (a bump never stops a reinstall). Zip 989,032 bytes,
+  256 files, byte-identical to the tree (unzipped and `diff -r`), the 220 composers' works files inside; sha
+  `15c951fb33e2745cf43f5f724644035e89d0b82d`. Before zipping: `syntax_check.sh` OK (CACHE_VERSION 0.56.63), 77 suites /
+  4,124 checks, 0 failed (tallied from each summary line + exit code), `test_build.py` 68 passed. 0.56.62 was never
+  installed, so its LIVE CHECK list (its entry below) is this build's too, with `store emptied for version 0.56.63`.
+- **Source:** Simon on the works page: *"can we have the year they where wrtten if thats available ... what other
+  metadata could we use"*, *"Also we should look to display works when clicked in the way LMS does but using the correct
+  names from OO"*, then *"if we have instrumentation use it"*, then on the offered list (plan §10.5) *"all good for 1 - 4
+  we wait for 5"* (item 5, a page for works not held, waits). Full record: `docs/classical-plan.md` §10.
+- **Data:** Wikidata fetched for all 220 composers (11,897 items, snapshot `tools/classical/wikidata_works.json`); the
+  shipped works gain `y` for 3,843 of 24,790 works (60% of the recommended ones) and `i` for 1,357 (14% of the
+  recommended: a line shows only when the title does not already say it; my earlier "two thirds" counted the data, not
+  the lines, corrected in §10.4). The full run's report showed wrong and noisy lines the 8-composer measurement had
+  not; audited over all 5,287 matched works before each rule (§10.4a): `wdjoin.scoring_conflict` (an item contradicting
+  the title's own scoring is not used, 35 refused), label tidying, no count on strings/continuo, at most 8 items,
+  synonyms, more sacred forms; one Wikidata error (The Rite of Spring "lihua") left out through the new `wikidata`
+  section of `corrections.json` (applied / stale in the build report, as the Open Opus corrections).
+- **Plugin:** `Classical::works` -> `year` / `instr`; `Classical::albumsFor` now answers each album with the work's
+  tracks (`tracks work_id:<each LMS work> performance:-1 tags:eit`, disc then track order; one `albums album_id:<list>`
+  read for title / year / cover / artist, which `albums work_id:` never answered). `Browse`: `_workRow` line 2 = year ·
+  In your library · instrumentation · subtitle, an owned work with its album's cover (a work not held: no image, since
+  Material makes a text row with one tappable); `_composerSummaryRow` first ("1756–1791 · Classical · 555 works", "born"
+  with no death year); an "In your library" section before Popular (rows without the mark); `_libWorkLink` opens
+  `_workPage`: `_aboutWorkRow` (MAI `WorkInfo::getWorkReview` by Open Opus title + composer, on tap, `_fetchWorkAbout`:
+  kv `dsc:wrev:1:<composer>|<title>` 30 d / 1 d, `WORK_ABOUT_WAIT` 15 s watchdog, MAI's not-found item skipped), then
+  "In your library (N)" and one row per album (`_workAlbumRows`). `Sources::libraryWorkActions`: Material's own album
+  page with only the work's tracks (`browselibrary items mode:tracks album_id track_id:<list> work_id:-1`), play / add /
+  insert `playlistcontrol track_id:<list> work_id:-1`, every action defined + info; other clients `wka:<album>:<track
+  ids>` (topLevel; plain `wka:<album>` still opens the whole album) -> `_localAlbumTracks` `track_ids` (no artist
+  narrowing; none left = the whole album). Measured on the rig before building: LMS's browselibrary and tracks narrow to
+  the list (the Four Seasons album, 3 of 21); playlistcontrol with work_id:-1 takes its track_id branch (Commands.pm
+  9.1); Material keeps the params on its `tracks` rewrite and hides track numbers for a work_id request (browse-resp.js
+  `isWork`). New strings ABOUT_WORK / _NONE / _LATER, BORN, ONE_WORK, N_WORKS.
+- **Tests:** `test_build.py` 68 (was 42), `t_classical.pl` 58 (albumsFor rewritten: tracks per work, one albums read,
+  disc order, missed albums), `t_works.pl` 68 (the composer's line, "In your library" first, covers, the work page,
+  About incl. kept text and MAI's not-found item, the narrowed album actions, `wka:` both forms),
+  `t_localalbumtracks.pl` 66 (§5: the real `libraryWorkActions`, the track-id drill-in). Mutants: 34 of 34 caught
+  (scratchpad `mut2/run.py`; 4 survived the first run, each a missing test, added). 77 suites green, `syntax_check.sh`
+  OK, `parity.py` unchanged (352 of 397). CACHE_VERSION untouched (a build bumps it).
+- **Live check after a build + install (Material, from My Apps too):** a composer page (Mozart, Vivaldi): the line under
+  the name, "In your library" first with covers, line 2 with year and instrumentation; tap an owned work -> its page
+  (About this work, In your library (N), the albums); About opens MAI's text; an album opens Material's album page with
+  ONLY the work's tracks (The Four Seasons on album 49612, Capella Istropolitana: 12 of 21), Play plays those, long-press a track > "Play
+  release starting at track" stays on the work; an "Other works in your library" row opens the same page.
+
+### (review of 0.56.50-0.56.62, 2026-10-08) — two fixes, BUILT in 0.56.63 (sha 15c951fb, entry above), NOT installed
+- **Review:** inline, every changed module + `Classical.pm` / `TrackWarm.pm`, three gates run (`main` ships no
+  plugin, so no schema rung is reachable by a user). Two findings; three beliefs cleared by measurement logged in §A3
+  (`defined && ...`, `? : push @{...}, $cb`, `_addrDecode`'s Encode fallback).
+- **(1) A tap on the Top Result during the prefetch's MusicBrainz browse went on as background work** (0.56.56 meeting
+  0.56.51) — A2 `ONE RELEASE-GROUP BROWSE PER ARTIST AT A TIME`, its 2026-10-08 paragraph. `API::getReleaseGroups`'
+  `$browse`: `$mineOk` / `$mineErr`, `%BROWSE_RUN`, the read-path join; `_browseGroups` takes `onJob`.
+- **(2) TrackWarm's mark under the name alone** — A2 `THE TRACK MATCH`: key v2 `dsc:trkwarm:2:<name>|<sig>`, kept
+  RECHECK. The v1 marks are retired at open (`keepCurrent`), so the first pass after the build does every artist with
+  an untagged album once more (their tracklists are kept, so it asks only for what is due).
+- **Tests:** `t_prefetch.pl` §E (+28: the flight's flags, promotion incl. a page already on the wire, a failure, the
+  real Top Result chain, a browse started without a read, a released claim); `t_trackwarm.pl` §6 (+6) and its mark
+  reads through the key. 77 suites / 4,083, 0 failed (tallied from each summary line); `syntax_check.sh` OK; 12 of 12
+  mutants caught (scratchpad `mutate_fix.py`); the new tests anti-tested against the pre-fix modules (13 of §E's
+  first 24 and 4 of t_trackwarm's fail there).
+- **LIVE CHECK, when built and installed (`debug_log` on):** search an artist with 25+ groups right after a search
+  that drew community API 429s (or with the community API refusing), tap the Top Result at once: ONE `artist/<mbid>?inc=`
+  read in the log, a `promoted ... release-group?artist=` line, the bootleg check not deferred behind background work.
+
+### 0.56.62 (2026-10-08) — the track match's tracklists are fetched off the page, ahead of the visit, and kept; only an untagged album goes to the track match — BUILT sha 4fa3697c, NOT installed
+- **Why (live on 0.56.61, dev log below):** the page asked ListenBrainz for tracklists before the draw and waited for
+  them: Thievery Corporation drew 8.5 s after its check (ListenBrainz took 10.9 s for one group); a cold first visit
+  asked for albums the check then placed by id (Kraftwerk, 9 tracklists; replayed cold: 44 pages ask, not 26). The
+  "draw without them, place it next visit" fix was turned down. **Simon: "I am not happy about so much being done on 2nd
+  visits this will confuse users. We cant afford hangups but also cant slow things down, must be a better angle"**; on
+  the proposal (decide from the library ahead of the visit, keep it, the page only reads): **"yes to the change"**.
+- **Built:** (1) `Browse::_placements`: only an album WITHOUT a MusicBrainz release id goes to the track match
+  (`next if $it->{_mbid}`); `cands => {}` collects every shortlisted group. (2) The page asks nothing: the pre-draw leg
+  and `$trkDone` are gone, the render gate and the deadline kill are 0.56.60's; `_buildList` hands the groups it found
+  missing to `TrackWarm::want` (background, 10 s later) and draws. (3) NEW `TrackWarm.pm`, the library pass (A2
+  `THE TRACK MATCH`; the file map). (4) DB.pm schema 3: the `keep` table (kv's shape, NOT emptied by a build) for
+  `dsc:grptrk:` and `dsc:trkwarm:` (`%KEEP_FAMILY`, `_keepRoute`; swept, retired by key version, counted). (5) API:
+  `_grpTracksKey` v2 = `{ t, due }` with no lifetime (a tracklist for good; "none" due again after a week),
+  `groupTracksDue`, `warmGroupTracks(..., background => 1)` with an in-flight guard, `listenBrainzGroups`; the key
+  family registered with `keepCurrent`. (6) Plugin.pm starts `TrackWarm::init` (subscribes to `['rescan'],['done']`,
+  as Listening History does).
+- **Checked before building:** LMS 9.1's schema (`albums.musicbrainz_id`, `contributor`, `compilation`;
+  `tracks.album`, `secs`; `contributors.name`), `Slim::Schema->dbh`, and that LMS's handle sets no `sqlite_unicode` (names
+  arrive as UTF-8 bytes: decoded, pinned both ways).
+- **Tests:** NEW `t_trackwarm.pl` (59: the real library query on a real SQLite file with LMS's columns, LMS's
+  byte-returning handle too; when it runs; one artist the page's way with the REAL `_placements`; off the page's way;
+  the hand-off). `t_chain.pl` §14 rewritten (the page asks nothing, draws when the check lands, the deadline is
+  cancelled) + §15 (the real API's kept tracklists: background, `{ t, due }`, due again, in flight once, a failure
+  keeps nothing); its network stub now honours the inherited `$NET_BG` as the real `_netGet` does. `t_trackmatch.pl` +8
+  (the tag rule, `cands`, the hand-off from the REAL `_buildList`). `t_db.pl` +16 (schema 3, the keep table from a
+  version-2 file, a build keeps it, sweep, retire, API's registration). 77 suites / 4,049, 0 failed; 35 of 35 mutants
+  caught (scratchpad `mutate62.py`; two found gaps closed first: API's key registration, a compilation under a label's
+  name). `matcher_sync_check.py`: only the known `_albumMatches` drift.
+- **LIVE CHECK, when installed (`debug_log` on):** (1) the first page logs `store emptied for version 0.56.62`; 5 min
+  after the restart `track match pass: N artist(s) with an untagged album, M to do`, one line per artist, then `track
+  match pass: done - ...`; (2) no page logs `track match: asking ... before the draw` (gone) and no page waits: cold
+  Thievery Corporation / Kraftwerk / Radiohead draw as soon as their check lands; (3) after the pass, James, The Sleepy
+  Jackson, The Waterboys, The House of Love (1990), The Psychedelic Furs read Local on a FIRST visit; Dusty's picker
+  still lists "Best [Japan]" first; (4) a 0.25 s ping across the pass: no stall from its ListenBrainz requests; (5) a
+  restart does not redo the pass (`... 0 to do`). Note: kv is emptied by the build, so the 0.56.61 tracklists are gone
+  and until the pass reaches an artist its album sits in "Also in your library" (minutes after the install).
+
+### 0.56.61 (2026-10-08) — an owned album no title claims goes on the release whose tracks it carries; a manual match on the release page — INSTALLED 2026-10-08, CHECKED LIVE (all 4; the wait past the check fixed in 0.56.62), sha 3ca5b548
+- **Field (a tester):** "McCoy Tyner Plays John Coltrane" sat in "Also in your library"; MusicBrainz titles it
+  "McCoy Tyner plays John Coltrane: Live at the Village Vanguard". The title rules only let the OWNED side be longer
+  (the 2026-07-22 gap list: 5 of its 7 "library title shorter" rows are this shape). Simon: match some of the name,
+  then the track count and names; a weighting match; and a manual match for what it cannot work out.
+- **MEASURED FIRST** (Simon: "use the mirror to test this"): `tools/leftover/` replays the page's claims with the real
+  code over Simon's library (groups from the mirror, uncapped; tags from the July logs) and scores the leftovers on
+  ListenBrainz tracklists; a HOLDOUT hides each matched album's real group. Rule v1 (found OR cover >= 0.9, unknown
+  times passing) matched 166 wrong in the holdout (two-album sets, live versions with no lengths), v2 9, v3 6 of 1,193;
+  v3 in the library: 5 right + the tester's, 0 wrong, Dusty to the manual list (a 6th, Stevie Wonder, was a replay
+  artefact: an id tag places it, see LIVE below). Full numbers under the 11 gaps,
+  `REPLAYED`. Rule and decisions: A2 `THE TRACK MATCH`, A2 `MATCHES MADE BY HAND`.
+- **Built:** Sources: `trackShortlist`, `trackEvidence`, `trackPick`, `ownTracks`, `albumKey`; `matchesFor` and
+  `claimedLocalIds` take `placed` (a placed owned copy is its group's alone, as an id places it). API: `peekGroupTracks`
+  / `warmGroupTracks` (ListenBrainz, kv `dsc:grptrk:1:`). Browse: `_placements` (one answer for the tiles, "Also in your
+  library", the release page and the picker; claims memo), the pre-draw tracklist leg in `_discographyView` (`$trkDone`
+  in the render gate, the deadline kept armed for it, opt-out / deadline / error settle it), `_buildList` and
+  `_releaseDetail` pass `placed`, `_manualRows` / `_matchPicker` / `_manualAct`, `_rgView` dispatches `lm:set` /
+  `lm:del`. DB: schema 2, `manual` table, `manualFor` / `manualSet` / `manualRemove` (UTF-8 octets always: a
+  Latin-1-only title was going in as one byte, caught by a mutant). Strings: MATCH_PICK / MATCH_REMOVE / MATCH_TRACKS /
+  MATCH_DONE / MATCH_REMOVED. Icon: `dsc-unlink_MTL_icon_link_off.png` (placeholder png, Material draws `link_off`).
+- **Bugs caught while building:** a stale manual row (a group no longer on the page) blocked the track match
+  (`defined $m` for `$m eq '-'`, t_trackmatch §4); the claims ran THREE times per artist page and once per release
+  page (20-90 ms each on a 1,000-2,000-group page, 254 ms on the LSO's 2,003): now once, memoised and reused; the
+  pre-draw pass read a different release map from the draw's, missing the memo on every revisit.
+- **Tests:** NEW `t_trackmatch.pl` (67: §1 parity with the replay's 245 cases; §2 the rule's parts; §3 placed copies in
+  the matcher; §4 `_placements` precedence, '-' rows, tracklists not kept, memo; §5 the REAL `_buildList`; §6 the
+  release page's rows, picker, action and dispatch); `t_chain.pl` §14 (12: asked before the draw beside the check, the
+  wait, the deadline kept armed, a hung / failed request); `t_db.pl` §12 (+2 on §1: schema 2, the migration, a build
+  keeps the rows, UTF-8). `t_view.pl` stubs the new Sources subs (it DIED at §10 without them - a suite tally that
+  counts `ok` lines missed it; total from each suite's summary line). 76 suites / 3,958, 0 failed; 25 of 25 mutants
+  caught (`scratchpad mutate.py`: the cover / times / margin / placed / id / manual / '-' / missing / bootleg /
+  extras / memo / dispatch / action / picker order / render gate / deadline / kept / seconds / UTF-8 / migration /
+  counts). `matcher_sync_check.py`: only the known `_albumMatches` drift; no shared sub touched.
+- **LIVE (2026-10-08, installed; server restarted 11:46; Dining Room, browse over the CLI; `debug_log` OFF and
+  unreachable - LMS refuses `pref` from off the LAN, see below):** (2) James "Be Opened By The Wonderful" -> "Be Opened
+  by the Wonderful: 40 Years Orchestrated", The Sleepy Jackson "Personality: One Was a Spider...", The Waterboys "The
+  Best of The Waterboys: '81-'90", The House of Love -> the 1990 group (the 1988 one keeps its own copy), The
+  Psychedelic Furs -> the 1980 group: each reads Local on its tile, no "Also in your library" section on any of the
+  five, and each release page carries "Remove the match to <album>". Stevie Wonder: Local on "Original Musiquarium I"
+  WITHOUT a Remove row - placed by its id tag, as the precedence says (the replay's count was wrong, not the page).
+  (3) Dusty: "Best [Japan]" in "Also in your library (1)"; on "Dusty: The Very Best of Dusty Springfield" (`82dcb6d8`)
+  "Match an album from your library" -> the picker lists ONE row, "Best [Japan] / 24 of its 24 tracks are on this
+  release"; a tap answers "Matched to this release", the release page reads Local (1) + "Remove the match to Best
+  [Japan]", the artist page loses the section; Remove answers "Match removed", the picker row returns, the album is
+  back in the section. **Remove stops the track match, checked on James:** removed, the album stayed in "Also in
+  your library" over two opens and the picker offered it ("20 of its 20 tracks"); re-matched by hand, so James now
+  holds a MANUAL row to the same group, and Dusty a '-' row for "Best [Japan]" (it had no automatic match). Timing:
+  first DSC page after the restart (James, store emptied) 8.1 s with 41 tiles, later opens 40 (one group shown cold,
+  not attributed - no log); the others cold 2.5-4.8 s.
+- **LIVE (1) and (4), 2026-10-08 12:03-12:06, `debug_log` on (Simon):** (1) Radiohead and Talking Heads (no leftover):
+  no "track match: asking". **Kraftwerk (no leftover on the page) ASKED for 9 tracklists**: its 6 albums all carry
+  release ids, but the ask is worked out before the check's reply (the release map + edition titles); the reply then
+  placed every one by id. Replayed cold (`tools/leftover/leftovers.pl` with no map, no verdicts, no editions; scratch
+  copy): 44 of 1,115 pages ask on a cold visit, 26 warm; 20 albums asked for needlessly (Kraftwerk, Jamie xx, The
+  Beatles, Violent Femmes, Yo La Tengo, ...). Once per page per build (the tracklists are kept in kv). (4) tracklists vs
+  the check, both asked at the same moment: The Chemical Brothers 0.14 s vs 1.2 s, Centro-Matic 4.7 s vs 7.0 s - no
+  added time; **Thievery Corporation 10.9 s vs 2.4 s: the page drew at 12:06:04.64, the instant the tracklists came,
+  8.5 s after its check and its pool were done**, for an album ("DJ-Kicks") the replay leaves unmatched. The `lb`
+  bucket sends one request at a time, so the tracklists wait behind any ListenBrainz request already out. Not this
+  build: Radiohead 26 s (the community API timed out at 12 s and the ListenBrainz artist list hung 17 s, "no
+  callback"; then `lb` backed off and Kraftwerk's tracklists were refused - the designed fallback). **OPEN, Simon to
+  decide: stop the draw waiting for tracklists once the check and the pool are done.** -> DECIDED otherwise, BUILT as
+  0.56.62 (the tracklists off the page, ahead of the visit, kept; see its entry).
+- **Simon (2026-10-08): "listenbrainz and api both out at same time seems unlikley to me. Need to check that further
+  that its not something we are doing."** Measured: only TWO failure episodes all day, both inside three minutes
+  (12:03:18 Radiohead, 12:05:41 Thievery Corporation; plus The Chemical Brothers' first list at 8.6 s at 12:05:21).
+  **Not LMS frozen:** a 0.25 s `version` ping across six cold pages (Bowie, Björk, Massive Attack, New Order, The Cure,
+  Portishead, 12:17-12:18) never went past 0.70 s, pages 3.2-5.6 s; and in both episodes MusicBrainz requests were
+  sent and answered on schedule (12:03:31-35, every 1.1 s; 12:05:53.58 -> 53.74, 0.16 s). **Not the link to
+  MetaBrainz:** musicbrainz.org and api.listenbrainz.org are ONE address (142.132.241.153); MusicBrainz answered in
+  0.16 s in the middle of the 10.9 s the ListenBrainz tracklists took. **Not our queue:** the `lb` slot was free when
+  Thievery's tracklists went out (its artist list had settled; a ListenBrainz list logs nothing on success). So the
+  slowness was behind ListenBrainz's front door, and the community API (connected, then no data for 12 s, twice) was
+  slow in the same minutes - whether it draws on the same upstream is not known. **One LMS gap, read in 9.1's source:**
+  `Slim::Networking::Async` resolves the host (AnyEvent::DNS, its own retry schedule) BEFORE any timeout is armed,
+  so a slow lookup gives neither "Timed out" nor "connect timed out" - only our watchdog's "no callback", which is
+  what Radiohead's ListenBrainz request got (17 s) while its community request, already connected, timed out at 12 s.
+  The DNS step is not proven (LMS's `network.asyncdns` log would show it). Both hosts' DNS answers are short-lived
+  (dig: 146 s and 129 s left), so LMS looks them up again every few minutes. **Direct probe from the Mac, no LMS (12:20:51-12:31,
+  every 15 s, 40 rounds, a different artist each round, scratchpad `svcprobe.py`):** ListenBrainz artist list median
+  0.17 s, max 2.23 s; ListenBrainz tracklist max 0.16 s; MusicBrainz max 0.45 s; the community API median 0.37 s, 6 of
+  40 between 1.5 and 3.3 s; no failure, nothing like the 12-17 s of 12:03/12:05. The services vary on their own, with
+  no LMS in the path; the two episodes did not recur.
+- **Simon (2026-10-08): "I am not happy about so much being done on 2nd visits this will confuse users. We cant afford
+  hangups but also cant slow things down, must be a better angle"** - so NOT the "draw without them, place it next
+  visit" fix above. PROPOSED (awaiting his yes): the answer depends on the LIBRARY, not on the visit, so work it out
+  ahead of the visit and keep it. (1) Only an album with NO MusicBrainz release id goes to the track match (the tag
+  decides the rest, right or wrong): every match measured was untagged; the 4 tagged leftovers with candidates
+  (Thievery's "DJ-Kicks" -> its DJ-mix group `aceba45a`, hidden by design; The Chemical Brothers' "Brothers Gonna Work
+  It Out"; DJ Yoda; Centro-Matic's South San Gabriel record) never matched. (2) Group tracklists in a KEPT table (as
+  `mbid` / `manual`), so a build never asks again. (3) A background pass fills them - after install, then after each
+  rescan for the untagged albums it added or changed - on the yielding background queue; ~486 artists with an
+  untagged album in the July data (1,017 of 3,730 albums), so ~550 ListenBrainz requests once. (4) The page never
+  asks for tracklists and never waits for them: the pre-draw leg and `$trkDone` go; `_placements` decides from what
+  is kept, with the page's own groups, filters and precedence. Left: an untagged album a scan just added is in "Also
+  in your library" until the pass reaches it (minutes, tied to the library change, not to a visit). **Simon: "yes to the change"** -> 0.56.62.
+- **Sweep parser fixed (tools only):** `library_sweep.parse_feed` read "Also in your library" rows by their `lib:<id>`
+  item; since 0.56.59 they open Material's album page (`browselibrary items mode:tracks album_id:N`) and carry none,
+  so the parser counted 0 on every page. Now read by section + `album_id`. Any `lib_extras` figure from
+  `library_sweep.py` / `search_soak.py` on 0.56.59-0.56.61 reads 0 and is void.
+- **LIVE CHECK, when installed:** (1) a page with no leftover sends no ListenBrainz `metadata/release_group` request
+  (log: no "track match: asking"); (2) James / The Sleepy Jackson / The Waterboys / Stevie Wonder "Original
+  Musiquarium" / The House of Love (1990) / The Psychedelic Furs read Local on their tiles and leave "Also in your
+  library"; the log says "track match: '<album>' -> '<group>'"; (3) Dusty Springfield: "Best [Japan]" stays in "Also in
+  your library"; on "Dusty: The Very Best of Dusty Springfield"'s release page "Match an album from your library" lists
+  it FIRST ("24 of its 24 tracks are on this release"); a tap shows "Matched to this release", goes back, the page
+  reads Local and offers "Remove the match to Best [Japan]"; Remove puts it back and stops the track match for it;
+  (4) timing: a Dusty / James cold open against 0.56.60 (the request is beside the check, so no slower).
+
+### 0.56.60 (2026-10-08) — a band named after its leader matches the services' copies filed under him; a name-only page opens the library artist of that name — INSTALLED 2026-10-08, Trio CHECKED LIVE, sha c812b010
+- **LIVE (Dining Room read-only):** The Oscar Peterson Trio page **48 of 84 tiles Qobuz** (0.56.59: 1 of 78), "Night
+  Train" Local/Qobuz. Cold refetch (debug_log on, `clearcache artist_id:156010`, debug_log restored to 0): pool
+  Qobuz=834 (Oscar has 849), same 48 - the pool is whole, not cut by JOINT_WAIT. **Simon: "At Baker Keyboard Lounge
+  isnt matched and this is in Qobuz"** - MB has TWO groups (both 2026-04-17): "At Baker's Keyboard Lounge" (the
+  selection) and "...: The Complete Recordings" (Live). Qobuz holds ONE (LMS global search, which writes no Qobuz
+  search history: "At Baker's Keyboard Lounge: The Complete Recordings", Oscar Peterson, 2026), matched to the
+  Complete Recordings tile; A2 `A COPY TITLED EXACTLY LIKE ANOTHER ALBUM ON THE PAGE` keeps it off the selection's
+  tile. As decided, not a miss: the two groups are different records (a 9-track CD; the 27-track digital set Qobuz
+  sells). **Simon, 2026-10-08: "that makes sense it should not match if its different release group and that verison
+  not on Qobuz."** The other 36 unmatched tiles checked the same way: absent from Qobuz, or Qobuz has
+  another title ("The Complete Tokyo Concert, 1964" for "In Tokyo, 1964"), or a two-albums-on-one-CD reissue whose
+  single albums ARE matched ("West Side Story / ... Porgy & Bess", "The Sound of the Trio / The Trio / Night Train").
+  ONE OPEN: "Canadiana Suite" (MB Trio group dated 2002) NO MATCH though Qobuz has "Canadiana Suite" (Oscar
+  Peterson, 1965, playable, the one exact "Oscar Peterson" entity): not in the Qobuz plugin's own first 199 for him,
+  so whether DSC's 834 hold it is not visible over HTTP. Not investigated further (Simon's call).
+- **B CHECKED LIVE (2026-10-08):** Bob, The Bad Seeds, Black, Stan, The Checkmates, The Pirates opened name-only now
+  open the SAME MusicBrainz act as their library pages, the same Local tiles, none lost (were Bob Dylan, Nick Cave & the
+  Bad Seeds, Black Sabbath, Stan Getz, the Singapore Checkmates, the UK Pirates).
+- **SWEEP RE-RUN on 0.56.60 (2026-10-08, 92 of 94 pages; The Wailers timed out and Thievery Corporation was not reached:
+  `plex` stopped resolving from the Mac mid-run):** lost by name: ONE - The Pirates 158778, the SECOND of two library
+  entries named "The Pirates" (the name opens the one holding the most albums; one name cannot open both). Name-only
+  extras: **0 (were 59 pages)** - a name-only page for an owned artist IS its library page now, so the name path's
+  joint-credit pickup (0.48.6: the right ones, e.g. Getz/Gilberto on Antonio Carlos Jobim, AND the 8 wrong-band ones)
+  no longer applies to owned names. Full parity of the routes, as Simon asked (*"both avenues to an artist must have
+  parity"*, 2026-10-08). The right joint pickups for BOTH routes are the pending release-group gate (`Joint pickup is
+  not added to the id path`, re-measured 2026-10-07: 1 gain, 0 of 8 false).
+- **Simon, the Trio via search (HQPlayer player): sees only the 9-track "At Baker's Keyboard Lounge".** Reproduced his
+  exact path on Dining Room (search "Oscar Peterson", tap "The Oscar Peterson Trio · Local": artist_id 156010): BOTH
+  tiles sent; library page, band link and name-only identical. Material 6.4.12's own parse (jsc harness, My Apps and not)
+  keeps both, distinct ids, in DIFFERENT strips (Albums / Live albums), each first in its strip. **Simon's screenshot
+  (2026-10-08) is the "Albums (38)" section page**, so the Live albums tile is not on it. Why the two are apart: MusicBrainz
+  types 6ca5edb5 (9-track CD) plain `Album` and 4fd15a3c (The Complete Recordings) `Album` + `Live`, both 2026-04-17
+  (mirror read). Same engagement, MB's typing differs; DSC follows MB's types (`MusicBrainz's own grouping is not
+  corrected`, *"we are not fixing for MB errors"*). Not a defect; a cross-section pointer would be new work, Simon's call.
+- **Sweep COMPLETED once `plex` resolved again (2026-10-08):** The Wailers id 2 / name 2 (was name 6), Thievery
+  Corporation 6 / 6. So **94 of 94**, the one loss still The Pirates 158778.
+- **Source:** the investigation entry below; Simon chose both fixes (A first): *"sounds like a plan"*, accepting A's
+  cold-page cost (up to JOINT_WAIT, 3 s, while a big leader's list is fetched; ~nothing once cached).
+- **A. THE BAND'S LEADER (`eponymous`):** `API::_readArtist` keeps the band's backward `member of band` links with the
+  `eponymous` attribute (one per person) under `dsc:eponym:v1:<mbid>` (BANDS_TTL, cleared by Refresh, and
+  `warmBandMembers` re-reads when it is missing beside a cached band list); `peekEponymous`. `Browse::_poolLeaders`
+  puts the names in `_poolOpts` (artist AND release page; never the band's own name or the pool's search name).
+  `Sources::getCandidates` passes them to every adapter (both spellings, in the flight key). `_resolveWithJoints`
+  finds the service artist named EXACTLY as the leader among the band's hits, else by ONE search of his name, beside
+  the band's lookup, and fetches his albums as a joint artist's (match-only, `_joint`, credited to the band, never
+  "Also on streaming"). NEW: when the band has NO entity of its own on the service (with a spine), the leader's albums
+  ARE the pool (`_leaderOnly`, all four adapters); without a spine the album-search fallback runs as before. Every
+  service artist is fetched ONCE per lookup (`$fetchOnce`): when the band's hits hold only its leader, the resolver
+  can settle on that same entity (Oscar = five Qobuz pages). RESIDUAL: a leader whose name is not inside the band's
+  (Iggy Pop / Iggy and The Stooges) on a service whose resolver adopts him AS the band keeps his own credit and
+  the matcher's gate decides (pre-existing adoption behaviour).
+- **B. A NAME-ONLY PAGE (a Similar artists row) for a name the library holds EXACTLY opens as that library artist**
+  (`Sources::libraryArtistIdByName`: the spelling ladder without term probes, `_normKey` equality, the entry holding
+  the most albums, none holding an album -> undef; hooked in `_discographyView` before `_resolveArtistMbid`, only with
+  no artist_id and no mbid). Its rows then carry the id, as its library page's. RESIDUAL (not changed, deliberate
+  0.44.14 rule): a name-only row for a name the library does NOT hold still takes the +1-token top hit ("Bob" ->
+  Bob Dylan when no Bob is owned).
+- **Tests:** t_qobuzjoint §13 (+19: band entity + leader, no band entity, leader the only hit fetched once, controls,
+  no exact leader, no spine, JOINT_WAIT deadline + late answer, every service through getCandidates);
+  t_artistread §17 (+10, fixtures captured from the rig's mirror: The Oscar Peterson Trio, Bob Marley & The Wailers
+  linked twice; Radiohead/Eno none; the warm gate; Refresh) and §6 seeded; t_detailshared §10 (+4) and its stub;
+  t_local §13 (+7); t_works §6 (+4); t_extid stub. **19 mutants, all caught** (A14 survived first: the band's own
+  name as "leader" was masked by the fetch memo + dedupe when the band was among its hits; 13d now covers the case
+  where it is not). Not mutated: the flight key carrying the leaders. 75 suites green; syntax_check clean.
+- **BUILT:** sha1 `c812b010f8e7990c35c561fbb11e1c0d2cd599e0`, 263 entries, zipped API/Browse/Sources/Classical/
+  install.xml byte-identical to the tree; tree vs installed 0.56.59: API.pm, Browse.pm, Sources.pm only.
+- **TO CHECK LIVE (Dining Room read-only):** The Oscar Peterson Trio page: Qobuz tiles (was 1 of 78), "Night Train"
+  Local/Qobuz; Nick Cave & the Bad Seeds, Count Basie Orchestra: no tile lost, no new extras; Bob, Black, Stan,
+  The Bad Seeds, The Checkmates, The Pirates opened name-only: the same act and Local tiles as their library pages;
+  re-run the 94-page sweep (`sweep/` in the session scratchpad).
+
+### (investigation, 2026-10-08) — name-only rows open the WRONG act for short names; a band named after its leader finds almost nothing on Qobuz — MEASURED; fixed in 0.56.60 above
+- **Sweep (0.56.59 live, Dining Room read-only, scratchpad `sweep/`):** all 94 library pages with a joint credit, each
+  opened by artist_id and by name only (a Similar artists row's go), every release section. 88 identical apart from the
+  known name-path joint pickups (59 pages). **6 lose owned albums by name**, every one a short/common name, and the name
+  route opens a DIFFERENT act: Bob -> **Bob Dylan** (4 lost), Black -> **Black Sabbath** (1), Stan -> **Stan Getz** (1),
+  The Bad Seeds (60s Texas) -> **Nick Cave & the Bad Seeds** (2), The Checkmates (South Carolina) -> the Singapore
+  Checkmates (1), The Pirates -> the UK band (1; its id route opens no act). **Cause:** a name with no artist_id never
+  asks the library (`getArtistMbid` reads the tag only from an id; `_resolveArtistMbid` trusts a name search as-is), and
+  MB's `artist:"Bob"` ranks Bob Dylan above every act named Bob (mirror: 4,303 hits, no exact "Bob" in the top 10), so
+  the exact-name preference sees none in its 8 and the deliberate +1-token top-hit fallback (0.44.14, "Beatles" -> The
+  Beatles, "Lauryn Hill" -> Ms. Lauryn Hill) takes Bob Dylan. That fallback is NOT re-argued here.
+- **Oscar Peterson / The Oscar Peterson Trio (Simon: "Qobuz only credits Oscar Peterson and not the trio"):** MB has the
+  Trio as its own Group (b083ec9b, 97 album release groups) with Oscar as founder and `member of band` **`eponymous`**.
+  Live: the Trio page has 78 release tiles, **1 with Qobuz** ("Stan Getz and The Oscar Peterson Trio"), "Night Train"
+  Local only, 75 no source; only 5 of its 77 titles are also on Oscar's page (Oscar: 224 tiles, 137 Qobuz). Same split as
+  `A RELEASE MUSICBRAINZ LISTS UNDER THE ARTIST COMES THROUGH` item 4 (James Yorkston and the Athletes, "we live with it"
+  2026-10-01), now raised by Simon as a problem. `eponymous` measured on the mirror: set on 15 of 16 leader-named bands
+  found (Nick Cave & the Bad Seeds, Tom Petty and the Heartbreakers, The Count Basie Orchestra, Iggy and The Stooges =
+  Iggy Pop, Bob Marley & The Wailers, Art Blakey & The Jazz Messengers, ...); NOT on The Duke Ellington Orchestra
+  (correct: posthumous) nor Holly Golightly and The Brokeoffs (MB gap). `_readArtist` already fetches `artist-rels` on
+  every page and keeps only FORWARD `member of band`: the band's backward `eponymous` member is in the same reply, free.
+  Qobuz was NOT searched by hand: the Qobuz plugin's search adds every query to Simon's own search history.
+
+### 0.56.59 (2026-10-07) — an artist's own UNTAGGED library entry counts beside the MusicBrainz tag — INSTALLED + VERIFIED LIVE 2026-10-08, sha ed459c19
+- **VERIFIED LIVE (2026-10-08, Dining Room read-only, name-only opens = a Similar artists row's go):** Suzanne Vega
+  3/3 owned albums Local/Qobuz (were Qobuz), Julien Baker 2/2, The Cinematic Orchestra 5/5. Sweep of all 94 pages
+  with a joint credit (id route vs name route, every release section) run after, result below.
+- **Field / source:** found by the joint-pickup measurement (A2 `Joint pickup is not added to the id path`, re-measured
+  entry): opened as a Similar artists row opens them (`artist:<name>` only), Suzanne Vega's 3 owned albums, Julien
+  Baker's 2 and The Cinematic Orchestra's 4 read Qobuz; by artist_id all Local/Qobuz. Simon: *"Suzanne Vega albums are
+  hers and not joint ones ... lets look to fix that so it works for all artists correctly"*.
+- **Cause:** LMS gives a joint credit's contributor the FIRST id of its MUSICBRAINZ_ARTISTID list ("Suzanne Vega & Joe
+  Jackson", off one tagged compilation, carries hers); her own entry, off untagged rips, carries none (the search's
+  owned rows: `_ident_mbid` none for all three). `localAlbums`/`localTracks`' identity-first read (0.51.3) answered
+  with the duo alone and skipped the name ladder. By elimination from the code: her own entry is not tagged with her id
+  (else the read returns it) and another entry is (else the name ladder runs); WHICH entry is inferred.
+- **Change (Sources):** `localArtistIdsByIdentity(mbid, name, exclude)` = the tag's contributors + `_untaggedNamesakes`
+  (the artist's own exact-name entries, spelling ladder without term probes, whose `_contributorTag` is empty); empty
+  when nothing carries the tag, so an untagged library takes the name ladder as before. Used by `localAlbums`,
+  `localTracks`, and `_bandContributorId`, which now opens the entry HOLDING the albums when several are the band
+  (`_albumCountFor`, the search tag-attach's rule; it took the first by DB order). **Classical** `libraryWorks`' tag tier
+  adds the composer's own untagged exact-name COMPOSER entries (`_composerIdsNamed`); the tag is read BEFORE an id is
+  marked tried, so the name tier still reaches a namesake tagged as another composer. Left alone: API's search tag
+  attach (runs only for rows the library search did not claim by name, so an untagged namesake would have claimed it).
+- **REVERSES part of review 2026-09-19 finding 2** (t_local §11 asserted "NOT an untagged same-name contributor: the
+  tag, not the name, says who she is"), on the evidence §B asked for ("a named artist whose name-entered page loses
+  albums its id-entered page shows"). Kept: a same-name contributor TAGGED with another id stays out. Risk accepted: an
+  untagged same-name contributor that is a different act now counts on the tag path, as it always has on the name path.
+- **Tests:** `t_local.pl` 60 -> 70 (§11 rewritten: untagged namesake counts, one tagged otherwise does not; §12 the
+  live shape: identity order, localAlbums + localTracks get her own back, no name / exclude / nothing tagged /
+  namesake tagged otherwise, band row owner choice x3); `t_classical.pl` 42 -> 45 (tag tier union; other-tagged
+  namesake out; tag tier empty -> name tier unchanged). Mutants (scratchpad `mut5659`): 9 of 9 caught (the exclude
+  one first written as a no-op, redone). 75 suites green; `zsh tools/syntax_check.sh` all OK.
+- **BUILT:** sha1 `ed459c19aa59b2774b70c472cd5a8734b45396fe`, 263 entries; tree vs installed 0.56.58 before the bump:
+  Sources.pm + Classical.pm only. CACHE_VERSION 0.56.59.
+- **Live check after install:** the three artists opened name-only read Local on their own albums; then a sweep of the
+  94 joint-credit pages (scratchpad `joint/`), name-only route vs artist_id route, for any page still losing Local.
+
+### 0.56.58 (2026-10-07) — the owned-album page drew EMPTY under My Apps; the row now carries every action, as LMS's album row does — INSTALLED + VERIFIED LIVE 2026-10-07 23:17 (sha 47c29c92)
+- **VERIFIED LIVE:** Simon, in Material: *"works"*. The live row (Leaf Library release page, Dining Room read-only)
+  carries no `params`, `more` = `albuminfo items album_id:51906 artist_id:155872 role_id:...`, favourites URL
+  `db:album.id=51906`. This also closes the 0.56.57 entry's open item: the drawn page is native.
+- **BUILT:** sha1 `47c29c921a228b61b97ec948ef8412ff63cb590c`, zip 263 entries (as 0.56.57); zipped Sources/Browse/API/
+  install.xml byte-identical to the tree; tree vs the installed 0.56.57 zip before the bump: Sources.pm only (this fix).
+  CACHE_VERSION 0.56.58 in API/Sources/Browse (the dev cache wipe). Simon's "still the same" before this was 0.56.57:
+  the fix had not been built (live row still `params:{item_id:2}`, no `more`, checked 23:1x).
+- **Field (Simon, 0.56.57, Material in the browser):** Leaf Library > Library Music Volume One > Local, and Ella >
+  Appearances > Greatest Divas: *"First click I get nothing. Hit back using arrow I see the track list."* Console:
+  `Uncaught (in promise) TypeError: Cannot read properties of undefined (reading 'indexOf') at browseHandleListResponse`
+  (his browser ran 6.4.11; its browse-functions/browse-resp/utils are byte-identical to 6.4.12's, diffed from the tags).
+- **Cause (reproduced in Material's own code under jsc, scratchpad `mathar/`, real replies + the server's material-skin
+  prefs):** under My Apps every DSC page inherits `section = SECTION_APPS`, and browse-resp.js ids an Apps row
+  `fixId(params.item_id, menu)` = `"2"` (no colon; the Zappa note at Browse.pm `_dropBandDupes` already maps this
+  ladder). Outside Apps the row is `item_id:2` and nothing fails, which is why 0.56.57's harness-free checks passed.
+  A `tracks album_id:` reply makes browseHandleListResponse take the album-tracks branch and run
+  `curitem.id.split(':')[1].indexOf('.')`: it throws AFTER the list is drawn and history pushed; fetchItems' catch
+  calls the handler again with no items, which throws the same way (the uncaught one). Left on screen: an empty page,
+  with the drawn track list one step back in history. The harness reproduces it exactly (id "2"; after the catch,
+  0 items shown, 16 one step back).
+- **Fix (Sources::libraryAlbumActions):** `allAvailableActionsDefined => 1` and `info => albuminfo items` (+ the same
+  narrowing), as BrowseLibrary's `_albums` row has them. XMLBrowser then sends NO positional `params`
+  (XMLBrowser.pm: the `allAvailableActionsDefined` gate on `$hash{params}`; 5 actions is also its own threshold) and
+  Material ids the row from its favourites URL: `radio:db:album.id=N` under Apps (every such row is playable, so
+  carries one: checked live on all 8 native rows), `<parent>.<n>` outside. `info` becomes the row's `more`: LMS's own
+  album menu instead of XMLBrowser's positional one. Harness, the row as XMLBrowser will now send it: page drawn
+  (16 tracks), no throw, under Apps and outside. DSC's own row actions are items/play/add/insert only, all replaced,
+  so nothing positional is left.
+- **Tests:** `t_localalbumtracks.pl` 51 -> 57 (the flag, `info` = albuminfo items on the album, all five present, the
+  narrowing carried by `info` with the filter on); `t_extid.pl` §7's native-row check now requires the flag + `info`;
+  stand-ins in t_extid/t_works/t_view at the new shape. Mutants: no flag, no `info`, `info` without narrowing: all
+  caught (scratchpad `mut5658`; the no-`info` one first DIED the suite, a bare `@{ ... }` deref - guarded, now 3
+  plain failures). 75 suites green. `zsh tools/syntax_check.sh`: every module OK.
+- **Correction:** the entry below said "syntax_check clean" from a `bash tools/syntax_check.sh | tail -4`. The script
+  is zsh (`${0:A:h:h}`): under bash every module compile FAILS and the tail shows only the trailing OK lines. Run it
+  as `zsh tools/syntax_check.sh` (or `./tools/syntax_check.sh`) and read the whole output. The tree it checked then
+  is the one checked now (OK).
+- **Live check after install (Material, entered from My Apps):** Leaf Library > Library Music Volume One > Local opens
+  the album on the first tap; Ella > Appearances > Greatest Divas the same (one track, filter on); long-press the row:
+  LMS's album menu; nothing in the console.
+
+### (in the 0.56.57 zip, 2026-10-07) — an owned album opens as a library album, and follows Material's "Filter album tracks" — INSTALLED 22:18 inside 0.56.57; FEED VERIFIED LIVE, Material's drawing not yet seen
+- **Shipped by sweep, not by its own build:** the 0.56.57 build (entry below) zipped the whole tree, this uncommitted
+  work included: its Sources.pm/Browse.pm are byte-identical to the tree, which holds every symbol below (checked
+  22:35). Re-run on that tree: 75 suites green, syntax_check clean (CACHE_VERSION 0.56.57).
+- **VERIFIED LIVE over HTTP (Dining Room player, read-only, param-addressed opens only, Simon's OK; a `discography
+  items` request with no player gets no reply):** Ella Fitzgerald's page, all 6 Appearances tiles: go =
+  `browselibrary items mode:tracks album_id:<id> artist_id:151861 role_id:ARTIST,ALBUMARTIST,BAND,TRACKARTIST
+  material_skin_artist_id:151861`, play/add/add-hold = `playlistcontrol load/add/insert` with the same narrowing.
+  Material's request from Greatest Divas (`tracks album_id:52249 artist_id:151861 role_id:... sort:tracknum`): 1 track,
+  18 "Misty Blue", 149 s; without the narrowing 22. Khruangbin > A LA SALA release page: the Local version row is
+  native (album_id 50799, narrowed to 154062, play `playlistcontrol cmd:load`); the Qobuz row still `discography
+  items ... v:Qobuz:0`. Still for Simon's eyes: the drawn page, the track menu's "Play release starting at track".
+- **Seen in passing, NOT caused here:** Khruangbin's "Ali" tile reads `Qobuz` only, though the library holds it
+  (album 50802) under the joint contributor "Vieux Farka Touré & Khruangbin" (154066). `localAlbums`' diff against
+  the 0.56.55 zip is additive only (`%listedUnder` + two fields), so its matching is unchanged.
+  **Cause (measured 22:44, Dining Room read-only):** the entry route. Opened as the library artist page opens it
+  (`artist_id:154062`): Ali `Qobuz`; opened by MusicBrainz id (`mbid:aea4c9b9…`, no artist_id, the search's route):
+  Ali `Local/Qobuz`. The id path adds no joint contributors, by decision: `Joint pickup is not added to the id path`
+  (2026-09-19, 8 false albums on 7 pages, Love <- Love and Rockets), "re-raise only with a stronger signal than the
+  name". Raised to Simon with one: count a joint contributor's album on the id path only when it lands in a release
+  group on the page (its MusicBrainz album tag via `_idGroup`, else title), never as an "Also in your library" extra.
+- **Source (Simon):** *"when clicked into the releases in any of views from albums, appearances etc we are not getting
+  all metadata as we would when looking at an album normally. So compilations dont show the artists per track and
+  collaborations dont show either"*; *"the way to show just the artist and track is a material setting called filter
+  album tracks which works when on an artist page"*; *"play behavious is also not the same as i dont get play play
+  release starting at this track ... We need to copy exactly how LMS does this so its not different from how it
+  normally displays this data"*.
+- **Measured / read first:** `_localAlbumTracks` asked `titles ... tags:u` and built bare `audio` rows, so a Local
+  album was a plugin list (no number, duration, artist, track menu). Material rewrites a row whose go action is
+  `browselibrary items mode:tracks` into its own `tracks` request (browse-functions.js `browseBuildCommand`, "Convert
+  local browse commands into their non-SlimBrowse equivalents"), the shape LMS's BrowseLibrary gives an album row;
+  "Play release starting at track" is the clicked row's PLAY command + `play_index` (`PLAY_ALBUM_ACTION`), so it needs
+  `playlistcontrol cmd:load album_id:X`. The setting is the SERVER pref `noArtistFilter` of plugin.material-skin
+  (rig: 0 = only the current artist's tracks); Material then adds `artist_id`, and `role_id` unless LMS's server pref
+  `noRoleFilter` is set (rig 0). LMS's `tracks` honours both with tags (Ella on "Greatest Divas" 1 of 22; role_id
+  COMPOSER 0). "Ali" (Vieux Farka Touré & Khruangbin): `artist` names the composer, `trackartist` the duo.
+- **Change:** `Sources::libraryAlbumActions` (open = browselibrary mode:tracks + album_id, `material_skin_artist_id`
+  for Material's highlight; play/add/insert = playlistcontrol), `_albumNarrowing` (the one filter decision:
+  `_filterAlbumTracks` + `noRoleFilter`), `localAlbums` records the contributor that LISTED each album
+  (`_listedUnder`; none for a joint credit matched by intersection). `Browse::_libraryActions`/`_withLibraryActions`
+  lay those actions over a Local album row's own at: the release page's version rows (both layouts), the "Also in
+  your library" / "Appearances" tiles, the works page's album rows (whole album, NOT narrowed by work: those rows can
+  stand for several works, left open). A Local SONG (track link) and every streaming row are unchanged; the release
+  tile still opens the release page. `_localAlbumTracks` stays for clients that are not Material (and legacy walks):
+  LMS narrows it the same way, an empty narrowing re-asks for the whole album, tracks name their artist where the
+  credits differ (trackartist first, all or none, Material's rule). `localTracks` byte-identical.
+- **Tests:** new `t_localalbumtracks.pl` (51); `t_extid.pl` §7 (+9, the real `_releaseDetail` / `_extraSection`);
+  `t_works.pl` §3 rewritten to the new contract (+2); stand-ins for `libraryAlbumActions` in `t_extid`, `t_view`,
+  `t_works`. 11 of 11 mutants caught (scratchpad `mut5656/run.py`). 74 suites green; syntax_check clean.
+- **Live check after install (Material, filter on):** Ella Fitzgerald > Appearances > Greatest Divas opens Material's
+  album page with only "Misty Blue"; with "Display all tracks of album" every track, hers highlighted; a compilation
+  owned under an artist (version row on its release page) shows track numbers, durations and each track's artist;
+  long-press a track > "Play release starting at track" plays from it; tile Play/Add unchanged in effect.
+
+### 0.56.57 (2026-10-07) — the prefetch runs the bootleg check too; a page arriving JOINS a prefetch's check — INSTALLED + VERIFIED LIVE 2026-10-07 22:18 (sha f0523057)
+- **MEASURED LIVE (Dining Room, read-only; logs polled through each run, `tl_duke.txt`/`tl_basie.txt` in the
+  session scratchpad):** (1) **Duke Ellington, Top Result opened 8 s after the results: 1.17 s** (498 groups; Qobuz
+  999 + 414 albums). Prefetch: aliases +1.2 s, lists +1.5 s, Qobuz +1.6 s, bootleg check (68 by id) +2.4 s -> `ready
+  (streaming took 1.6 s; bootleg check took 2.4 s)` at 5.4 s. The page then asked NOTHING on the network (pool HIT,
+  map cached); its 1.2 s is matching 129 rows against 1,060 candidates and drawing. (2) **Count Basie, opened 2 s after
+  the results: 3.96 s.** It arrived during the lists and joined everything: one artist read, one list set, the
+  prefetch's pool (`already in flight -- waiting on it (2 waiting)`), the prefetch's bootleg check (ONE `official-status
+  warm` line, then `promoted ... (a tap is waiting on it)`). The check took 3.3 s because MusicBrainz shed it TWICE
+  (`mb shed`, 503) before answering; the page drew after it, filtered (1 bootleg-only hidden), and ran the follow-up
+  once (one `completing ... in the background`). Same check, same sheds, without the prefetch.
+- **Source:** Oscar Peterson (0.56.56 below) opened in 1.6 s, the bootleg check 1.26 s of it. After the "why is there a
+  check at all" exchange (0.56.56 entry): Simon, *"okay i undestand now, yes lets add to prefetch if it has no knock
+  on effects"*.
+- **Why it was left out of 0.56.56:** `warmOfficial` answered a caller arriving during a running check `'busy'`, and
+  the page then drew bootlegs UNFILTERED for that visit. So the prefetch could only run the check if the page could
+  wait for it.
+- **Change (API::warmOfficial, `%opt` `prefetch => 1`):** the in-flight marker for a PREFETCH's check is a record
+  `{ waiters, job, joined }` instead of `1`. A caller arriving during it JOINS: it is answered when the check lands,
+  with the check's own answer (no argument = map cached, `'failed'`), under its OWN `$NET_BG`; a foreground joiner
+  `_netPromote`s the request still queued (`_officialById` now hands each request to `onJob`, so a second batch also
+  goes out as the page's). Only the FIRST joiner gets the real answer; later ones (a rebuild while it waited) get
+  `'busy'` once it lands, so the after-work (owned-album lookups, completion) runs once, as with a page's check. The
+  prefetch itself does no after-work (`$cb` only marks it done). A PAGE's own check is UNCHANGED: a second caller gets
+  `'busy'` at once (`$officialInFlight{} = 1`).
+- **Browse::_prefetchTop:** after the lists, the pool (cold only) and, beside it, `warmBandMembers` (a cache hit after
+  the read) then `warmOfficial(..., prefetch => 1)`, the page's order; "ready" only when both have answered (log:
+  `ready (streaming took N s; bootleg check took N s)`, `FAILED after` on a failure); `$end` said once.
+- **Knock-on audit (every carrier):** warmOfficial has ONE caller, the page's `$startBootleg` (awaited and opt-out
+  branches); its only reader of `'busy'` is the page's `$then` (skip owned lookups + completion). (1) page vs page:
+  unchanged (t_prefetch D4). (2) a page joining waits for at most the rest of the prefetch's check, under its
+  `official_wait` deadline (unchanged), where it used to draw unfiltered at once; it would otherwise have run the same
+  check itself. (3) after-work: once, by the first page (C, D2). (4) a failure: nothing cached, the first page treats
+  it as its own failure, next visit asks again (D3). (5) a prefetch stopped after its check began: the check finishes
+  and caches the map (background), useful if the user goes back. (6) cost when another row is tapped: + the by-id
+  request(s) for the groups the community API has no verdict for (Oscar Peterson: 1 request, 23 groups; at most
+  PREDRAW_RGID_MAX before + the rest via `_officialLater`), background on MusicBrainz. (7) `official_wait = 0` users
+  now usually get a filtered first page. SingleFlight.pm's comment naming `%officialInFlight` left alone (fleet
+  byte-identical file).
+- **Tests:** `t_prefetch.pl` 60 -> 88: B the check's place and inputs (mbid, the page's list, `prefetch`, background),
+  ready only when both answered, stop during the band lookup, warm pool still checks, a failure logged, "ready" once;
+  C the real chain: ONE by-id request in all (the page joined and promoted it), after-work once and foreground,
+  including when the check lands as background work (no recall); D warmOfficial alone: join/promote, first joiner
+  vs later ('busy' after landing), failure, page-owned unchanged ('busy' at once), two batches (the second goes out
+  as the page's), a background joiner promotes nothing. Mutants (9): no join, no own flag (the first attempt mutated
+  `_readArtist`'s identical line; redone on the right one: 2 fail), no promote, every joiner the real answer, no
+  onJob, no `prefetch` flag, ready without the check, no live check before the check, no `$ended`: ALL caught. 75
+  suites green; syntax_check clean (CACHE_VERSION OK 0.56.57).
+- **BUILT:** sha1 `f052305756f9f8d2e52102a4ad947617ef904843`, zip 263 entries (same list as 0.56.56), zipped
+  Browse/API/Sources byte-identical to the tree.
+- **TO CHECK LIVE (Dining Room player, read-only, Simon's OK):** logging to INFO; search a big artist never opened,
+  open the Top Result ~6-8 s later: the log shows `ready (streaming took ...; bootleg check took ...)` before the tap,
+  and the page's `official-status` step is a cache hit (expect ~0.3-0.5 s for the page against Oscar Peterson's
+  1.6 s); open one ~2 s after the results: `promoted ... (a tap is waiting on it)` for the by-id request, ONE
+  `official-status warm` line, the page drawn filtered.
+
+### 0.56.56 (2026-10-07) — THE TOP RESULT IS READIED WHILE THE RESULTS ARE READ — INSTALLED 21:43 + MEASURED (Oscar Peterson 1.6 s), sha 73d6c6bd
+- **Source:** Simon, after the cold-open breakdown in 0.56.55 below (lists 2.7 s, pool 2.0-2.8 s, artist read 1.4 s,
+  matching + drawing 0.5-1.3 s of a 7.4 s big-artist page): *"may be start to cache the top hit afteer search? But
+  would need to then stop and switch if a different one is picked. If we could start streaming matching sooner and not
+  destroy performance as a use may be playing music at same time."* Then *"yes lets build it"*.
+- **What (Browse::_prefetchTop, called from _withMbCandidates' `$layout` after the reply; not for `sect:ARTISTS`):**
+  the Top Result row's own tap params (`itemActions.items.fixedParams`; an owned row under the LIBRARY's name, as
+  topLevel does) run the page's own first steps, the page's way: getArtistMbid (artist_id, name, NAME_FETCH) unless
+  the row carries an mbid -> getReleaseGroups(read => 1) -> if the pool is cold, _poolOpts + getCandidates. STOPS
+  there: no bootleg check (warmOfficial answers a page arriving mid-check `busy` and it draws UNFILTERED), no bio,
+  no matching, no render, no covers (the server-stalling parts), no MusicBrainz completion. Every request through the
+  plugin's queue is BACKGROUND (`local $NET_BG = 1` at the start AND in each of its own callbacks: an answer from
+  outside the queue carries no flag). Skips what the page would not ask: no player, Various Artists, a composer
+  (works page), a warm pool; and a library TAG whose mbid has no groups (the page's disambiguation browses up to 8
+  acts - left to the page).
+- **One at a time / stop and switch:** a generation counter. A new search with another Top Result (or none) stops
+  the running one; the same results again (a view refresh) carry on. `_prefetchYield` from topLevel (every
+  artist-scoped request) and _discographyView (walks): another artist stops it at its next step; the same artist by
+  library id, mbid or name (generous on purpose) carries on. Requests already sent land in the cache.
+- **Two gaps found building it, both of which would have made a tap DURING a prefetch slower than no prefetch:**
+  1. `API::_fastSpine` (the ListenBrainz + community first list) was not coalesced: the page sent its own two, and
+     its community request queued behind the prefetch's (one at a time). Now ONE per artist through `_rgFlight`, key
+     `<mbid>|first`; a foreground joiner `_netPromote`s the queued jobs (`%FIRST_JOBS`; `_lbGroups`/`_hostedDisco`
+     now return their job); every caller answered under its OWN `$NET_BG` (`$mine`), else a page answered under the
+     prefetch's flag sends its whole chain (bootleg check, pool) as background work.
+  2. The artist read is not cached as a whole (only aliases/name/bands), so a page arriving after the prefetch's read
+     but while its lists were out sent a SECOND read (MusicBrainz, 1.1 s gap). getReleaseGroups(read => 1) now joins
+     a first list already in flight without reading (the flight exists only after a read found no whole list).
+- **Tests:** new `t_prefetch.pl` (60): A the first-list flight (one request set, promote fg only, own flag, failure,
+  answered-inside-_netGet, two artists); B the prefetch's steps/order/background/stops/skips; C the REAL chain: a tap
+  during the prefetch's lists JOINS (1 read, 1 LB, 1 community), stays foreground (bootleg check fg), asks the pool
+  with the prefetch's exact name + options (so `_candFlight` coalesces); a tap during the read joins it; lists
+  already on the wire (no recall): the page still goes on foreground; control without prefetch. `t_searchflow.pl`
+  §14 (+5): the Top Result's tap params are handed over after the reply; nothing for `sect:ARTISTS`; the lone MB act
+  by mbid; undef when nothing is found. Mutants (10): no flight join, no own flag (caught 3 after adding the
+  already-sent case; it was caught once before), no promote, no in-flight read skip, no yield, no background at the
+  start, no cold-pool check, no search hook, no generation check, no tag skip: ALL caught. 75 suites green;
+  syntax_check clean (CACHE_VERSION OK 0.56.56).
+- **BUILT:** sha1 `73d6c6bda5f8e6714aabe6f52d516b1fc725a1ec`, zip 263 entries (same list as 0.56.55), zipped
+  Browse/API/Sources byte-identical to the tree. Carries the 0.56.55 Qobuz cap at 1000.
+- **TO CHECK LIVE:** logging to INFO (install resets it). Search a big artist never opened (cache version bump makes
+  every artist cold): log `prefetch of '<name>' (the Top Result) - background work` then `... ready (streaming took
+  N s)`; open it after ~6 s: page time against the 7.4 s cold baseline (expect ~2-3 s: official-status + matching);
+  open it at ~2 s: no second artist read, `already in flight -- waiting on it` for the first list; tap ANOTHER row:
+  `stopped - another artist was opened`. Playback not disturbed while it runs.
+- **INSTALLED (server restart 21:43:51, 2026-10-07); Simon: *"this has improved things"*.** Not measured by me yet:
+  the Work Mac test player was no longer connected (a `discography items` request for a player that is gone gets no
+  reply at all, curl `http 000`), and logging was at WARN during his test, so the log has no prefetch lines.
+- **"Is the per-build cache clear still working since the caching model changed?" (Simon, 2026-10-07) - YES, by
+  evidence:** DB.pm `_checkVersion` (first DB use after load: meta `cache_version` differs from CACHE_VERSION ->
+  `DELETE FROM kv`) logged live on the previous install: `[20:25:33.1853] DB::_checkVersion (241) dsc: store emptied
+  for version 0.56.55 (was 0.56.54)`. DB.pm is unchanged since; 0.56.56 changes CACHE_VERSION in all three modules
+  (syntax_check asserts they match install.xml), so the same wipe ran at the 21:43 restart, unlogged because the line
+  is INFO and the install resets logging to WARN. The streaming pools are ALSO keyed by the version
+  (`dsc:cand:5:<version>:...`), so they are cold even if the wipe had not run. KEPT by design: the `mbid` table
+  (name -> id, release -> group, library id -> act) and the `artist` table (canonical name, aliases), DB.pm header,
+  Simon 2026-09-25. Not ours: the Qobuz plugin's URL cache and LMS's image proxy. NOTE `clearcache`'s `cleared` list
+  names what it ATTEMPTED, not what existed, so it cannot prove a wipe.
+- **PROOF THE 0.56.56 INSTALL EMPTIED kv (2026-10-07 21:52, Dining Room player, read-only, Simon: "use dinning
+  room"):** Johnny Cash, last opened 20:36 on 0.56.55 (first list cached, RG_TTL 14 days; its MusicBrainz completion
+  waiting in `rgnext`, never promoted: no fresh entry since), opened directly: `release groups for d43d12a1...: 840
+  from ListenBrainz (839) and the community API (812)` - fetched again, neither the list nor the completed one was
+  there. (Ella was no proof: Simon had opened her after the install, `truncated at 600 of 796` at 21:45:19.)
+- **MEASURED LIVE (Oscar Peterson, Simon's pick, never opened; 849 Qobuz albums; Dining Room, read-only):** search
+  0.8 s; prefetch started 0.05 s after the reply; artist read +0.65 s, lists +1.05 s (277 groups), Qobuz +1.0 s (extra
+  pages 0.9 s) -> `ready (streaming took 1.0 s)` at 2.75 s. Top Result opened 8 s after the results: **1.6 s** (pool
+  HIT; the bootleg check, 23 groups by id, 1.26 s of it; drawing 0.23 s). Its cold page without a prefetch would sum
+  ~4.3 s from the same steps (not run as a control; Johnny Cash opened cold at 21:52 with no prefetch: 4.56 s). THE
+  REMAINING WAIT IS THE BOOTLEG CHECK, left out of the prefetch on purpose (warmOfficial's `busy` answer draws a
+  joining page unfiltered); moving it in would need the page to JOIN a running check - not built, Simon's call.
+- **WHY THERE IS A CHECK AT ALL WHEN THE COMMUNITY API CARRIES TYPES + STATUS (Simon: *"we asked for the release
+  types to be added to the api for this reason though?"*):** it does, and it is used: 254 of Oscar Peterson's 277
+  groups were decided from its `withReleases=1` reply, no request. The 23 asked by id (log URL, compared with
+  ListenBrainz's `artist_credit_name`, 2026-10-07): **20 credit him SECOND or later** ("Ella and Oscar", "Louis
+  Armstrong Meets Oscar Peterson", four Count Basie & Oscar Peterson, Ben Webster Meets..., Itzhak Perlman's Side
+  by Side, ...), the community API's measured first-credit-only `/discography` (2026-09-25, Willie Nelson: 67 of 489
+  missing, every one second-billed); **3 are his own but undated** (Jazz & Blues, The Jazz Soul of.../..., 5
+  Original Albums: likely newer than its data or listed there without releases). ListenBrainz lists every credit,
+  so the page has them and MusicBrainz must classify them. The request also shed once (`mb shed`, a 503) and was
+  retried inside the 1.26 s. No new request to Herger without Simon (2026-09-25: *"Stop asking for things"*).
+- **Wasted when another row is tapped (accepted by asking for it):** ~2 MusicBrainz (lookup if not cached, artist
+  read), 1 ListenBrainz, 1 community, plus the streaming plugins' artist search + album list (+ up to 2 Qobuz extra
+  pages), all background on our hosts.
+
+### 0.56.55 (2026-10-07) — the Qobuz extra-pages cap lowered from 1500 to 1000 albums — INSTALLED + MEASURED LIVE 2026-10-07 (sha fb568627): +1.2 / +1.6 / +2.9 s cold on the biggest artists
+- **Decision (Simon, 2026-10-07, after the 0.56.54 measurement above):** *"cap at 1000"*. Keeps the paging (it bought ~10
+  playable tiles on Stan Getz) and bounds its cold-open cost: a 1000 cap is at most TWO extra requests (200/500 then
+  700/300) instead of three, so Miles Davis (1905 albums, was +2.3 s at 1500) should land near +1.4 s like Coltrane
+  (1023, +1.4 s); Getz (806) is unchanged at about +0.9 s. NOT re-measured yet.
+- **Code:** `Sources.pm` `QOBUZ_ARTIST_MAX` 1500 -> 1000 and its comment now records the measurement. The cap counts RAW
+  albums read (the offset follows what was read), so 1000 read can keep fewer when some are not streamable.
+- **Tests:** `t_qobuzpage.pl` still 31: section 3 now expects 1000 / two requests `200/500,700/300` / "cut at 1000";
+  section 2 uses 900 albums (second page asks the 200 left) and section 6 950 listed with 100 unstreamable (850 kept),
+  because 1100 would now be cut. Mutant (cap back to 1500) fails 3. 73 suites green; syntax_check clean (CACHE_VERSION
+  OK 0.56.55). CACHE_VERSION bumped in all three modules, so every artist is cold once after install.
+- **BUILT:** sha1 `fb5686278a3c9d472a08e94baf3a987bfe39d2d4`, zip 263 entries (same list as 0.56.54), zipped
+  Browse/API/Sources byte-identical to the tree; the 0.56.54 zip is in the scratchpad.
+- **MEASURED LIVE 2026-10-07 (installed ~20:24, Work Mac, HTTP, logging INFO):** every capped artist now reads
+  `asking for the rest (cut at 1000)` and makes exactly two requests (200/500, 700/300). `the extra pages took`, COLD:
+  Frank Sinatra (Qobuz 23015, 2412 albums) **1.2 s**; Elvis Presley (23783, 1962) **1.6 s**; Bob Dylan (365921, 2208)
+  **2.9 s** (the two pages took 1.5 s and 1.4 s: Qobuz answer time varies, the 500-album page is the slow one);
+  Miles Davis (6760, 1905) 0.5 s but PARTLY WARM (the Qobuz plugin still held offset 200/500 from the 0.56.54 run, a
+  day's `_ttl`), so not a cold figure. Against 0.56.54's 2.3 s for Davis the cap saves one request, not the Qobuz
+  variance. Cold artist pages were 3.1 s (Davis, lists fast) and 9.3-10.4 s (Sinatra, Dylan, Elvis: the ListenBrainz and
+  community lists dominate, as before). Warm opens are unaffected (pool kept CAND_FOUND_TTL). Only lever left if it is
+  still too slow: ONE extra request (cap 700, offset 200/500), roughly half the cost, but Getz (806) would lose 100.
+  Awaiting Simon's reaction; no change made.
+- **WHAT THE PAGING ADDED, Stan Getz (806 Qobuz albums; the ONLY artist with a before page, 0.56.53 `getz_all.json` /
+  `getz_inst.json` against the 0.56.55 page fully expanded), tile by tile, no tile lost or made unplayable:** ALBUMS
+  group 94 -> 98: 4 new tiles (Moments In Time, The Best of Stan Getz, Cool Bebop, Round Midnight in Paris) and 3
+  existing tiles newly playable (In Concert, Nature Boy, Chamber Music) = 7 of 98, playable 55 -> 62. COMPILATIONS
+  150 -> 155: 5 new tiles, and 5 of the 30 tiles that can be compared newly playable. LIVE 41 -> 42: 1 new tile, 3 of
+  the 30 comparable newly playable. At least 21 tiles improved of 295 (the comparison is blind past the first 30 of
+  Compilations/Live, so a LOWER BOUND). No before page exists for Davis, Sinatra, Dylan or Elvis, so their gain is
+  UNMEASURED (a cap-700 or revert decision on more than Getz needs a 0.56.53 run of each).
+- **WHERE A COLD OPEN OF A BIG ARTIST SPENDS ITS TIME (Simon, 2026-10-07: "for those big artists what is the part
+  causing the biggest slow down?"; logs polled during the run so nothing scrolled out; Johnny Cash and Ella Fitzgerald,
+  never opened before, both 7.4 s total):** (1) MusicBrainz artist/bio/aliases 1.4 / 1.5 s (aliases alone 0.8-0.9 s);
+  (2) THE RELEASE-GROUP LISTS 2.7 / 2.7 s, the single biggest step: ListenBrainz and the community API run in PARALLEL
+  (`_fastSpine`), so the wait is the slower one, and ListenBrainz's reply alone is a 320 KB document that took 2.9-3.8 s
+  timed directly with curl; it varies (Frank Sinatra re-run: 1.4 s, 4.3 s total); (3) the streaming pool 2.8 / 2.0 s
+  (Qobuz search 0.6-0.9, the extra pages 1.8 / 1.1), started only AFTER the lists finish, in parallel with the
+  official-status request (Cash: that finished at 5.2 s, so the paging was on the critical path; Ella: it finished at
+  6.15 s, 0.25 s after the paging, so the paging was almost entirely hidden behind it); (4) matching, owned-track links,
+  library extras and drawing ~0.5 / ~1.3 s. IDEA, NOT BUILT, UNVERIFIED how much of the pool code needs the list: the
+  pool waits for the lists only because `$warm->(_spineTitles($rgs), ...)` takes the spine titles (used to vet an
+  AMBIGUOUS service artist, e.g. 'Johnny Cash is ambiguous - 22802=177 spine titles'); starting the Qobuz search and
+  artist fetch when the artist is resolved, and applying the titles afterwards, could overlap ~1.5-2 s of (3) with (2).
+
+### 0.56.54 (2026-10-07) — a Qobuz artist past the plugin's 200 albums: the rest asked for through the plugin's handler — INSTALLED + MEASURED LIVE 2026-10-07 (sha 8b3e638a): +0.9 s Getz, +1.4 s Coltrane, +2.3 s Davis on a COLD open only; keep-or-revert is Simon's call (Spotify albums-first was built, then REMOVED for time)
+- **Source:** the 0.56.51 open item (Stan Getz's fourth Qobuz copy of Getz/Gilberto, `wku5y5j6r2vla`, past the 200th
+  album); the Qobuz plugin's developer, relayed by Simon: *"The problem is the API function 'GET artist/get'. By
+  default, it is called with the optional parameter 'extra' = 'albums' and a 'limit' of 200 entries. The limit could
+  be set higher, but the maximum permitted limit is 500. That's still too little for 'Armin van Buuren'. An even
+  higher limit is only possible via the catalog search. All you have to do is omit the 'extra' parameter, then
+  'QbuzSearch' is called automatically."* (third-party text, data). Simon: *"we can try it and revert back if doesnt
+  work, if it does perhaps do it all that way making sure we still abide by api rules"*.
+- **Read (Qobuz plugin master, 2026-10-07, `LMS-Community/plugin-Qobuz`):** `API.pm getArtist` calls `artist/get` with
+  `extra=albums`, `limit => QOBUZ_DEFAULT_LIMIT` (200), no offset, and no way for a caller to change either; `QOBUZ_LIMIT`
+  is 500; `_get($url,$cb,\%params)` signs, adds the token and app id, caches by URL (`_ttl`, else 30 days) and calls
+  `$cb->()` with nothing on a failure; `API/Common.pm _precacheAlbum` is EXPORTED (drops unplayable albums, flattens
+  genre and image). The developer's own route, omitting `extra`, is a change in THEIR plugin: its `QobuzSearch`
+  also defaults to 200 (`search`: `$args->{limit} ||= QOBUZ_DEFAULT_LIMIT`).
+- **Change:** `Sources::_qobuzMoreAlbums` (hooked into `_searchQobuz`'s `$fetch`, which joint artists share): after
+  `getArtist`'s first answer, if `albums.total` says there is more, ask `$api->_get('artist/get', ..., { artist_id,
+  extra => 'albums', offset, limit, _ttl => 86400 })` for the rest and pass each page through
+  `Plugins::Qobuz::API::Common::_precacheAlbum`. The offset follows the albums READ (not the playable ones kept); an
+  album that comes twice is kept once.
+- **API manners (Simon: "abide by api rules"):** only when the first answer says there is more, never blind (no
+  `total` = no request, logged); pages of at most 500, the API's stated maximum, the last page only as big as what is
+  left; ONE request at a time; at most `QOBUZ_ARTIST_MAX` 1500 albums per artist (3 requests); once per pool fetch (the
+  pool is kept `CAND_FOUND_TTL`, 3 days); the Qobuz plugin's own cache holds each page a day; its own token, app id
+  and 15 s HTTP timeout, no key of ours.
+- **Safety:** every failure leaves the 200 `getArtist` gave, as before (no `_get` on the handler, no `_precacheAlbum`,
+  no `total`, a failed or empty page, a die in `_precacheAlbum`). The extra pages have their own 10 s deadline
+  (`QOBUZ_PAGE_BUDGET`) because `SVC_TIMEOUT` (20 s) would throw away the WHOLE Qobuz pool as an error (1 h retry).
+- **NOT VERIFIED LIVE, the point of this build:** that Qobuz honours `offset` on `artist/get` albums and sends
+  `albums.total`; how many albums Stan Getz really has on Qobuz. Each step logs (`Qobuz artist <id>: N albums of T -
+  asking for the rest`, `offset O gave R albums, K playable`, `N albums read (why)`). To revert: restore `$fetch` in
+  `_searchQobuz` to call `_filterForeignArtist(_albumArray(...))` directly (the old body is in the 0.56.53 zip) with
+  the Edit tool, never `git checkout`.
+- **Cost, unmeasured, and Simon's rule (2026-10-07: *"Dont want added time as some is slow enough already"*):** the
+  extra pages are up to 3 more SEQUENTIAL requests, and only for an artist the first answer says has more than 200
+  Qobuz albums, on a cold pool (kept 3 days); a larger pool for those artists (up to 1500 candidates, was 200). The
+  log line now carries the time they added (`the extra pages took N.N s`). DECISION RULE: if that time is noticeable on
+  a big artist's first open, REVERT (restore `$fetch` in `_searchQobuz`). A background top-up (first 200 at once, the
+  rest merged into the cached pool for the next visit) is DECLINED: Simon, 2026-10-07, *"i dont want back filling its a
+  bad user experience"*. Index row `NO BACK-FILLING OF A PAGE` (new work only; 0.56.7's completed list is older and was
+  not raised).
+- **Tests:** new `t_qobuzpage.pl` (31): the window asked for, the 500 cap and the one-at-a-time rule, the 1500 cap, no
+  request without a `total`, every failure path, unplayable albums and the offset, the duplicate, the deadline and its
+  clearing, and `_searchQobuz` end to end. 10 mutants: all caught (two by hanging, which the real code cannot do: it
+  advances by the albums read). 73 suites green; syntax_check clean.
+- **BUILT 2026-10-07 TO MEASURE (Simon: *"we need to measure how much longer it add[s]"*):** sha1
+  `8b3e638a337d318f015e3137e181e3757d274403`, CACHE_VERSION 0.56.54 in all three modules, zip 263 entries, the zipped
+  Browse/API/Sources byte-identical to the tree; carries 0.56.53 and the accented-address/label fixes already live.
+  MEASURE: the log's `the extra pages took N.N s`, and Stan Getz's artist page cold (`discography clearcache`
+  artist:Stan Getz mbid:8f2422ab-0ec6-4c92-80c4-afe9622fab32, then the artist page over HTTP) against the 0.56.53
+  baseline measured 2026-10-07: 2.7 s cold (album tapped 2 s in: 0.07 s). Added time = the difference; repeat 3 times.
+  REVERT RULE above.
+- **MEASURED LIVE 2026-10-07 (installed 20:15, Work Mac, over HTTP): Qobuz DOES honour `offset` and sends `albums.total`;
+  the cost is on a COLD open only.** `the extra pages took`: Stan Getz (artist 35381, 806 albums, 2 extra requests)
+  **0.9 s**; John Coltrane (26028, 1023, 2 requests) **1.4 s**; Miles Davis (6760, 1905, cut at 1500, 3 requests)
+  **2.3 s**. The cold artist page was 7.3 s (Getz), 9.6 s (Davis), 10.6 s (Coltrane) in total, but most of that is the
+  ListenBrainz/community lists (Getz: lists 10.4 -> 15.6, pool 15.6 -> 17.4 of which paging 0.9 s), so the 0.56.53
+  "2.7 s cold" baseline was a different cold (rg cache kept) and is NOT the comparison; the added time is the logged
+  figure. WARM page (pool cached, 3 days) unchanged: 0.39 / 0.37 s. WHAT IT BOUGHT on Getz (tile diff against the
+  0.56.53 page of the same day): Albums 94 -> 98, Compilations 150 -> 155, Live 41 -> 42, and about ten tiles that were
+  listed but NOT playable now carry the Qobuz badge (Early Autumn, Focus + Cool Velvet, Four Classic Albums, Greatest
+  Hits, Live in Europe, More West Coast Jazz, the Jazz Samba / Big Band Bossa Nova set ...). Decision (keep / cap /
+  revert) is SIMON'S against his "no added time" rule; the rule as stated says revert.
+- **Live check after install:** Discography logging to INFO; open Stan Getz with the pool cold (`discography clearcache`
+  or More options > Refresh): the log shows the lines above. CORRECTION (Simon, 2026-10-07: *"I see all 4 albums before
+  this change on getz/gilberto"*): the release page ALREADY lists 4 Qobuz copies (`match 'Getz / Gilberto': Local=1,
+  Qobuz=4`), so paging may add nothing visible there; `wku5y5j6r2vla` is at most a 5th copy, and may not be on Qobuz
+  at all (the earlier note was a guess from one id). What the log's `N albums of T` will show is how many Stan Getz
+  albums were past the 200th, and so how many OTHER tiles were short of a Qobuz copy.
+- **LIMITS ON THE OTHER SERVICES (read from each plugin's master source 2026-10-07 and our adapters; not measured):**
+  Qobuz 200 (plugin) -> 1500 here; TIDAL no practical cap (`artistAlbums` limit `MAX_LIMIT` 5000, pages of 100 in
+  parallel, three buckets ALBUMS / EPSANDSINGLES / COMPILATIONS fetched in that order); Deezer up to `MAX_LIMIT` 2000
+  (pages of 50, 4 at a time), but its pager only runs when `MAX_LIMIT > total`, so an artist with 2000+ Deezer albums
+  would get the first 50 only (rare, from reading the code); Spotify 200 here (`SPOTIFY_PAGE` 50 x `SPOTIFY_MAX_PAGES`
+  4, `include=album,single,compilation`, one list in Spotify's own order; no Spotify account on the rig, so untestable
+  live). Type-first ordering (Simon: albums, then compilations, live, the rest) only matters where a cap bites: Spotify
+  at 200 and Qobuz past 1500. Qobuz's own `release_type` is not used (0.46.8: unreliable; `_candSize` counts instead).
+  **Spotify: albums-first was BUILT and then REMOVED, on time (Simon, 2026-10-07).** The sequence: *"Ok leave spoitfy as
+  it is"*, then *"sorry we should still follow same priority for Spotify but we are stuck at 200 ... lose any multiple
+  versions so at least one is availbale where possible"*, then *"1"* (albums first within the same budget), then, on
+  seeing the cost: *"if its not slower than we should not do this. Dont want added time as some is slow enough already"*.
+  It WAS slower: two groups (`include=album`, then `compilation,single`) are at least one more SEQUENTIAL request for
+  every artist (2 where the mixed list took 1; 4 for 120 albums, was 3; a dead token 2, was 1), and Spotty's client id is
+  shared by every Spotty user, so each request is also against one quota. The code is back to the single mixed list
+  (`Sources.pm` Spotify block byte-identical to the 0.56.53 zip; `t_spotify.pl` back to its 86). WHAT WAS LEARNED, for a
+  later attempt that costs no extra request: Spotty's `artistAlbums` passes `include` on as Spotify's `include_groups`
+  (a single group is valid) and caps `limit` at 200 per call with the shared client id (Spotty-Plugin master,
+  API.pm:441), so at limit 50 and an offset the 200 is OUR 4-request budget, not a wall; the shared version key would be
+  `API::_editionless` + case/punctuation fold + first artist + `album_type` ("Vol. 1"/"Vol. 2" stay two); the mixed list
+  returns albums, singles and compilations interleaved in Spotify's own order, so a cap there drops by date, not by
+  type. Index row `SPOTIFY ALBUM LIST STAYS ONE MIXED LIST AT 200` is current again. Qobuz order untouched until the
+  first run's totals are read.
+
+### 0.56.53 (2026-10-07) — Refresh discography takes the artist page's normal first list, not MusicBrainz's — INSTALLED, live check PASS (sha aa7b79e5)
+- **Source:** Simon, after a Refresh on 0.56.52: *"during refresh i get 3 dots for a while before it would enter the
+  album"*; then, on the cause: *"refresh updates the resolving to local or streaming which happens on this page loads
+  so not sure why it needs to fall back to mb as a) it will hit the limit and b) is way slower. It should follow same
+  path that built the pages to start with."*
+- **Cause, MEASURED 2026-10-07 18:39-18:41 (server HTTP, Work Mac player, Stan Getz, 346 groups = 4 pages):** the
+  Refresh row 0.2 s (it only clears); the artist page after it 14.8 s (MusicBrainz's list 4.4 s, then the cold pool and
+  the bootleg check); an album opened AFTER that 0.06 s; an album opened 2 s into the rebuild **8.1 s**. Log: the
+  artist page's browse started 18:40:27.80, the album's 0.3 s later, and the requests alternated offset 0, 0, 100, 100,
+  200, 200, 300, 300 (7 MusicBrainz requests, not 4, at 1 req/s): the Refresh browsed under flight key
+  `<mbid>|refresh`, the album page under `<mbid>`.
+- **Change (REFRESH TAKES THE FIRST LIST, NOT MUSICBRAINZ'S):** `Browse::_refreshItem` no longer passes `refresh => 1` to `clearArtistCache`. Everything it cleared
+  before is still cleared (the same call `discography clearcache` makes, plus `clearCandidates`), so the streaming and
+  Local matches are re-resolved, but the next page draws from the first list (ListenBrainz and the community API),
+  MusicBrainz completing it in the background for the next visit (0.56.7). SUPERSEDES 0.56.7 decision 7 ("Refresh is
+  MusicBrainz's own list, awaited"), which the design notes record only as "stays" (inherited from before 0.56.7),
+  with no reason given. The `refresh` option and its machinery (`_rgFullKey`, `_pastCap`) stay in the API, now unused
+  by the page: `t_chain.pl` §9 and `t_fastpage.pl` still exercise them.
+- **MEASURED with the same path, on the 0.56.52 install (`discography clearcache`, which is that path):** artist page
+  **2.7 s** (was 14.8), an album tapped 2 s in **0.07 s** (was 8.1), one background MusicBrainz browse.
+- **What a Refresh no longer pulls at once** (0.56.7 item 1, now true of Refresh): release-group aliases, official
+  edition titles, the newest groups and the 3.4% of release ids only MusicBrainz's map has arrive on the NEXT visit.
+  With `hide_unmatched` on, an alias-only or edition-only group stays hidden until then. A Refresh still re-resolves a
+  mis-identified artist (the name -> mbid cache is cleared). A Refresh of an artist past MusicBrainz's 600 cap now
+  shows the groups past it (the first list has no cap) without the `_pastCap` lists.
+- **Residual, unmeasured:** an album tapped in the first second, before the first list lands, still browses MusicBrainz
+  itself (the album page has no first-list route, by the 0.56.7 design: it expects a warm cache).
+- **WHY THE ALBUM PAGE HAS NO FIRST-LIST ROUTE (Simon asked; read, not a recorded decision):** the 0.56.7 design
+  (`API::_fastSpine`) is scoped to the artist page (`getReleaseGroups(read => 1)`); the analysis doc says the release
+  page and play "keep the browse alone, as today"; `_releaseDetail` expects a cache hit ("cached from the list view").
+  Its browse on a miss is an undesigned fallback; a Refresh was the routine action that emptied the cache.
+- **Tests:** `t_chain.pl` §9 now pins that the Refresh row passes no `refresh` (the old row fails it); `t_rgflight.pl`
+  back to 21 (the join I tried first was dead once Refresh stopped starting a `|refresh` browse, and was removed).
+  72 suites green; syntax_check clean.
+- **Live check after install** (Discography logging to INFO): More options > Refresh discography on Stan Getz: the
+  page in about 3 s; the log shows `release groups for ...: 346 from ListenBrainz ... and the community API` and one
+  background `fetching release groups` chain, not four-then-four; an album tapped 2 s in opens at once.
+  **RESULT (installed 19:08, Refresh on Stan Getz 19:10:52, Simon: "much. faster"):** log: Refresh 19:10:52.36;
+  `346 from ListenBrainz (346) and the community API (318)` at 53.80 (1.4 s); cold pool awaited; page drawn ~56.9 (about
+  4.6 s, was 14.8); ONE background `fetching release groups` chain, offsets 0/100/200/300 once each (55.96-00.22);
+  `completed ... from MusicBrainz: 346 groups` at 05.80; no WARN or ERROR. Not isolated in the log: whether an album was
+  tapped during the rebuild (Simon's words only).
+
+### 0.56.52 (2026-10-07) — Play inside an opened version from an accented artist; edition label not doubled — INSTALLED, check 1 PASS (sha aeaa4202)
+- **Source:** live checks of 0.56.51 (installed 14:57) and Simon on the iPhone; Simon: *"yes skip it if words already
+  in title"*, *"fix it"*, *"yes build this"*.
+- **Change:** (1) `_addrOf` / `_addrDecode`: a non-ASCII address value rides as `<key>_u8` (A3 `MATERIAL DROPS A
+  BATCH WITH AN ACCENTED PARAM`); (2) `_addVersion` skips a version whose every word is already in the title. Details
+  and tests in the 0.56.51 entry's "Live check results" and "FOUND LIVE" bullets below.
+- **Build:** install.xml, repo.xml and CACHE_VERSION (all three modules) 0.56.52; zip 263 files, same list as 0.56.51;
+  the zipped Browse/Sources/API are byte-identical to the tree; syntax_check clean; 72 suites green.
+- **Live check after install** (play tests on the MacBook Pro LyrPlay only, or Simon's iPhone):
+  1. Library artist "Stan Getz, João Gilberto feat. Antônio Carlos Jobim" > Getz / Gilberto > Getz/Gilberto (Expanded
+     Edition) > Play: all 18 tracks queue and play.
+     **PASS (Simon's iPhone, Dining Room, 2026-10-07 ~15:41): 18 Expanded Edition tracks queued (qobuz://77532137..).**
+  2. The same from Stan Getz (plain name): unchanged, plays.
+  3. Kraftwerk > Radio-Aktivität: the Qobuz row reads "Radio-Activity (2009 Digital Remaster)", once.
+     **PASS (read on the server, 2026-10-07).**
+  4. The 0.56.51 checks still open: long-press a track inside a version (Play / Play next / Add); one release-group
+     fetch during a Refresh.
+     Simon: done (long-press reported fine). The Refresh fetch count is NOT confirmed: the 0.56.52 install reset
+     `plugin.discography` to WARN, so the log holds no fetch lines for it.
+
+### 0.56.51 (2026-10-07) — Stan Getz: play from an opened version, versions kept, other albums' copies left alone, one browse at a time — BUILT (sha f730db3a), not installed; carries 0.56.50 (never installed)
+- **Source (Simon, 2026-10-07):** searching Stan Getz on the phone, the Getz / Gilberto page listed "Getz/Gilberto #2"
+  and "Getz/Gilberto '76" as versions and missed Qobuz's other copies; the first Qobuz version played a track from Come
+  into the Cool; the page then sat on Material's loading dots. On the Mac the same album played correctly. Then:
+  *"under all services we need to expose the versions they have and not throw them away. lets look to apply proposed
+  fixes"*.
+- **Measured first (rig over HTTP + server log + Qobuz's own lists + Material's source):** the four causes are the A2
+  entries `A DISPATCHED PAGE KEEPS ITS ADDRESS`, `ONE RELEASE-GROUP BROWSE PER ARTIST AT A TIME`, `A COPY TITLED EXACTLY
+  LIKE ANOTHER ALBUM ON THE PAGE`, `EVERY VERSION A SERVICE LISTS IS SHOWN`, and A3 `A DISPATCHED PAGE'S ROWS KNEW ONLY
+  THEIR POSITION` / `MATERIAL PLAYS A TRACK LIST ONE COMMAND PER TRACK`. The Mac played correctly because the
+  version row's own Play button (`playcmd`) was used there; the phone opened the album and pressed Play inside it.
+  LBF checked live the same day: its release pages bind their rows (`_bindReleaseContext`, `lbf_release` + path), so
+  LBF is not affected. Found there in passing, NOT fixed (another repo): its recursion into a row's inline `items`
+  discards its own result, so inline items under an LBF release page stay unbound.
+- **Fourth copy, not reachable:** Qobuz's `getArtist` returns at most 200 albums (`QOBUZ_DEFAULT_LIMIT`), Stan Getz's
+  list stops there (198 kept + 2 credited to other artists), and `wku5y5j6r2vla` (a plain 1964 "Getz/Gilberto", 8
+  tracks) is past it. Paging an artist's list on Qobuz is a separate change for every large artist; not in this build.
+- **Build (2026-10-07, Simon: "Built it and we can test"):** CACHE_VERSION 0.56.51 in all three modules (the
+  build agent first left them at 0.56.50; `syntax_check.sh` caught the mismatch), zip 263 entries (same list as
+  0.56.50's), sha1 `f730db3af62a279949d6ae283a17fed5fe9f3f3e` in repo.xml.
+- **"Refreshing matches again" on Getz / Gilberto (Simon, same day), from the log:** the bare-position walk ran Refresh
+  discography (`clearArtistCache` + `clearCandidates`, Stan Getz) at 10:00:28 (the phone's Play) and again at 10:07:17
+  (my probe on the Work Mac); the next visit re-fetched the release groups and re-built the Qobuz pool (`pool is cold
+  - awaiting`). The A3 `A DISPATCHED PAGE'S ROWS KNEW ONLY THEIR POSITION` cause; fixed by this build. Separately,
+  every build empties `kv`, so the first visit to each artist after an install re-fetches once.
+- **Alpha tester, no streaming service, archive covers on, "spinner on play of anything he owns, clicking into
+  details" (Simon, 2026-10-07; his version and log not seen):**
+  1. Most likely the same bug: with no service, an owned album's only version is Local, so playing inside it sends
+     Material's per-track bare walks (A3 `MATERIAL PLAYS A TRACK LIST ONE COMMAND PER TRACK`), each rebuilding the
+     stashed artist page and running the row it lands on. Unconfirmed until his version / a `paramless walk` log line.
+  2. MEASURED, the covers (scratchpad `connstarve.py`, `connstarve_run2.txt`): 24 uncached Sun Ra archive covers
+     through a browser-like pool of 6 connections, `serverstatus` probes at high priority. Covers held 2.3-5.1 s each,
+     all 6 connections busy until 15.2 s; a probe waited up to 1.72 s for a connection and was answered in 0.01 s. So
+     the server is not overloaded; held cover requests delay the browser's own next request by about one cover's
+     download, longer when archive.org is slow (a failing cover holds a connection 15-60 s, A3 `THE ARCHIVE'S OWN
+     500`).
+  3. FOUND, PARKED (Simon 2026-10-07: "Lets leave for now but may change it"): with NO streaming service, `peekPool`
+     is never `resolved`, so `_buildList`'s visibility rule (`!$peek->{resolved}`) shows every MusicBrainz release
+     whatever `hide_unmatched` says, and 0.56.46's no-cover rule never runs: such a user sees the full catalogue, every
+     unowned tile an archive cover. Index row `NO STREAMING SERVICE SHOWS THE FULL CATALOGUE`; not a finding until he
+     reopens it.
+  4. Not measured: a tile Play (`playCommand`) rebuilds the whole release page before playing a `db:album.id` url, so
+     it waits on the release's MusicBrainz links request and the MAI review when those are not cached.
+- **Side effect of the diagnosis (mine):** probing bare `item_id`s by hand on the "Work Mac" player ran its Albums
+  switch, More options and Refresh discography for Stan Getz; the page was put back to Albums and re-warmed.
+- **Tests:** new `t_bindaddr.pl` (32), `t_rgflight.pl` (21), `t_versions.pl` (30); `t_extras.pl` part E (+4),
+  `t_detailshared.pl` §9 (+2), `t_spotify.pl` §8 rewritten to the new contract (+1), `t_tracklink.pl` (e) reads the
+  cap from the module, `t_alias.pl`/`t_fastpage.pl` timer stubs hold back watchdogs. 72 suites, 2,882 assertions, 0
+  failures (baseline 2,792). 30 of 32 mutants caught, the 2 equivalent (A2 entries); scratchpad `mut5651/run.py`.
+  `syntax_check.sh` clean.
+- **Live check after install** (play tests on the MacBook Pro LyrPlay only):
+  1. Stan Getz > Getz / Gilberto: Qobuz lists Getz/Gilberto (Expanded Edition), (Remastered), the plain 1964 one and the
+     2023 one; no "#2", no "'76". Getz/Gilberto #2 and '76 each list their own copy.
+  2. Open the first Qobuz version and press Play inside it: the album plays from track 1, nothing else; the artist page
+     is still on Albums afterwards; the log has no `paramless walk` and no `clearArtistCache`.
+  3. Long-press a track there: Play / Play next / Add do that track.
+  4. Kraftwerk > Radio-Aktivität: still Qobuz (the alias copy); the single Radio-Activity unchanged.
+- **Live check results (installed 2026-10-07 14:57, browsed on the Work Mac player, put back to Albums):** 1 PASS
+  (Local + Qobuz Expanded Edition / Remastered / Getz/Gilberto / Getz / Gilberto; no #2, no '76; rows carry `v:Qobuz:n`
+  addresses). 4 PASS for the alias copy, but its row read "Radio-Activity (2009 Digital Remaster) (2009 Remaster)":
+  `_addVersion` skipped only an exact substring. FIXED in the tree, not built (Simon: *"yes skip it if words already in
+  title"*): skipped when every word of the version is in line1, any order; `t_versions.pl` §6 +4 (2 fail on the old
+  check). 2, 3, 5 waiting: LyrPlay not connected; log category back at WARN after the install.
+- **FOUND LIVE 2026-10-07 15:28 (iPhone, Dining Room): Play inside an opened version does NOTHING when the page's
+  address holds an accented name.** Entered from the library artist "Stan Getz, João Gilberto feat. Antônio Carlos
+  Jobim" (artist_id 155370). Material sent the right batch (control.command INFO, then put back to ERROR): one
+  `material-skin-client command-list` of 19 (`playlist clear`, `discography playlist play ... item:v:Qobuz:0
+  item_id:0`, 17 adds), each carrying `artist:Stan Getz, João Gilberto feat. Antônio Carlos Jobim`. Nothing ran, not
+  even the clear (queue unchanged 479 s; no `topLevel` line). CAUSE, Material `Plugin.pm` 2639: `eval {
+  decode_json($json) }` on the CHARACTER string JSON-RPC hands it; ã/ô are not UTF-8 octets, decode_json dies
+  ("malformed UTF-8 character", reproduced locally), the eval swallows it, 0 commands actioned. ASCII addresses
+  ("artist:Stan Getz") and single commands (long-press Play, one track) are unaffected. PROVEN on the server: the
+  same one-command batch (a `discography items` lookup) with "Probe Plain Getz" -> `actioned` 1, "Probe João Antônio"
+  -> 0. FIXED in the tree, not built (Simon: *"fix it"*): `_addrOf` carries any non-ASCII address value percent-encoded
+  as `<key>_u8`, `_addrDecode` (topLevel's first read) puts it back; a plain key that came too wins. Scope kept to the
+  BOUND address (rows that always carry `item_id`): renaming `artist` in `_identParams`' tile actions would drop
+  Material's Play menu on an mbid-only tile (`hasPlayableId` counts `artist`). OPEN, unmeasured: a Play-all over the
+  ARTIST page itself (tiles' `playcmd` actions carry the plain name) would hit the same drop. `t_bindaddr.pl` §8 (+9;
+  no-encode mutant 3 fail, no-decode mutant 1 fail); 72 suites green; syntax_check clean.
+  5. A Refresh discography on a big artist while opening it twice: one `fetching release groups … offset=0` line.
+
+### 0.56.50 (2026-10-07) — a composer's WORKS PAGE, classical plan step 1 — BUILT (sha c9017d8f), not installed
+- **Source:** Simon's four decisions, 2026-10-03 (`docs/classical-plan.md` §6); on 2026-10-07 the switch was made its
+  own row (*"classical works should be independant of that, classical compostions dont do singles"*), then *"build it"*.
+  The plan is §9 there; §9.7 says where the build differs from it.
+- **Change:**
+  - **Data:** our corrected copy of Open Opus (CC0) ships in `Discography/classical/`: `composers.json` (220, by
+    MusicBrainz id) and `works/<mbid>.json` in display order (recommended first, then catalogue number, then title).
+    Built by `tools/classical/build_data.py` from the dump + `corrections.json` (Masquerade retitled; six works added;
+    search names Metastaseis, Wassermusik, Don Carlos, The Noonday Witch, Elegy / Élégie) + `composers_mb.json`; 191
+    repeated entries dropped (same words in title and subtitle, same genre). 1.58 MB on disk; the zip 436 KB -> 921 KB.
+  - **`Classical.pm`:** the table and works reader; the WORK-tag rule, ported from `wrule.py` (397 of 397 library
+    works give the Python's answer and reason; 352 match an Open Opus work, step 0's 345 + the corrections); the
+    library's works (`works artist_id:`, filtered to this composer: the query also lists works a contributor
+    performed); which Open Opus works are owned; a work's albums.
+  - **The page** (`Browse.pm`): a composer the table holds opens on his works: Options (**"Showing Works (tap for
+    Albums)"**, Search, More options -> Refresh), Biography, **Popular**, then **Orchestral, Chamber, Keyboard, Stage,
+    Vocal** (30 rows, Show more), **Other works in your library**, Similar artists. An owned work reads "In your
+    library" and opens the albums holding it (each a playable library album; tracks via `wka:<id>`); the rest are
+    plain rows until step 2. A popular work is listed twice with invisible joiners (A2 `A REPEATED SEARCH-ROW NAME`).
+    **No MusicBrainz request** on the works page (no release groups, completed list, pool or bootleg check), and a
+    library tag naming a composer is trusted without its release-group check. The album page is today's, with **"Show
+    works"** above the untouched Albums | Singles row. The switch is per composer, kept on a same-artist re-entry.
+- **Tests:** `t_classical.pl` 42 (data, ids, corrections, parity both ways, library side); `t_works.pl` 43 (the page,
+  no MusicBrainz, marks, album tiles, `wka:`, the switch incl. stale taps and an absolute target, per composer, a
+  non-composer unchanged); 14 of 14 mutants (scratchpad `mut/run.py`); `tools/classical/test_build.py` 18. 69 suites
+  green; syntax_check clean (now covers Classical.pm); zip == tree (254 files).
+- **Live check after install:** Chopin, Debussy, Vivaldi, Mozart, Bach, Shostakovich: the works page, the marks
+  against plan §8.3, the switch both ways, first-visit time against 0.56.49 (Mozart 4.8 s on 0.56.8); controls Max
+  Richter, Philip Glass, Karajan unchanged. Also: how Material draws a plain row with a second line (the unowned
+  works), not yet seen.
+
+### 0.56.49 (2026-10-03) — ONE LOGO, THE STACK: the plugin's logo is Material's album-multi everywhere — INSTALLED + VERIFIED LIVE 2026-10-03 with Material 6.4.10.11 (sha 868ca4f3; Simon: *"installed it works"*), COMMITTED (50ddadb) + dev PUSHED 2026-10-03
 - **Confirmed over HTTP (13:40):** the plugins page shows "Discography (v0.56.49)". Material serves revision 6.4.10.11, and
   its `material.min.js?r=6.4.10.11` holds `deezer:{svg:"deezer"},discography:{svg:"album-multi"}`.
   `["material-skin","plugin-actions"]` holds our `artist` action as `{svg: album-multi, title: Discography}`, with
@@ -2333,7 +3563,7 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
 - **Live check after install (then a full refresh of Material on the device):** the Apps entry, the artist-menu
   "Discography" entry and "Search on…" all show the same stack.
 
-### 0.56.48 (2026-10-03) — fixes 0.56.47's regression: every source opened from an LMS search came back Empty — INSTALLED + VERIFIED LIVE 2026-10-03 (sha d51057eb)
+### 0.56.48 (2026-10-03) — fixes 0.56.47's regression: every source opened from an LMS search came back Empty — INSTALLED + VERIFIED LIVE 2026-10-03 (sha d51057eb), COMMITTED (50ddadb) + dev PUSHED 2026-10-03
 - **Source:** 0.56.47's live check (below), first install. The regression is on Simon's rig while 0.56.47 runs:
   Material's own search lists Qobuz and TIDAL through these same items.
 - **Cause (A3 `EVERY SOURCE OPENED FROM A SEARCH CAME BACK EMPTY`):** XMLBrowser creates a list's session id only
@@ -2387,7 +3617,7 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   Qobuz/TIDAL under "Search on…" still open. Then, if Simon likes it, a PR to Craig (branch off upstream/master,
   the same line).
 
-### 0.56.47 (2026-10-03) — TEST BUILD: a "Discography" entry in LMS's own search — INSTALLED 2026-10-03 13:03; live check FOUND A REGRESSION (every source opened from an LMS search came back Empty), fixed in 0.56.48 (sha 0bcca876)
+### 0.56.47 (2026-10-03) — TEST BUILD: a "Discography" entry in LMS's own search — INSTALLED 2026-10-03 13:03; live check FOUND A REGRESSION (every source opened from an LMS search came back Empty), fixed in 0.56.48 (sha 0bcca876), COMMITTED (50ddadb) + dev PUSHED 2026-10-03
 - **Source:** Simon asked whether DSC's search could show results below the box as you type, the way Material's
   library search does. Answered first: not from a plugin. Material sends nothing from a plugin's search box until
   Enter (`text-field` has a `debounce` prop, and no caller passes it: browse-page.js:407,

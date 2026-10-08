@@ -35,7 +35,9 @@
 #      ListenBrainz's and the community API's lists with the community's
 #      verdicts and ONE by-id request; MusicBrainz completes it after the
 #      render, every request as background work; the completed list waits for a
-#      fresh entry; a Refresh takes MusicBrainz's own list, awaited.
+#      fresh entry; clearArtistCache(refresh => 1) takes MusicBrainz's own
+#      list, awaited (§9; nothing in the plugin passes it since 0.56.53: the
+#      page's Refresh row clears like a cold start and takes the first list).
 #
 # FIXTURES ARE CAPTURED (tools/fixtures/, public API, 2026-09-29): Ladyhawke's
 # read (mb_artist_ladyhawke_aliases_artistrels_releasegroups.json, 24 groups)
@@ -118,7 +120,9 @@ my $B   = 'Plugins::Discography::Browse';
     no strict 'refs'; no warnings 'redefine';
     *{"${API}::_netGet"} = sub {
         my ($url, $ok, $err, %opt) = @_;
-        push @EV, "GET $url" . ($opt{background} ? ' [bg]' : '');
+        # Background as the real _netGet decides it: the job's own flag, or the
+        # one inherited from the caller ($NET_BG).
+        push @EV, "GET $url" . (($opt{background} || $Plugins::Discography::API::NET_BG) ? ' [bg]' : '');
         my $fire = sub {
             my $r = $RESPONDER->($url);
             return $err->(T::Resp->new) if !ref $r && $r eq 'FAIL';
@@ -450,8 +454,9 @@ ok(scalar(grep { /\[bg\]$/ } @EV[$m8 .. $#EV]) == 0,
 flush();
 
 # ---------------------------------------------------------------------------
-# 9. A REFRESH takes MusicBrainz's own list, awaited: no ListenBrainz, no
-#    community list; the marker is used once.
+# 9. clearArtistCache(refresh => 1) takes MusicBrainz's own list, awaited: no
+#    ListenBrainz, no community list; the marker is used once. The API option
+#    only: the page's Refresh row has not passed it since 0.56.53 (pinned last).
 # ---------------------------------------------------------------------------
 fresh();
 $RESPONDER = \&fast_responder;
@@ -463,13 +468,17 @@ ok(scalar(@pre9) == 3 && $pre9[1] =~ m{/release-group\?artist=} && !grep({ m{lis
 ok(!defined $CACHE{"dsc:rgfull:1:$RH"} && !defined $CACHE{"dsc:rgfast:1:$RH"} && !grep({ /\[bg\]$/ } @EV),
    '9: ... the Refresh marker is used up, and nothing is left to complete');
 {
-    # The page's Refresh row is what sets the marker; no suite drives that row's
-    # url, so its call is pinned on the source.
+    # The page's Refresh row set the marker until 0.56.53; no suite drives that
+    # row's url, so that it no longer does is pinned on the source.
     open my $fh, '<', "$FindBin::Bin/../Discography/Browse.pm" or die $!;
     my $src = do { local $/; <$fh> };
     my ($body) = $src =~ /^(sub _refreshItem \{.*?^\})/ms;
-    ok(scalar($body && $body =~ /clearArtistCache\(.*refresh\s*=>\s*1/s),
-       "9: the page's Refresh row asks clearArtistCache for MusicBrainz's own list next (refresh => 1)");
+    # 0.56.53 (Simon, 2026-10-07: "it should follow the same path that built the
+    # pages to start with"): the row no longer asks for MusicBrainz's own list.
+    # The option stays in the API (the section above), unused by the page.
+    (my $code = $body // '') =~ s/^\s*#.*$//mg;
+    ok(scalar($body && $code =~ /clearArtistCache\(/ && $code !~ /refresh\s*=>/),
+       "9: the page's Refresh row clears like a cold start: no refresh => 1, so the next page takes the first list");
 }
 
 # ---------------------------------------------------------------------------
@@ -637,6 +646,120 @@ ok(!defined $CACHE{"dsc:rgfull:1:$RH"} && !defined $CACHE{"dsc:rgfast:1:$RH"} &&
     $open->(name => 'Various Artists - Duck Records', id => 9, tag => { 9 => $LH });
     ok(scalar(gets(@EV) && @BUILT == 1),
        '13: control: a name that only starts like it opens its page as ever');
+}
+
+# ---------------------------------------------------------------------------
+# 14. THE PAGE NEVER ASKS FOR A TRACKLIST (0.56.62). 0.56.61 asked ListenBrainz
+#     for the track match's tracklists before the draw and waited for them: a
+#     slow ListenBrainz held Thievery Corporation's page 8.5 s past its check
+#     (live, 2026-10-08). Now an owned album no title claims that shares a word
+#     with one of the page's groups ("The Anxiety Tour" / "Anxiety") sends
+#     nothing: the read and the check, as in section 1; the page draws the
+#     moment the check lands, which cancels the deadline (0.56.60's chain). The
+#     tracklists are the library pass's (t_trackwarm.pl); the page's hand-off of
+#     what it found missing is in t_trackmatch.pl section 5 (the REAL _buildList).
+# ---------------------------------------------------------------------------
+{
+    my $isLb = qr{api\.listenbrainz\.org/1/metadata/release_group/};
+    my $own = { _albumid => 40, _candTitle => 'The Anxiety Tour', _candArtist => 'Ladyhawke' };
+    my $start = sub {
+        fresh();
+        $RESPONDER = \&responder;
+        $LOCAL = [ @LH_LOCAL, { %$own } ];
+    };
+
+    $start->();
+    page($LH, 'Ladyhawke');
+    my @b = gets(upto('render', @EV));
+    ok(!grep({ $_ =~ $isLb } @EV), '14: a leftover owned album sharing a word with "Anxiety": no tracklist asked, before or after the draw');
+    ok(scalar(@b) == 2 && scalar(@BUILT) == 1, '14: ... the read and the check, then the draw (section 1\'s two requests)');
+
+    # In flight: after the read only the check is out; it lands, the page draws
+    # and the deadline goes.
+    $start->();
+    $DEFER = 1;
+    page($LH, 'Ladyhawke');
+    my $mark = scalar @EV;
+    step();
+    my @out = grep { /^GET / } @EV[$mark .. $#EV];
+    ok(scalar(@out) == 1 && scalar(@DEFERRED) == 1 && $out[0] =~ m{/release-group\?query=},
+       '14: after the read, the check alone is out');
+    ok(scalar(@TIMERS) == 1, '14: ... with the deadline armed');
+    step();
+    ok(scalar(@BUILT) == 1, '14: the check lands: the page draws at once');
+    ok(scalar(@TIMERS) == 0, '14: ... and the deadline is cancelled (nothing else to wait for)');
+    $DEFER = 0;
+}
+
+# ---------------------------------------------------------------------------
+# 15. THE KEPT TRACKLISTS (API, 0.56.62), as the library pass asks for them:
+#     one background request for the groups due; a tracklist kept for good
+#     ({ t, due => 0 }), ListenBrainz's "none" kept with a date to ask again;
+#     served at any age; a due "none" asked again alone; the same group never
+#     out twice; a failure keeps nothing.
+# ---------------------------------------------------------------------------
+{
+    fresh();
+    my ($g1, $g2, $g3) = map { sprintf('%08x-0000-4000-8000-00000000000%d', 0xabc0 + $_, $_) } 1 .. 3;
+    my $lb = qr{api\.listenbrainz\.org/1/metadata/release_group/\?release_group_mbids=([^&]+)&inc=recording$};
+    my $FAIL = 0;
+    $RESPONDER = sub {
+        my ($url) = @_;
+        return 'FAIL' if $FAIL;
+        my ($ids) = $url =~ $lb or return responder($url);
+        return { map { ($_ => ($_ eq $g2 ? { recording => { mediums => [] } }
+                                         : { recording => { mediums => [ { tracks => [
+                                               { name => 'Naima', length => 737000 } ] } ] } })) }
+                 split /,/, $ids };
+    };
+    my $done = 0;
+    $API->warmGroupTracks([ $g1, uc $g2, $g1 ], sub { $done++ }, background => 1);
+    my @g = grep { /^GET / } @EV;
+    ok(scalar(@g) == 1 && $g[0] =~ /\[bg\]$/ && $g[0] =~ /\Q$g1,$g2\E/, '15: one background request for the two groups (case and repeats folded)');
+    ok($done == 1, '15: ... calling back once');
+    my $k1 = $CACHE{"dsc:grptrk:2:$g1"};
+    ok(ref $k1 eq 'HASH' && $k1->{due} == 0 && $k1->{t}[0][0] eq 'Naima' && $k1->{t}[0][1] == 737,
+       '15: a tracklist is kept for good: { t => [[name, seconds]], due => 0 }');
+    my $k2 = $CACHE{"dsc:grptrk:2:$g2"};
+    ok(ref $k2 eq 'HASH' && !@{ $k2->{t} } && $k2->{due} > time() + 6 * 86400,
+       '15: ListenBrainz has none: kept as [] with a date to ask again (a week)');
+    ok(ref $API->peekGroupTracks($g1) eq 'ARRAY' && ref $API->peekGroupTracks($g2) eq 'ARRAY'
+       && !@{ $API->peekGroupTracks($g2) } && !defined $API->peekGroupTracks($g3),
+       '15: peekGroupTracks: the tracks, [] for none, undef never asked');
+    ok(!$API->groupTracksDue($g1) && !$API->groupTracksDue($g2) && $API->groupTracksDue($g3),
+       '15: groupTracksDue: not a kept one, not a "none" before its date; one never asked is');
+    $k2->{due} = time() - 1;
+    ok($API->groupTracksDue($g2) && ref $API->peekGroupTracks($g2) eq 'ARRAY',
+       '15: a "none" past its date is due, and still served meanwhile');
+    @EV = ();
+    $API->warmGroupTracks([ $g1, $g2 ], undef, background => 1);
+    @g = grep { /^GET / } @EV;
+    ok(scalar(@g) == 1 && $g[0] =~ /release_group_mbids=\Q$g2\E&/, '15: asked again, the due one alone');
+
+    @EV = (); $DEFER = 1;
+    $API->warmGroupTracks([ $g3 ], undef, background => 1);
+    $API->warmGroupTracks([ $g3 ], undef, background => 1);
+    ok(scalar(grep { /^GET / } @EV) == 1, '15: the same group asked twice while out: one request');
+    flush(); $DEFER = 0;
+    ok(ref $CACHE{"dsc:grptrk:2:$g3"} eq 'HASH', '15: ... kept when it lands');
+
+    my $g4 = sprintf('%08x-0000-4000-8000-000000000004', 0xabc4);
+    @EV = (); $FAIL = 1;
+    $API->warmGroupTracks([ $g4 ], undef, background => 1);
+    ok(!exists $CACHE{"dsc:grptrk:2:$g4"} && $API->groupTracksDue($g4), '15: a failed request keeps nothing: still due');
+    $FAIL = 0; @EV = ();
+    $API->warmGroupTracks([ $g4 ], undef, background => 1);
+    ok(scalar(grep { /^GET / } @EV) == 1, '15: ... and is asked again (nothing left marked as out)');
+
+    @EV = ();
+    my $got = 'unset';
+    {
+        local $Plugins::Discography::API::NET_BG = 1;
+        $API->listenBrainzGroups($LH, sub { $got = shift });
+    }
+    ok(scalar(grep { m{^GET https://api\.listenbrainz\.org/1/metadata/artist/\?artist_mbids=\Q$LH\E&inc=release_group \[bg\]$} } @EV) == 1,
+       "15: listenBrainzGroups: ListenBrainz's artist list, background work when the caller is");
+    ok(!defined $got, '15: ... calling back with undef when it has no list');
 }
 
 package T::Client; sub id { 'c1' }

@@ -26,6 +26,7 @@ our (%SHARED, @SHARECALLS, @LA, @LT, $URLS);
 our (%CANON, @CANDOPTS);   # section 6: MusicBrainz's names, what the pool is asked for
 our (%ACTS, %ALIASES, @MFOPT, @AREADS);   # section 7: same-name acts, aliases, matchesFor's options, alias reads
 our (%ENNAME);   # section 8: MusicBrainz's primary English alias
+our (%EPON);     # section 9: the member a band is named after (API::peekEponymous)
 
 BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
@@ -67,6 +68,7 @@ BEGIN {
     *{"${A}::peekArtistName"}       = sub { $main::CANON{ $_[1] // '' } };   # the pool's search name (0.56.13)
     *{"${A}::peekArtistAliases"}    = sub { $main::ALIASES{ $_[1] // '' } };
     *{"${A}::peekArtistEnglishName"} = sub { $main::ENNAME{ $_[1] // '' } };   # section 8 (0.56.18)
+    *{"${A}::peekEponymous"}        = sub { $main::EPON{ $_[1] // '' } };     # section 9 (2026-10-08)
     # Same-name acts by name (one = not shared), and the alias read.
     *{"${A}::getArtistCandidates"}  = sub { $_[2]->([ map { +{ mbid => $_ } } @{ $main::ACTS{ $_[1] // '' } || ['x'] } ]) };
     *{"${A}::warmArtistAliases"}    = sub { push @main::AREADS, $_[1]; $_[2]->($main::ALIASES{ $_[1] // '' } || []) };
@@ -313,6 +315,49 @@ ok(scalar(@LA == 1), '5: no mbid -> lookup runs (nothing to guard against)');
     ok(scalar(($joint[0] // '') eq 'James Yorkston' && !defined $joint[2]),
        "8: control: another Latin name, MusicBrainz's Latin one searched first -> no compare");
     %CANON = (); %ENNAME = ();
+}
+
+# 9. (0.56.51) The release page matches with the page's TITLES, as its tile does:
+#    a copy whose title is exactly another album on the artist's page belongs to
+#    that album (Stan Getz: "Getz/Gilberto #2" is not a version of "Getz /
+#    Gilberto"). Without them the release page would list it while the tile does not.
+{
+    no strict 'refs'; no warnings 'redefine';
+    my $A = 'Plugins::Discography::API';
+    my @rgs = ({ mbid => 'b248d212', title => 'Getz / Gilberto',  type => 'Album', secondary => [], date => '1964' },
+               { mbid => '1ae98569', title => 'Getz/Gilberto #2', type => 'Album', secondary => ['Live'], date => '1966' });
+    local *{"${A}::getReleaseGroups"} = sub { my ($c, %a) = @_; $a{onDone}->([ map { +{ %$_ } } @rgs ]) };
+    local *{"${A}::peekEditions"}     = sub { {} };
+    local *{"${B}::_shownTypes"}      = sub { +{ map { $_ => 1 } qw(ALBUMS EPS SINGLES COMPILATIONS LIVE OTHER) } };
+    @MFOPT = ();
+    $B->can('_releaseDetail')->(undef, sub { }, { artist => 'Stan Getz', mbid => 'getz', rg => { %{ $rgs[0] } } });
+    my $pt = ($MFOPT[-1] || {})->{pageTitles};
+    my $n  = Plugins::Discography::Sources->can('_norm');
+    ok(scalar(ref $pt eq 'HASH' && $pt->{ $n->('Getz/Gilberto #2') } && $pt->{ $n->('Getz / Gilberto') }),
+       '9: the release page hands matchesFor the titles of every album on the page');
+    ok(scalar(ref $pt eq 'HASH' && ref $pt->{ $n->('Getz/Gilberto #2') } eq 'ARRAY'
+              && ($pt->{ $n->('Getz/Gilberto #2') }[0]{type} // '') eq 'Album'),
+       '9: ... with each owner\'s type (a Single never takes an album-sized copy)');
+}
+
+# 10. A BAND NAMED AFTER ITS LEADER (2026-10-08, The Oscar Peterson Trio): the
+#    member MusicBrainz marks `eponymous` rides in the pool's options, from the
+#    artist page and the release page alike, never the band's own name.
+{
+    %EPON = ('opt' => [ { mbid => 'op', name => 'Oscar Peterson' } ],
+             'selfy' => [ { mbid => 'sx', name => 'The Selfies' }, { mbid => 'sy', name => 'Ann Self' } ]);
+    my $o;
+    $B->can('_poolOpts')->('The Oscar Peterson Trio', 'opt', {}, sub { $o = shift });
+    ok(scalar("@{ $o->{leaders} || [] }" eq 'Oscar Peterson'), '10: the band page asks with its eponymous leader');
+    @CANDOPTS = ();
+    detail(mbid => 'opt', artist => 'The Oscar Peterson Trio');
+    my ($name, $d) = @{ $CANDOPTS[-1] || [] };
+    ok(scalar("@{ ($d || {})->{leaders} || [] }" eq 'Oscar Peterson'), '10: ... and so does its release page');
+    $B->can('_poolOpts')->('The Selfies', 'selfy', {}, sub { $o = shift });
+    ok(scalar("@{ $o->{leaders} || [] }" eq 'Ann Self'), '10: a leader named as the band itself is left out');
+    $B->can('_poolOpts')->('Radiohead', 'rh', {}, sub { $o = shift });
+    ok(scalar(!exists $o->{leaders}), '10: control: no eponymous member (or not read yet) -> no leaders key, as before');
+    %EPON = ();
 }
 
 print "\n$pass passed, $fail failed\n";

@@ -56,7 +56,7 @@ my $prefs = preferences('plugin.discography');
 # first module to call DB->store() sets it and later calls are ignored.
 # tools/syntax_check.sh asserts all three agree and match install.xml.
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.49';
+use constant CACHE_VERSION => '0.56.65';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 # The families DB.pm keeps across builds, by their CURRENT key prefix, so rows
 # written under an older key version are retired at open. Taken from the key
@@ -64,7 +64,7 @@ my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 # suites load this module against a stubbed store with no DB.pm behind it; in
 # LMS DB.pm ships in the same zip, so the call always runs.)
 Plugins::Discography::DB->keepCurrent(
-    _mbidKey(''), _rel2rgKey(''), _mbNameKey(''), _aliasKey(''), _libMbidKey(''))
+    _mbidKey(''), _rel2rgKey(''), _mbNameKey(''), _aliasKey(''), _libMbidKey(''), _grpTracksKey(''))
     if Plugins::Discography::DB->can('keepCurrent');
 
 # MB's canonical artist name, remembered in-process as well as cached — the
@@ -172,10 +172,11 @@ sub _mbThrottled {
 # so a CROSS-PLUGIN gate shared with LBF was scoped and DECLINED (Simon,
 # 2026-09-20; see the ledger). What was wrong here is narrower and real:
 #
-#   `_mbGap` decides from the CONFIGURED BASE. On a mirror install it returns 0,
-#   and the four paths that deliberately retry a zero-result mirror search
-#   against the PUBLIC host (_artistMbidByName, getArtistCandidates) therefore
-#   sent to musicbrainz.org with no gap, no backoff and no queue at all.
+#   `_mbGap` (gone since stage 3, above) decided from the CONFIGURED BASE. On a
+#   mirror install it returned 0, and the four paths that deliberately retried a
+#   zero-result mirror search against the PUBLIC host (_artistMbidByName,
+#   getArtistCandidates) therefore sent to musicbrainz.org with no gap, no
+#   backoff and no queue at all.
 #
 # So the decision is made on the URL, exactly as LBF's comment says it must be:
 # a request to the user's own mirror is not queued and never waits behind a
@@ -580,7 +581,7 @@ sub _netPump {
             last if $s->{inflight};
             # A background job waits while any page has a request waiting or out,
             # on any host (0.56.11; see BACKGROUND WORK WAITS above). Woken by
-            # the foreground job that leaves last (_netWakeOthers).
+            # the foreground job that leaves last (_netWake, from _netAnswer).
             my $head = $s->{queue}[0];
             if ($head->{background} && _netFgBusy()) {
                 _dbg("$b holding background work - a page has a request waiting or out")
@@ -841,6 +842,44 @@ sub USER_AGENT {
 }
 
 sub _rgKey { 'dsc:rg:' . RG_CACHE_V . ':' . $_[0] }
+
+# ONE RELEASE-GROUP BROWSE PER ARTIST AT A TIME (0.56.51). Field, 2026-10-07: a
+# Refresh discography run during a burst of page requests (the stray walk of
+# Browse::_bindAddr's entry) left 13 requests each finding the list gone, and
+# each started its own browse of Stan Getz: 13 identical chains, 52 MusicBrainz
+# requests one at a time, 42 s with every one of those pages waiting. A second
+# caller for a browse already running now waits for its answer, as a pool fetch
+# does since 0.56.15 (Sources::_candFlight). The key is the work: the mbid and
+# whether a Refresh's groups past the cap are asked too (`refresh`). Loaded at
+# first use, as there; not loadable means each caller browses for itself.
+# The flight's own watchdog only covers a callback that never comes: the queue
+# settles every request itself (_netGet's watchdog). So it sits far past the
+# slowest real browse (6 pages and a Refresh's two past-cap lists, each up to its
+# timeout, behind whatever is queued), where firing early would turn a slow page
+# into an error for everyone waiting on it.
+use constant RG_FLIGHT_MAX => 600;
+my $rgFlight;
+sub _rgFlight {
+    return $rgFlight if defined $rgFlight;
+    $rgFlight = eval {
+        require Plugins::Discography::SingleFlight;
+        Plugins::Discography::SingleFlight->new(
+            name => 'release groups', max => RG_FLIGHT_MAX, log => $log);
+    } || do {
+        $log->warn("release-group browses not coalesced (SingleFlight unavailable): $@");
+        0;
+    };
+    return $rgFlight;
+}
+
+# A BROWSE WHILE IT RUNS (review 2026-10-08), by its flight key (`<mbid>`,
+# `<mbid>|refresh`): { job, fg, read }. `job` is its page request out or queued
+# now (each page is asked from the one before, so it changes); `fg` that a page
+# (foreground) is waiting on it, so its requests are moved ahead of background
+# work (_netPromote); `read` that it was started after an artist read found no
+# whole list (getReleaseGroups' `read` path), so a later read-path caller joins
+# it without reading again. See getReleaseGroups' $browse.
+my %BROWSE_RUN;
 
 # ---------------------------------------------------------------------------
 # Artist -> MBID
@@ -2322,7 +2361,7 @@ use constant FAST_TIMEOUT => 12;
 
 sub _rgFastKey  { 'dsc:rgfast:1:'  . lc($_[0] // '') }   # the list is the first one; MusicBrainz still to complete it
 sub _rgNextKey  { 'dsc:rgnext:1:'  . lc($_[0] // '') }   # MusicBrainz's completed list, for the next entry
-sub _rgFullKey  { 'dsc:rgfull:1:'  . lc($_[0] // '') }   # a Refresh asked for MusicBrainz itself
+sub _rgFullKey  { 'dsc:rgfull:1:'  . lc($_[0] // '') }   # clearArtistCache(refresh => 1) asked for MusicBrainz itself (no caller since 0.56.53)
 sub _cmDiscoKey { 'dsc:cmdisco:1:' . lc($_[0] // '') }   # the community's verdicts for the first draw
 sub _caaFlagsKey { 'dsc:caaflag:1:' . lc($_[0] // '') }  # ListenBrainz: which groups the archive has a cover for
 use constant RGFULL_TTL => 3600;
@@ -2360,10 +2399,11 @@ sub _fastEntry {
 }
 
 # $cb->(\@entries) from ListenBrainz, or $cb->(undef): no answer, an answer for
-# another artist, or an empty list.
+# another artist, or an empty list. Returns the request (_netGet's job), so the
+# first list can be promoted when a page joins it (_fastSpine).
 sub _lbGroups {
     my ($mbid, $cb) = @_;
-    _netGet(LB_BASE_URL . 'metadata/artist/?artist_mbids=' . $mbid . '&inc=release_group',
+    return _netGet(LB_BASE_URL . 'metadata/artist/?artist_mbids=' . $mbid . '&inc=release_group',
         sub {
             my $d = eval { from_json(shift->content) };
             my ($a) = grep { ref $_ eq 'HASH' && lc($_->{artist_mbid} // $_->{mbid} // '') eq $mbid }
@@ -2389,6 +2429,122 @@ sub _lbGroups {
             $cb->(undef);
         },
         timeout => FAST_TIMEOUT, failFast => 1);
+}
+
+# ---------------------------------------------------------------------------
+# A GROUP'S TRACKLIST, for the track match (0.56.61; Simon, 2026-10-08, a
+# tester's "McCoy Tyner Plays John Coltrane" against MusicBrainz's "...: Live at
+# the Village Vanguard"). ListenBrainz's release-group metadata with
+# `inc=recording` gives the tracklist of the group's canonical release, many
+# groups to one request (measured 0.22 s for one, 2.5 KB; 25 to a request in
+# the replay, 85 s for 2,578 groups paced).
+#
+# KEPT, AND NEVER ASKED FOR BY A PAGE (0.56.62). 0.56.61 asked before the draw,
+# beside the bootleg check, and the draw waited for it: measured live
+# 2026-10-08, a slow ListenBrainz held Thievery Corporation's page 8.5 s past
+# its check, and a cold page asked for albums the check then placed by id
+# (Kraftwerk, 9 tracklists). Simon: no hangups, no slowing down, and not "so
+# much being done on 2nd visits". So the page only READS what is kept
+# (Browse::_placements) and the asking is background work, off the page: the
+# track match's library pass (TrackWarm), and the groups a drawn page found
+# missing (TrackWarm::want).
+#
+# Kept per group in DB.pm's `keep` table (a build does not empty it):
+# { t => [ [name, seconds], ... ], due => 0 }, served at any age (a group's
+# tracks do not change); or { t => [], due => <epoch> } when ListenBrainz has
+# no tracklist for it, asked again by the background work once due. A failed
+# request keeps nothing: the group is asked again.
+# ---------------------------------------------------------------------------
+use constant GRPTRK_NONE_RETRY => 7 * 86400;
+use constant GRPTRK_BATCH      => 25;
+
+sub _grpTracksKey { 'dsc:grptrk:2:' . lc($_[0] // '') }
+
+sub _grpTracksRow {
+    my ($rg) = @_;
+    return undef unless defined $rg && $rg =~ $UUID_RE;
+    my $v = eval { $cache->get(_grpTracksKey($rg)) };
+    return (ref $v eq 'HASH' && ref $v->{t} eq 'ARRAY') ? $v : undef;
+}
+
+# Kept only: the group's tracklist (an arrayref, [] = ListenBrainz has none),
+# or undef when it was never asked.
+sub peekGroupTracks {
+    my ($class, $rg) = @_;
+    my $v = _grpTracksRow($rg) or return undef;
+    return $v->{t};
+}
+
+# 1 when the group's tracklist is to be asked for: never kept, or kept as
+# "none" and due again.
+sub groupTracksDue {
+    my ($class, $rg) = @_;
+    return 0 unless defined $rg && $rg =~ $UUID_RE;
+    my $v = _grpTracksRow($rg) or return 1;
+    return ($v->{due} && $v->{due} <= time()) ? 1 : 0;
+}
+
+# Ask ListenBrainz for the groups that are due (groupTracksDue) and not out
+# already (the library pass and a page's hand-off can want the same group);
+# $cb->() once every request this call sent has answered or failed. Nothing to
+# ask calls back at once. %opt: background => 1, the only way it is called
+# (TrackWarm).
+my %grpTracksOut;
+sub warmGroupTracks {
+    my ($class, $rgs, $cb, %opt) = @_;
+    $cb ||= sub {};
+    my %seen;
+    my @need = grep { defined $_ && $_ =~ $UUID_RE && !$seen{ lc $_ }++ && !$grpTracksOut{ lc $_ }
+                      && $class->groupTracksDue($_) } @{ $rgs || [] };
+    return $cb->() unless @need;
+    $grpTracksOut{ lc $_ } = 1 for @need;
+    my @batches;
+    push @batches, [ map { lc } splice(@need, 0, GRPTRK_BATCH) ] while @need;
+    my $left = @batches;
+    my $one = sub { my ($b) = @_; delete @grpTracksOut{@$b}; $cb->() unless --$left };
+    for my $b (@batches) {
+        _netGet(LB_BASE_URL . 'metadata/release_group/?release_group_mbids=' . join(',', @$b)
+                . '&inc=recording',
+            sub {
+                my $d = eval { from_json(shift->content) };
+                if (ref $d eq 'HASH') {
+                    my $got = 0;
+                    for my $rg (@$b) {
+                        my $rec = ref $d->{$rg} eq 'HASH' ? $d->{$rg}{recording} : undef;
+                        my @t;
+                        for my $m (ref $rec eq 'HASH' && ref $rec->{mediums} eq 'ARRAY' ? @{ $rec->{mediums} } : ()) {
+                            next unless ref $m eq 'HASH' && ref $m->{tracks} eq 'ARRAY';
+                            push @t, map { [ $_->{name} // '', ($_->{length} || 0) / 1000 ] }
+                                     grep { ref $_ eq 'HASH' } @{ $m->{tracks} };
+                        }
+                        $got++ if @t;
+                        eval { $cache->set(_grpTracksKey($rg),
+                                           { t => \@t, due => @t ? 0 : time() + GRPTRK_NONE_RETRY }, 0); 1 };
+                    }
+                    _dbg('group tracklists: ' . scalar(@$b) . " asked, $got with a tracklist");
+                }
+                else {
+                    _dbg('group tracklists: unreadable reply for ' . scalar(@$b) . ' group(s)');
+                }
+                $one->($b);
+            },
+            sub {
+                my $err = eval { $_[0]->error } // $_[1] // '?';
+                _dbg('group tracklists: ' . scalar(@$b) . " group(s) not answered ($err)");
+                $one->($b);
+            },
+            timeout => FAST_TIMEOUT, failFast => 1, background => ($opt{background} ? 1 : 0));
+    }
+    return;
+}
+
+# ListenBrainz's list of an artist's release groups (the page's first list, one
+# request), for the track match's library pass: an artist it reaches before any
+# page has kept a list for it. $cb->(\@entries) or $cb->(undef).
+sub listenBrainzGroups {
+    my ($class, $mbid, $cb) = @_;
+    return $cb->(undef) unless defined $mbid && $mbid =~ $UUID_RE;
+    _lbGroups(lc $mbid, $cb);
     return;
 }
 
@@ -2396,11 +2552,12 @@ sub _lbGroups {
 # the community API, or $cb->(undef). A verdict is given only for a group whose
 # releases are listed, by the bootleg check's own rule (_isOfficial: official if
 # any release is, or has no status); a group listed without releases has none.
+# Returns the request (_netGet's job), as _lbGroups does.
 sub _hostedDisco {
     my ($mbid, $cb) = @_;
     my $name = Plugins::Discography::API->peekArtistName($mbid);
     $name = '_' unless defined $name && length $name;
-    _netGet(HOSTED_BASE_URL . 'artist/' . _hostedSeg($name)
+    return _netGet(HOSTED_BASE_URL . 'artist/' . _hostedSeg($name)
             . '/discography?mbid=' . $mbid . '&withReleases=1',
         sub {
             my $d = eval { from_json(shift->content) };
@@ -2434,7 +2591,6 @@ sub _hostedDisco {
             $cb->(undef);
         },
         timeout => FAST_TIMEOUT, failFast => 1);
-    return;
 }
 
 # The community's groups to add to a list that %$have holds (marked into it as
@@ -2452,11 +2608,40 @@ sub _cmExtra {
 # the spine with the markers completeArtist and warmOfficial read, or
 # $cb->(undef) as soon as either has none (the caller browses). A
 # special-purpose artist (Various Artists) asks neither and browses.
+#
+# ONE FIRST LIST PER ARTIST AT A TIME (0.56.56). The search readies its Top
+# Result's page as background work (Browse::_prefetchTop), so a tap on it
+# usually arrives while that page's first list is still out. Each caller sent
+# its own two requests before, and the page's community request then waited
+# behind the prefetch's (that bucket takes one at a time): a tap during a
+# prefetch would have been SLOWER than no prefetch. A caller arriving meanwhile
+# now waits for the answer already coming, through the release-group registry
+# (_rgFlight, key `<mbid>|first`, beside the browse's `<mbid>`). A page
+# (foreground) joining moves those requests ahead of background work if they
+# are still queued (_netPromote; one already sent cannot be recalled). Every
+# caller is answered under its OWN background flag, as the shared waiters of
+# the artist read and the name search are: the answer runs under the job's
+# flag, and a page answered under the prefetch's would send everything after it
+# as background work.
+my %FIRST_JOBS;    # flight key => the first list's requests, for _netPromote
 sub _fastSpine {
     my ($mbid, $cb) = @_;
     return $cb->(undef) if $MB_SPECIAL_ARTIST{ lc $mbid };
+    my $bg   = $NET_BG ? 1 : 0;
+    my $mine = sub { my @a = @_; local $NET_BG = $bg; $cb->(@a) };
+    my $fl   = _rgFlight();
+    my $fk   = lc($mbid) . '|first';
+    if ($fl && !$fl->join($fk, onDone => $mine, onError => sub { $mine->(undef) })) {
+        _netPromote($_) for $bg ? () : @{ $FIRST_JOBS{$fk} || [] };
+        return;
+    }
     my ($lb, $cm, $decided);
-    my $finish = sub { return if $decided++; $cb->(@_) };
+    my $finish = sub {
+        return if $decided++;
+        delete $FIRST_JOBS{$fk};
+        return $fl->resolve($fk, @_) if $fl;
+        $mine->(@_);
+    };
     my $both = sub {
         return unless $lb && $cm;
         my %have = map { $_->{mbid} => 1 } @$lb;
@@ -2478,16 +2663,20 @@ sub _fastSpine {
              . " of its own left out (no releases: merged-away ids); MusicBrainz completes it after the page");
         $finish->(\@all);
     };
-    _lbGroups($mbid, sub {
-        $lb = shift;
-        return $finish->(undef) unless $lb;
-        $both->();
-    });
-    _hostedDisco($mbid, sub {
-        $cm = shift;
-        unless ($cm) { _dbg("first list for $mbid: no community answer - the browse"); return $finish->(undef) }
-        $both->();
-    });
+    my @jobs = grep { ref } (
+        _lbGroups($mbid, sub {
+            $lb = shift;
+            return $finish->(undef) unless $lb;
+            $both->();
+        }),
+        _hostedDisco($mbid, sub {
+            $cm = shift;
+            unless ($cm) { _dbg("first list for $mbid: no community answer - the browse"); return $finish->(undef) }
+            $both->();
+        }));
+    # Not when either answered at once (a backing-off bucket answers inside
+    # _netGet): the flight has landed and nothing is left to promote.
+    $FIRST_JOBS{$fk} = \@jobs if $fl && !$decided;
     return;
 }
 
@@ -4169,10 +4358,12 @@ sub getArtistCandidates {
 # members, and for an artist with fewer than 25 groups the reply carries the
 # whole spine, so the browse is not sent at all. At 25 or more, or when the read
 # fails, the list comes from ListenBrainz and the community API (0.56.7,
-# _fastSpine), and the browse runs only when they give none, or after a Refresh
-# (_rgFullKey). Every other caller (the same-name disambiguation, the release
-# page, play) leaves it off and browses: for them the read would be an extra
-# request.
+# _fastSpine), and the browse runs only when they give none, or after a
+# clearArtistCache(refresh => 1) (_rgFullKey; no caller since 0.56.53). Every
+# other caller (the same-name disambiguation, the release page, play) leaves it
+# off and browses: for them the read would be an extra request. A read-path
+# caller arriving while a browse started after a read is out joins it without
+# reading (review 2026-10-08, %BROWSE_RUN).
 
 # Sync cache read of an artist's release groups — undef when not yet fetched.
 # The detail page needs the same MB title spine the list used (to resolve the
@@ -4220,7 +4411,48 @@ sub getReleaseGroups {
     # keeps the groups past it, from ListenBrainz and the community API, asked
     # alongside the browse's remaining pages (_pastCap).
     my $browse = sub {
-        my ($refresh) = @_;
+        my ($refresh, $afterRead) = @_;
+        # One browse per (mbid, refresh) at a time: a caller arriving while it
+        # runs is answered from it (_rgFlight). The owner is answered through
+        # the registry too, after the claim is released.
+        #
+        # EACH CALLER UNDER ITS OWN BACKGROUND FLAG (review 2026-10-08). The
+        # registry answers everyone from the owner's last page, which runs
+        # under the OWNER's flag. The search's Top Result prefetch (Browse::
+        # _prefetchTop) owns a browse whenever its first list fails (the
+        # community API backing off after a search, a timeout, no ListenBrainz
+        # list), and a tap on it that joined it went on as background work:
+        # its pool, its bootleg check and its completion (measured with
+        # t_prefetch.pl's harness). As _fastSpine's `$mine` (0.56.56). A page
+        # (foreground) joining also moves the browse's request forward
+        # (_netPromote), and every page asked after it.
+        my $bg      = $NET_BG ? 1 : 0;
+        my $mineOk  = sub { my @a = @_; local $NET_BG = $bg; $onDone->(@a) };
+        my $mineErr = sub { my @a = @_; local $NET_BG = $bg; $onError->(@a) };
+        my ($done, $fail, $onJob) = ($mineOk, $mineErr);
+        if (my $fl = _rgFlight()) {
+            my $fk = lc($mbid) . ($refresh ? '|refresh' : '');
+            unless ($fl->join($fk, onDone => $mineOk, onError => $mineErr)) {
+                if (!$bg && (my $run = $BROWSE_RUN{$fk})) {
+                    $run->{fg} = 1;
+                    _netPromote($run->{job}) if $run->{job};
+                }
+                return;
+            }
+            my $run = $BROWSE_RUN{$fk} = { fg => 0, read => ($afterRead ? 1 : 0) };
+            my $landed;
+            my $end = sub {
+                $landed = 1;
+                delete $BROWSE_RUN{$fk} if $BROWSE_RUN{$fk} && $BROWSE_RUN{$fk} == $run;
+            };
+            $done  = sub { $end->(); $fl->resolve($fk, @_) };
+            $fail  = sub { $end->(); $fl->reject($fk, @_) };
+            $onJob = sub {
+                return if $landed;    # answered inside _netGet: nothing is queued
+                $run->{job} = $_[0];
+                _netPromote($_[0]) if $run->{fg};
+            };
+        }
         my $past;
         _browseGroups($mbid,
             sub {
@@ -4247,37 +4479,66 @@ sub getReleaseGroups {
                     };
                     $log->info("release groups for $mbid: " . scalar(@$list) . " of $total"
                         . ($ttl == RGCUT_TTL ? ' (cut at the cap: kept an hour)' : ''));
-                    $onDone->($list);
+                    $done->($list);
                 };
                 return $store->($all) unless $truncated && $past;
                 $past->($all, $store);
             },
-            $onError,
+            $fail,
             ($refresh ? (onTotal => sub {
                 my ($total) = @_;
                 $past = _pastCap(lc $mbid, $total)
                     if $total > RG_MAX_PAGES * RG_PAGE_SIZE && !$MB_SPECIAL_ARTIST{ lc $mbid };
-            }) : ()));
+            }) : ()),
+            ($onJob ? (onJob => $onJob) : ()));
     };
 
     if ($a{read}) {
-        # The read caches the spine itself when it carries the whole list
-        # (fewer than 25 groups); otherwise it answers without one.
-        _readArtist($mbid, sub {
-            my ($r) = @_;
-            return $onDone->($r->{rgs}) if $r && $r->{rgs};
-            # THE ARTIST PAGE'S FIRST LIST (0.56.7; analysis §A16): from
-            # ListenBrainz and the community API, not the browse, unless a
-            # Refresh asked for MusicBrainz itself. See _fastSpine.
+        # THE ARTIST PAGE'S FIRST LIST (0.56.7; analysis §A16): from
+        # ListenBrainz and the community API, not the browse, unless a
+        # clearArtistCache(refresh => 1) asked for MusicBrainz itself (no caller
+        # in the plugin since 0.56.53). See _fastSpine.
+        my $first = sub {
             my $refresh = $cache->get(_rgFullKey($mbid));
             if (!$a{force} && !$refresh) {
                 return _fastSpine(lc $mbid, sub {
                     my ($rgs) = @_;
                     return $onDone->($rgs) if $rgs;
-                    $browse->();
+                    $browse->(0, 1);
                 });
             }
-            $browse->($refresh ? 1 : 0);
+            $browse->(($refresh ? 1 : 0), 1);
+        };
+        # A FIRST LIST ALREADY OUT (0.56.56): the read before it is done and
+        # found no whole list, so a caller now joins the list instead of reading
+        # the artist again. The read is not cached as a whole, only what it
+        # carries (aliases, name, bands): a tap on the search's Top Result while
+        # its prefetch's lists were out (Browse::_prefetchTop; they take ~2.7 s
+        # on a big artist, where a tap usually lands) sent a second read, a
+        # MusicBrainz request with its 1.1 s gap, before joining them.
+        my $fl = _rgFlight();
+        return $first->() if !$a{force} && $fl && $fl->inFlight(lc($mbid) . '|first');
+        # A BROWSE ALREADY OUT AFTER A READ (review 2026-10-08): the read before
+        # it found no whole list and the first list failed, so a caller now
+        # joins the browse, the one $first would end up in, neither reading the
+        # artist again nor asking ListenBrainz and the community again. A tap on
+        # the Top Result while its prefetch browsed sent a second read (2 reads
+        # to the control's 1, measured with t_prefetch.pl's harness). A browse
+        # started WITHOUT a read (the release page, the disambiguation) is not
+        # joined here: the read, and what it fills (aliases, name, bands), is
+        # still owed.
+        if (!$a{force} && $fl) {
+            my $rf  = $cache->get(_rgFullKey($mbid)) ? 1 : 0;
+            my $fk  = lc($mbid) . ($rf ? '|refresh' : '');
+            my $run = $BROWSE_RUN{$fk};
+            return $browse->($rf, 1) if $run && $run->{read} && $fl->inFlight($fk);
+        }
+        # The read caches the spine itself when it carries the whole list
+        # (fewer than 25 groups); otherwise it answers without one.
+        _readArtist($mbid, sub {
+            my ($r) = @_;
+            return $onDone->($r->{rgs}) if $r && $r->{rgs};
+            $first->();
         });
         return;
     }
@@ -4287,7 +4548,9 @@ sub getReleaseGroups {
 # The release-group browse: $onOk->(\@all, $total, $truncated), every page up to
 # RG_MAX_PAGES, entries built and their aliases pruned; $onErr->($err). Nothing
 # is cached here. `background => 1` sends every page as background work;
-# `onTotal => sub { $total }` is told MusicBrainz's count after the first page.
+# `onTotal => sub { $total }` is told MusicBrainz's count after the first page;
+# `onJob => sub { $job }` is handed each page's request as it is sent (_netGet's
+# job), so a page joining the browse can move it forward (getReleaseGroups).
 sub _browseGroups {
     my ($mbid, $onOk, $onErr, %opt) = @_;
     my @all;
@@ -4312,7 +4575,7 @@ sub _browseGroups {
 
         $log->info("fetching release groups: $url");
 
-        _netGet($url,
+        my $job = _netGet($url,
             sub {
                 my $resp = shift;
                 my $data = eval { from_json($resp->content) };
@@ -4353,6 +4616,7 @@ sub _browseGroups {
                 $onErr->($err);
             },
             timeout => 20, ($opt{background} ? (background => 1) : ()));
+        $opt{onJob}->($job) if $opt{onJob};
     };
 
     $fetchPage->($fetchPage, 0);
@@ -4440,10 +4704,12 @@ sub _bioMbidKey { return 'dsc:biomb:1:' . lc($_[0] // '') }
 # Refresh OR the HTTP `discography clearcache` command. Recovers the mbid from a
 # cached HIT when the caller passes only a name (a MISS has no mbid-keyed caches
 # to clear). Returns an arrayref of the cache classes touched, for logging.
-# `refresh => 1` (the page's Refresh row, not the clearcache command): the next
-# list for this artist comes from MusicBrainz itself, awaited, not the first list
-# from ListenBrainz and the community API (0.56.7, _rgFullKey). The command keeps
-# a plain cold start, which is the fast path.
+# `refresh => 1`: the next list for this artist comes from MusicBrainz itself,
+# awaited, not the first list from ListenBrainz and the community API (0.56.7,
+# _rgFullKey). NOTHING IN THE PLUGIN PASSES IT since 0.56.53: the page's Refresh
+# row takes the first list like a cold page (Browse::_refreshItem), as the
+# clearcache command always did. Kept with its machinery (_rgFullKey, _pastCap),
+# as 0.56.53 decided; t_chain.pl and t_fastpage.pl exercise it.
 sub clearArtistCache {
     my ($class, %a) = @_;
     my $name = $a{name};
@@ -4507,6 +4773,7 @@ sub clearArtistCache {
         }
         $cache->remove(_officialKey($mbid)); push @cleared, 'official';
         $cache->remove(_bandsKey($mbid));    push @cleared, 'bands';
+        $cache->remove(_eponymKey(lc $mbid)); push @cleared, 'eponym';
         $cache->remove(_bioMbidKey($mbid));  push @cleared, 'bio-mbid';
         $cache->remove(_collabsKey($mbid));
         $cache->remove(_collabCandKey($mbid)); push @cleared, 'collabs';
@@ -4884,6 +5151,28 @@ sub peekBands {
     return $cache->get(_bandsKey($artistMbid));
 }
 
+# A BAND NAMED AFTER ITS LEADER (2026-10-08; Simon, on The Oscar Peterson Trio:
+# "Qobuz only credits Oscar Peterson and not the trio"). MusicBrainz files the
+# Trio as its own Group (97 album release groups); the services file most of its
+# records under Oscar Peterson, so its page found 1 Qobuz copy of 78. MusicBrainz
+# says which member the band is named after: a "member of band" link with the
+# attribute `eponymous` (measured on the mirror: set on 15 of 16 leader-named
+# bands found, Nick Cave & the Bad Seeds, The Count Basie Orchestra, Iggy and The
+# Stooges = Iggy Pop...; not on The Duke Ellington Orchestra, led by his son).
+# It arrives in the artist read every page already makes (_readArtist), so it
+# costs no request. Kept beside the bands, same lifetime; the pool fetches the
+# leader's service albums to MATCH the band's own releases (Sources::
+# _resolveWithJoints).
+sub _eponymKey { 'dsc:eponym:v1:' . $_[0] }
+
+# Cache-only, sync: arrayref of { mbid, name } members MusicBrainz marks
+# `eponymous`, or undef until the artist has been read. Empty = read, none.
+sub peekEponymous {
+    my ($class, $artistMbid) = @_;
+    return undef unless $artistMbid;
+    return $cache->get(_eponymKey(lc $artistMbid));
+}
+
 # COLLABORATIONS (Simon, 2026-09-19). The SAME artist-rels response carries
 # MusicBrainz "collaboration" links — Holly Golightly -> "Holly Golightly and The
 # Brokeoffs", where she is recorded as a collaborator, not a band member. Most
@@ -5142,6 +5431,27 @@ sub _readArtist {
             }
             eval { $cache->set(_bandsKey($mbid), \@bands, BANDS_TTL); 1 }
                 or $log->warn("band-members cache set failed: $@");
+
+            # THE MEMBER THE BAND IS NAMED AFTER (peekEponymous): a BACKWARD
+            # "member of band" link (the group listing a member) carrying the
+            # `eponymous` attribute. One entry per person: MusicBrainz can hold
+            # several links for one member (Bob Marley & The Wailers: two).
+            my (%seenE, @leaders);
+            for my $rel (@$rels) {
+                next unless ($rel->{type} // '') eq 'member of band'
+                         && ($rel->{direction} // '') eq 'backward';
+                next unless grep { ($_ // '') eq 'eponymous' }
+                            @{ ref $rel->{attributes} eq 'ARRAY' ? $rel->{attributes} : [] };
+                my $m  = $rel->{artist} or next;
+                my $id = lc($m->{id} // '') or next;
+                next if $id eq lc $mbid || $seenE{$id}++;
+                next unless defined $m->{name} && length $m->{name};
+                push @leaders, { mbid => $id, name => $m->{name} };
+            }
+            eval { $cache->set(_eponymKey(lc $mbid), \@leaders, BANDS_TTL); 1 }
+                or $log->warn("eponymous-member cache set failed: $@");
+            _dbg("eponymous member: $mbid -> " . join(', ', map { $_->{name} } @leaders))
+                if @leaders;
             _dbg("band-members: $mbid -> " . scalar(@bands) . ' band(s): '
                  . join(', ', map { $_->{name} } @bands));
 
@@ -5210,7 +5520,11 @@ sub warmBandMembers {
     # The band list alone is not enough: one written before collaborations
     # existed would keep the candidates from ever being noted. Either a vetted
     # list or a pending candidate list counts as "this artist has been read".
+    # The eponymous member too: it is written by the same read, and a band list
+    # cached without it would keep the leader from ever being read (the v2 note
+    # at _bandsKey).
     return $cb->() if defined $cache->get(_bandsKey($artistMbid))
+                   && defined $cache->get(_eponymKey(lc $artistMbid))
                    && (defined $cache->get(_collabsKey($artistMbid))
                        || defined $cache->get(_collabCandKey($artistMbid)));
     _readArtist($artistMbid, sub { $cb->() });
@@ -5244,8 +5558,22 @@ my %officialInFlight;
 # AWAITS it before its first render, under a deadline, and uses the argument to
 # decide which owned albums still need a lookup — see
 # Browse::_discographyView.
+#
+# A PREFETCH'S CHECK IS JOINED, NOT 'busy' (0.56.56; Simon, 2026-10-07: "lets
+# add to prefetch if it has no knock on effects"). The search readies its Top
+# Result's page (Browse::_prefetchTop) and runs this check too, with
+# `prefetch => 1`, doing none of the after-work a page does. A page arriving
+# while it runs WAITS for it (under its own deadline) and gets its answer as if
+# the check were its own: no argument when the map is cached, 'failed' when it
+# failed. So it draws filtered, and does the owned-album lookups and the
+# completion itself, which nobody else will. Only the FIRST page to join does
+# that; a later one (a rebuild while it waits) gets 'busy' once the check lands,
+# as a page arriving during a page's check always has. A page (foreground)
+# joining moves the request still queued forward (_netPromote), and each waiter
+# is answered under its own background flag. A PAGE's own check is unchanged: a
+# caller arriving during it gets 'busy' at once.
 sub warmOfficial {
-    my ($class, $artistMbid, $rgs, $cb) = @_;
+    my ($class, $artistMbid, $rgs, $cb, %opt) = @_;
     $cb ||= sub {};
 
     return $cb->() unless $artistMbid;
@@ -5254,7 +5582,24 @@ sub warmOfficial {
     # Every rebuild (drill, sort, back) re-enters here; one check per artist.
     # A caller arriving mid-check renders unfiltered rather than waiting on
     # someone else's — the map lands for the next render either way.
-    return $cb->('busy') if $officialInFlight{$artistMbid};
+    if (my $run = $officialInFlight{$artistMbid}) {
+        return $cb->('busy') unless ref $run eq 'HASH';
+        my $bg = $NET_BG ? 1 : 0;
+        push @{ $run->{waiters} }, [ $cb, $bg, $run->{joined}++ ? 'busy' : undef ];
+        _netPromote($run->{job}) if $run->{job} && !$bg;
+        return;
+    }
+    my $run = $opt{prefetch} ? { waiters => [] } : 1;
+    my $settle = sub {
+        my @state = @_;
+        delete $officialInFlight{$artistMbid};
+        $cb->(@state);
+        return unless ref $run eq 'HASH';
+        for my $w (@{ $run->{waiters} }) {
+            local $NET_BG = $w->[1];
+            $w->[0]->(defined $w->[2] ? $w->[2] : @state);
+        }
+    };
 
     my (%want, @ids);
     for my $rg (@{ $rgs || [] }) {
@@ -5274,13 +5619,12 @@ sub warmOfficial {
              . " release-groups classified" . ($how ? " ($how)" : '') . ", $boot bootleg-only, "
              . scalar(keys %$rgOf) . " releases mapped to groups");
 
-        delete $officialInFlight{$artistMbid};
-        $cb->();
+        $settle->();
     };
     # No groups on the page: nothing to ask, and an empty map says so.
     return $store->({}, {}, {}) unless @ids;
 
-    $officialInFlight{$artistMbid} = 1;
+    $officialInFlight{$artistMbid} = $run;
 
     # $cm: the community's verdicts and release map, or undef. The groups it
     # does not classify, or all of them, are asked BY ID; its own answers stand
@@ -5309,13 +5653,12 @@ sub warmOfficial {
                 # Nothing cached: the view keeps showing everything and the
                 # check is asked again on a later visit.
                 _dbg("official-status: $why - nothing cached, retried next visit");
-                delete $officialInFlight{$artistMbid};
-                return $cb->('failed');
+                return $settle->('failed');
             }
             $done->({ %{ $cm ? $cm->{o} : {} },      %{ $res->{o} } },
                     { %{ $cm ? $cm->{r} || {} : {} }, %{ $res->{r} } },
                     $res->{t}, $how);
-        });
+        }, (ref $run eq 'HASH' ? (onJob => sub { $run->{job} = $_[0] }) : ()));
     };
 
     # A FIRST LIST (0.56.7, _fastSpine) takes the community's verdicts, kept
@@ -5411,7 +5754,7 @@ sub _officialById {
         my $url = _mbBase() . 'release-group?query=' . $safe
                 . '&limit=' . scalar(@$batch) . '&fmt=json';
 
-        _netGet($url,
+        my $job = _netGet($url,
             sub {
                 my $data = eval { from_json(shift->content) };
                 return $cb->(undef, 'unreadable reply')
@@ -5453,6 +5796,9 @@ sub _officialById {
             },
             sub { $cb->(undef, 'request failed (' . (shift->error // 'HTTP error') . ')') },
             timeout => 20, ($opt{background} ? (background => 1) : ()));
+        # The request now out, for a page joining a prefetch's check to move
+        # forward (warmOfficial, `onJob`).
+        $opt{onJob}->($job) if $opt{onJob};
     };
 
     $fetch->($fetch);

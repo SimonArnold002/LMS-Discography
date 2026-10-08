@@ -28,6 +28,7 @@ use Time::HiRes ();
 use Plugins::Discography::API;
 use Plugins::Discography::Sources;
 use Plugins::Discography::Covers;
+use Plugins::Discography::Classical;
 
 # The FUNCTION form (0.56.16): LMS's logger() takes the category as its first
 # argument, so `Slim::Utils::Log->logger(...)` filed this file's lines under
@@ -37,12 +38,13 @@ my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.49';
+use constant CACHE_VERSION => '0.56.65';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
 use constant REVIEW_EMPTY_TTL =>  1 * 86400;
 use constant REVIEW_SUMMARY_CHARS => 380;   # summary cut point (word boundary)
+use constant WORK_ABOUT_WAIT => 15;         # seconds before "About this work" gives up
 
 use constant BIO_FOUND_TTL => 30 * 86400;
 use constant BIO_EMPTY_TTL =>  1 * 86400;
@@ -63,6 +65,9 @@ use constant MENU_SEARCH  => IMG_BASE . 'dsc-find_MTL_icon_search.png';
 # Reuses the shipped library_music glyph for the local-only view toggle (both
 # states) — no new asset, per the 0.25.0 icon-reuse precedent.
 use constant MENU_LOCAL   => IMG_BASE . 'dsc-lib_MTL_icon_library_music.png';
+use constant MENU_UNLINK  => IMG_BASE . 'dsc-unlink_MTL_icon_link_off.png';
+use constant MENU_WORK    => IMG_BASE . 'dsc-work_MTL_icon_music_note.png';
+use constant MENU_POPULAR => IMG_BASE . 'dsc-top_MTL_icon_star.png';
 
 use constant SEARCH_TTL   => 600;  # merged artist-search results (item_id walk
                                    # determinism across legacy re-walks, not a
@@ -348,6 +353,124 @@ sub _editionTitles {
         my @keep = grep { keys %{ $claims{ $_->[0] } } == 1 } @{ $out{$g} };
         @keep ? ($out{$g} = \@keep) : delete $out{$g};
     }
+    return \%out;
+}
+
+# WHERE THE OWNED ALBUMS NO TITLE CLAIMS GO (0.56.61): the user's own matches
+# (DB `manual`, made on a release page) and the TRACK MATCH (Sources, "THE
+# TRACK MATCH"). One answer for the artist page's tiles, its "Also in your
+# library", the release page and its picker, so they never disagree. Returns
+#   placed    { album id => group }  - fed to matchesFor / claimedLocalIds
+#   how       { album id => 'manual' | 'tracks' }
+#   leftovers [ owned albums still in "Also in your library", in page order ]
+#   ranked    { album id => [ candidates best first: { rg, tscore, ev, agree, score } ] }
+#   items     { album id => the owned album }
+#   claimed   { album id => 1 } the title / alias / edition / id claims (as
+#             Sources::claimedLocalIds answers), so "Also in your library" reuses
+#             them rather than running the same pass again
+# The claims are the costly part (20-90 ms on a 1,000-2,000-group page, 254 ms
+# measured on the London Symphony Orchestra's 2,003): kept for PLC_MEMO_TTL
+# under their inputs, so the draw and a release page opened straight after
+# share one.
+# Order of precedence: a MusicBrainz id placing the copy on the page (A TAG IS
+# TRUSTED, RIGHT OR WRONG) > the user's match > a title / alias / edition claim
+# > the track match. Only the artist's OWN albums (the "Also in your library"
+# split), never Appearances: an album credited to someone else claims no tile
+# here (0.56.43). A '-' row ("Remove the match") keeps an album out of the
+# track match. A group the page no longer lists ignores the user's row.
+#
+# %a: mbid, artist, rgs, local, relMap, editions (_editionTitles' map), and
+# optionally need => {} to collect the groups whose tracklist is not kept yet
+# (the page hands them to the background work, TrackWarm::want) and cands =>
+# {} to collect every group shortlisted for an album (the library pass asks
+# for those due). An album with ANY candidate not kept is not decided on part
+# of the evidence: it waits for them. Only an UNTAGGED album is the track
+# match's (see below).
+use constant PLC_MEMO_TTL => 120;
+my %plcMemo;   # input signature => [ time, claims ]
+
+sub _placements {
+    my (%a) = @_;
+    my %out = (placed => {}, how => {}, leftovers => [], ranked => {}, items => {}, claimed => {});
+    my ($mbid, $local, $rgs) = ($a{mbid}, $a{local} || [], $a{rgs} || []);
+    return \%out unless @$local;
+    my $S = 'Plugins::Discography::Sources';
+
+    my @pool     = grep { !_hiddenType($_) } @$rgs;
+    my $relMap   = $a{relMap} || {};
+    my $sig = join "\0", $mbid // '', $a{artist} // '', scalar(@$rgs), scalar(@pool),
+                  join("\x1e", map { join "\x1f", $_->{_albumid} // '', $_->{_candTitle} // '',
+                                                  $_->{_mbid} // '', $_->{_otherArtist} ? 1 : 0 } @$local),
+                  scalar(keys %$relMap), scalar(keys %{ $a{editions} || {} });
+    my $now = time();
+    my $memo = $plcMemo{$sig};
+    my $claimed = ($memo && $now - $memo->[0] < PLC_MEMO_TTL) ? $memo->[1]
+                : $S->claimedLocalIds(\@pool, $a{artist}, $local, $relMap, $a{editions});
+    unless ($memo && $memo->[1] == $claimed) {
+        delete @plcMemo{ grep { $now - $plcMemo{$_}[0] >= PLC_MEMO_TTL } keys %plcMemo };
+        $plcMemo{$sig} = [ $now, $claimed ];
+    }
+    $out{claimed} = $claimed;
+    return \%out unless $mbid && @$rgs;
+
+    my %onPage   = map { $_->{mbid} => 1 } grep { $_->{mbid} } @pool;
+    my $official = Plugins::Discography::API->peekOfficial($mbid) || {};
+    my @shown    = grep { my $o = $official->{ $_->{mbid} }; !defined $o || $o } @pool;
+    my $idGroups = _idGroups($rgs);
+    # Degrade, never die: no store, no user matches (DB.pm's rule).
+    my $manual   = eval { Plugins::Discography::DB->manualFor($mbid) } || {};
+    my $an       = Plugins::Discography::Sources::_norm($a{artist} // '');
+
+    for my $it (@$local) {
+        my $id = $it->{_albumid} // next;
+        $out{items}{$id} = $it;
+        next if defined Plugins::Discography::Sources::_idGroup($it, $relMap, $idGroups);
+        my $key = Plugins::Discography::Sources::albumKey($it);
+        my $m   = defined $key ? $manual->{$key} : undef;
+        if (defined $m && $m ne '-' && $onPage{$m}) {
+            $out{placed}{$id} = $m; $out{how}{$id} = 'manual';
+            next;
+        }
+        next if $claimed->{$id} || $it->{_otherArtist};
+        my $ca = Plugins::Discography::Sources::_norm($it->{_candArtist} // '');
+        next unless !length $ca || !length $an || Plugins::Discography::Sources::_artistMatch($an, $ca);
+        push @{ $out{leftovers} }, $it;
+
+        # A TAGGED album is not the track match's (0.56.62): its MusicBrainz id
+        # already names its release, and a tag is trusted, right or wrong. One
+        # still left over is tagged to a group this page does not list (a DJ
+        # mix, hidden by design: Thievery Corporation's "DJ-Kicks" -> aceba45a;
+        # another act's record) or to a release MusicBrainz no longer knows:
+        # never another group by its tracks. Measured 2026-10-08: every album
+        # the replay matched was untagged, and the 4 tagged leftovers with
+        # candidates never matched. It also keeps a first visit (no release map
+        # yet) from asking for albums the check then places by id (Kraftwerk).
+        next if $it->{_mbid};
+
+        my @c = $S->trackShortlist($it->{_candTitle}, $a{artist}, \@shown, $a{editions});
+        next unless @c;
+        $a{cands}{ $_->{rg}{mbid} } = 1 for $a{cands} ? @c : ();
+        my $missing = 0;
+        for my $c (@c) {
+            my $t = eval { Plugins::Discography::API->peekGroupTracks($c->{rg}{mbid}) };
+            unless (defined $t) { $missing = 1; $a{need}{ $c->{rg}{mbid} } = 1 if $a{need}; next }
+            $c->{grp} = $t;
+        }
+        next if $missing;
+        my $own = $S->ownTracks($it);
+        $_->{ev} = (@{ $_->{grp} } && @$own) ? $S->trackEvidence($own, $_->{grp}) : undef for @c;
+        my ($win, $ranked) = $S->trackPick(\@c, $it->{_candTitle}, $a{artist});
+        $out{ranked}{$id} = $ranked;
+        next if defined $m && $m eq '-';    # the user removed this album's match
+        next unless $win;
+        $out{placed}{$id} = $win->{rg}{mbid};
+        $out{how}{$id}    = 'tracks';
+        _dbg(sprintf("track match: '%s' -> '%s' (score %.2f; found %.2f cover %.2f, times %s)",
+             $it->{_candTitle} // '?', $win->{rg}{title} // '?', $win->{score},
+             $win->{ev}{found}, $win->{ev}{cover}, sprintf('%.2f', $win->{ev}{dur} // 0)));
+    }
+    # The leftovers the track match placed are no longer left over.
+    @{ $out{leftovers} } = grep { !defined $out{placed}{ $_->{_albumid} } } @{ $out{leftovers} };
     return \%out;
 }
 
@@ -939,7 +1062,8 @@ sub topLevel {
     # 0.56.44).
     Plugins::Discography::Covers::noteBrowse();
 
-    my $params   = ref $args->{params} eq 'HASH' ? $args->{params} : {};
+    # A bound row's address may carry <key>_u8 (see _addrOf).
+    my $params   = _addrDecode($args->{params});
     my $artistId = _cleanParam($params->{artist_id});
     my $artist   = _cleanParam($params->{artist});
     # A KNOWN MusicBrainz artist mbid — set by an "Also a member of" band link
@@ -1015,7 +1139,8 @@ sub topLevel {
         # snapshot is still reset — the refreshed render is a complete,
         # consistent new tree. `view` (the Albums | Singles toggle) is the same
         # class again: its refresh re-issues the artist's own command. So is
-        # `opts` (More options / Fewer options, 0.56.32).
+        # `opts` (More options / Fewer options, 0.56.32), and so is `works`
+        # (a composer's Works | Albums switch, plan §9.4).
         my $prev = $lastCtx{ _cid($client) };
         my $same = $prev
             && ($prev->{artist_id} // '') eq ($artistId // '')
@@ -1026,7 +1151,8 @@ sub topLevel {
             features => $features,
             $same ? ( bio  => $prev->{bio}, rev => $prev->{rev},
                       ver  => $prev->{ver}, page => $prev->{page},
-                      view => $prev->{view}, opts => $prev->{opts} ) : (),
+                      view => $prev->{view}, opts => $prev->{opts},
+                      works => $prev->{works} ) : (),
         };
     }
     elsif ($walking && (my $ctx = $lastCtx{ _cid($client) })) {
@@ -1056,6 +1182,9 @@ sub topLevel {
         return;
     }
 
+    # Another artist's request stops the search's Top Result prefetch.
+    _prefetchYield($artistId, $artist, $mbid);
+
     my $opts = {
         artist_id => $artistId,
         artist    => $artist,
@@ -1069,16 +1198,32 @@ sub topLevel {
     # Param-addressed release detail (rg carries its own artist identity, just
     # stashed above — so this view is durable across any navigation order,
     # restarts, other artists: nothing here depends on a positional walk).
+    # A row run by item: answers with a page whose rows know only their
+    # position; it carries this request's address from here on (_bindAddr).
+    my $hasItem = defined $itemParam && length $itemParam;
+    my $bound   = $hasItem ? _boundCallback($callback, _addrOf($params)) : $callback;
+
     if ($rgParam && $rgParam =~ /^[0-9a-f-]{36}$/i) {
-        _rgView($client, $callback, $opts, lc $rgParam, $itemParam);
+        _rgView($client, $bound, $opts, lc $rgParam, $itemParam);
+        return;
+    }
+
+    # A library album listed on a work's page (plan §9.3, §10.5 item 4): the
+    # work's tracks on it, straight from the library. The album rows sit one
+    # level down (the work's page), where _findRow cannot reach, and the ids
+    # say what to open, so nothing is rebuilt. `wka:<album>` alone (rows of
+    # 0.56.50-0.56.62) is the whole album, as it was then.
+    if (defined $itemParam && $itemParam =~ /^wka:(\d+)(?::(\d+(?:,\d+)*))?$/) {
+        Plugins::Discography::Sources::_localAlbumTracks($client, $bound, {},
+            { album_id => $1, ($2 ? (track_ids => [ split /,/, $2 ]) : ()) });
         return;
     }
 
     # Param-addressed LIST-view row (no rg): rebuild the list privately and
     # invoke the named row's own coderef — toggles/paging/headers/extras reuse
     # their existing logic (the same collector pattern as _rgView).
-    if (defined $itemParam && length $itemParam) {
-        _listItemDispatch($client, $callback, $opts, $itemParam);
+    if ($hasItem) {
+        _listItemDispatch($client, $bound, $opts, $itemParam);
         return;
     }
 
@@ -1112,6 +1257,127 @@ sub _runRow {
         _dbg("dispatch: $what not found");
         $callback->({ items => [], cachetime => 0 });
     }
+}
+
+# THE ADDRESS OF A DISPATCHED PAGE (0.56.51; Simon, Getz / Gilberto, 2026-10-07).
+# A row that opens someone else's feed (a version row's Qobuz/TIDAL/library
+# album, a library tile's tracklist, a section's tiles, a work's album) answers
+# a request addressed by params (rg + item + the artist), but XMLBrowser gives
+# the rows of that answer only a POSITION (item_id "N"). Material's Play on such
+# a page sends one command per track, each with that bare position, and the
+# server resolved it against the artist page last shown to the player: on the
+# phone one Play walked the artist page row by row, ran Refresh discography and
+# the view toggles, and played another album. Two halves, as LBF's
+# _bindReleaseContext (0.9.199): the page's `query` carries the address, so
+# XMLBrowser's BASE actions (go/play/add/insert/more) send it with the position;
+# and every row gets its OWN items/play/add/insert with the address and its
+# path, because the long-press menu's play actions (_makePlayAction) read a
+# row's itemActions and never the query. A row's own actions are kept (||=).
+
+# The params that addressed this request, replayed as they came: never rebuilt
+# from $opts (_identParams emits only an ENTRY mbid, so a band link's page
+# would lose its mbid and re-resolve by name).
+#
+# A value with any non-ASCII character rides percent-encoded under <key>_u8
+# (0.56.52; Simon, Getz / Gilberto from the library artist "Stan Getz, João
+# Gilberto feat. Antônio Carlos Jobim", 2026-10-07). Material's Play on a page
+# sends its per-track commands as ONE `material-skin-client command-list`,
+# whose handler runs `eval { decode_json($json) }` on the CHARACTER string
+# JSON-RPC hands it: an accented letter is not a UTF-8 octet, decode_json dies,
+# the eval swallows it, and the whole batch is dropped (`actioned` 0, not even
+# its `playlist clear`; measured live). _addrDecode puts it back at the entry.
+use constant ADDR_KEYS => qw(artist_id artist mbid features sort local_only rg item);
+
+sub _addrOf {
+    my ($params) = @_;
+    return {} unless ref $params eq 'HASH';
+    my %addr;
+    for my $k (ADDR_KEYS) {
+        my $v = $params->{$k};
+        next unless defined $v && !ref $v && length $v;
+        if ($v =~ /[^\x00-\x7F]/) {
+            require URI::Escape;
+            $addr{"${k}_u8"} = URI::Escape::uri_escape_utf8($v);
+        }
+        else {
+            $addr{$k} = $v;
+        }
+    }
+    return \%addr;
+}
+
+# The request's params with every <key>_u8 decoded back to <key> (a copy; a
+# plain <key> that came too wins). A value that is not percent-encoded UTF-8
+# is used as it unescapes, so a hop that already unescaped it still lands.
+sub _addrDecode {
+    my ($in) = @_;
+    return {} unless ref $in eq 'HASH';
+    my %p = %$in;
+    for my $k (ADDR_KEYS) {
+        my $v = $in->{"${k}_u8"};
+        next if !defined $v || ref $v || !length $v
+             || (defined $p{$k} && !ref $p{$k} && length $p{$k});
+        require URI::Escape;
+        require Encode;
+        my $raw = URI::Escape::uri_unescape($v);
+        my $dec = eval { Encode::decode_utf8($raw, Encode::FB_CROAK()) };
+        $p{$k} = defined $dec ? $dec : $raw;
+    }
+    return \%p;
+}
+
+sub _addrAction {
+    my ($addr, $path, $method) = @_;
+    return {
+        command     => ['discography', $method eq 'items' ? 'items' : ('playlist', $method)],
+        fixedParams => { %$addr, item_id => "$path" },
+    };
+}
+
+# Rows of $data (a feed hash or an item list) under $parent's position. Returns
+# a copy; the caller's rows are not touched (they may be a cached service node).
+sub _bindAddr {
+    my ($data, $addr, $parent) = @_;
+    my $items = ref $data eq 'ARRAY' ? $data : ref $data eq 'HASH' ? $data->{items} : undef;
+    return $data unless ref $items eq 'ARRAY';
+    my $off = (ref $data eq 'HASH' && $data->{offset}) ? $data->{offset} : 0;
+    $items = [ @$items ];
+    $data  = ref $data eq 'ARRAY' ? $items : { %$data, items => $items };
+    for my $i (0 .. $#$items) {
+        my $item = $items->[$i];
+        next unless ref $item eq 'HASH';
+        $item = $items->[$i] = { %$item, itemActions => { %{ ref $item->{itemActions} eq 'HASH' ? $item->{itemActions} : {} } } };
+        # XMLBrowser reads position p at items->[p - offset].
+        my $path = length($parent // '') ? "$parent." . ($i + $off) : $i + $off;
+        my $type = $item->{type} // '';
+        if (ref $item->{url} eq 'CODE') {
+            my $url = $item->{url};
+            $item->{url} = sub {
+                my ($c, $cb, @rest) = @_;
+                $url->($c, sub { $cb->(_bindAddr($_[0], $addr, $path)) }, @rest);
+            };
+            # A search row keeps XMLBrowser's own go (it carries the input).
+            $item->{itemActions}{items} ||= _addrAction($addr, $path, 'items')
+                unless $type eq 'audio' || $type eq 'search';
+        }
+        if ($item->{play} || $item->{playlist} || $type =~ /^(?:audio|playlist)$/) {
+            $item->{itemActions}{$_} ||= _addrAction($addr, $path, $_) for qw(play add insert);
+        }
+        $item->{items} = _bindAddr($item->{items}, $addr, $path)
+            if ref $item->{items} eq 'ARRAY';
+    }
+    return $data;
+}
+
+# The callback for a dispatched page: its rows bound, its address as the query.
+sub _boundCallback {
+    my ($callback, $addr) = @_;
+    return sub {
+        my $data = _bindAddr($_[0], $addr, '');
+        $data = { items => $data } if ref $data eq 'ARRAY';
+        $data->{query} = { %$addr } if ref $data eq 'HASH' && %$addr;
+        $callback->($data);
+    };
 }
 
 # Find a list-view row by id and run it (see topLevel).
@@ -1154,6 +1420,12 @@ sub _rgView {
                 return $err->();
             }
             my $pass = { %$opts, rg => $rel };
+            # A manual match or its removal (0.56.61): acted on directly, no
+            # page built (a picker row lives below the page, out of _findRow's
+            # reach).
+            if (defined $item && $item =~ /^lm:(set|del):(\d+)$/) {
+                return _manualAct($client, $callback, $opts, $rgMbid, $1, $2);
+            }
             if (defined $item && length $item) {
                 _releaseDetail($client, sub {
                     _runRow($client, $callback, _findRow(shift, $item),
@@ -1189,6 +1461,29 @@ sub playCommand {
                grep { defined $request->getParam($_) }
                qw(artist_id artist mbid features);
     my $ambid = lc($opts{mbid} // '');
+
+    # A work (_libWorkLink): every library track of these LMS works, album by
+    # album as its page lists them (Classical::albumsFor), handed to LMS as
+    # the album rows' own actions are (track ids + work_id:-1). Asked here,
+    # on the press, so the works page itself makes no extra query.
+    my $works = $request->getParam('works');
+    if ($client && defined $works && length $works) {
+        my @ids;
+        if ($works =~ /^\d+(?:,\d+)*$/) {
+            @ids = map { @{ $_->{_tracks} || [] } }
+                   @{ Plugins::Discography::Classical->albumsFor([ split /,/, $works ]) };
+        }
+        if (@ids) {
+            _dbg("playcmd: $cmd works $works -> " . scalar(@ids) . ' tracks');
+            $client->execute(['playlistcontrol', 'cmd:' . ($cmd eq 'play' ? 'load' : $cmd),
+                              'track_id:' . join(',', @ids), 'work_id:-1']);
+        }
+        else {
+            _dbg("playcmd: no library tracks for works '$works'");
+        }
+        $request->setStatusDone();
+        return;
+    }
 
     # Direct-url mode (library-extras tiles): the play target is already a
     # core-resolved db: url — no resolution step, whitelisted shape only. A
@@ -1263,6 +1558,9 @@ sub _discographyView {
 
     my $artist = $opts->{artist} // '';
 
+    # A positional walk's search row comes straight here, not through topLevel.
+    _prefetchYield($opts->{artist_id}, $opts->{artist}, $opts->{mbid});
+
     # Various Artists / Various Composers is never one artist (0.56.41,
     # API::isVarious; Simon: "A short message"): the line saying so and the way
     # back to search, before anything is asked. By name here; by the mbid below
@@ -1302,6 +1600,16 @@ sub _discographyView {
                 } if length $artist;
                 $callback->({ items => \@items, cachetime => 0 });
                 return;
+            }
+
+            # A COMPOSER our Open Opus copy holds (plan §9, step 1) opens on his
+            # works, unless his Works | Albums switch asked for today's page.
+            # The works page asks MusicBrainz nothing: no release groups, no
+            # streaming pool, no bootleg check (_worksView).
+            if (my $comp = Plugins::Discography::Classical->composer($mbid)) {
+                $opts->{composer} = 1;
+                return _worksView($client, $callback, $opts, $mbid, $comp)
+                    unless _worksOff($client, $mbid);
             }
 
             # MusicBrainz's completed list, when a first one was drawn last time
@@ -1511,6 +1819,13 @@ sub _discographyView {
                                  $opts->{artist_id}, $opts->{artist}, $mbid,
                                  { fallback => _idFallback($opts) });
 
+                    # THE TRACK MATCH ASKS NOTHING HERE (0.56.62). 0.56.61 asked
+                    # ListenBrainz for tracklists before the draw and waited for
+                    # them: a slow ListenBrainz held Thievery Corporation's page
+                    # 8.5 s past its check (live, 2026-10-08). The page now only
+                    # reads what is kept (_buildList -> _placements); the asking
+                    # is background work, off the page (TrackWarm).
+
                     # AWAITED, bounded. The bootleg map is cached only whole
                     # (API::warmOfficial says why), so the first render either
                     # waits for it or shows bootlegs — we wait. One MB request per
@@ -1624,7 +1939,8 @@ sub _discographyView {
                 # release groups there is no spine, so the streaming warm this
                 # flag exists to wait for is never started.
                 onError => sub {
-                    $rgsErr = 1; $offDone = 1; $poolDone = 1; $extDone = 1; $render->();
+                    $rgsErr = 1; $offDone = 1; $poolDone = 1; $extDone = 1;
+                    $render->();
                 },
             );
     };
@@ -1636,6 +1952,16 @@ sub _discographyView {
         $withMbid->(lc $opts->{mbid});
     }
     else {
+        # A NAME AND NOTHING ELSE (a Similar artists row) for an artist the
+        # library holds opens as that library artist (Sources::
+        # libraryArtistIdByName, 2026-10-08: "Bob" opened Bob Dylan). Its rows
+        # carry the id from here on, as its library page's do.
+        if (!$opts->{artist_id} && length $artist) {
+            if (my $lid = Plugins::Discography::Sources::libraryArtistIdByName($artist)) {
+                _dbg("artist page '$artist': name only - opened as library artist $lid");
+                $opts->{artist_id} = $lid;
+            }
+        }
         _resolveArtistMbid($client, $opts, $withMbid);
     }
 }
@@ -1668,6 +1994,10 @@ sub _resolveArtistMbid {
             # Composers carries 89ad4ac3): the page shows it is not one artist,
             # so its list is never read (0.56.41).
             return $cb->($mbid) if Plugins::Discography::API->isVarious(undef, $mbid);
+            # A composer the classical table holds: the tag names him, and the
+            # table's ids were each checked by hand (plan §8.1). His works page
+            # needs no release group, so none is asked for to check the tag.
+            return $cb->($mbid) if Plugins::Discography::Classical->composer($mbid);
 
             # This is the page's own spine (the page then finds it cached), so
             # it is asked for the page's way: the artist read first (stage 2).
@@ -2462,6 +2792,23 @@ sub _buildList {
     # "Also in your library" claims across, so the two views agree.
     my $idGroups   = _idGroups($rgs);
 
+    # Owned albums no title claims, put on a group by the user's own match or
+    # by their tracks (0.56.61, _placements): the same map for the tiles and
+    # "Also in your library", from what is KEPT. The page never asks for a
+    # tracklist and never waits for one (0.56.62): the track match's library
+    # pass keeps them ahead of the visit (TrackWarm), and a group this page
+    # found missing is handed to it as background work (TrackWarm::want); its
+    # album stays where it is meanwhile.
+    my %needTrk;
+    my $placements = _placements(mbid => $mbid, artist => $opts->{artist}, rgs => $rgs,
+                                 local => $local, relMap => $relMap, editions => $editions,
+                                 need => \%needTrk);
+    if (%needTrk) {
+        if (my $want = Plugins::Discography::TrackWarm->can('want')) {
+            $want->([ sort keys %needTrk ]);
+        }
+    }
+
     # For the empty-artist verdict below: how many release groups the USER's own
     # filters left on the table, and whether streaming was actually resolved.
     my ($typeOk, $poolResolved) = (0, 0);
@@ -2483,6 +2830,9 @@ sub _buildList {
               index => $pool->{index}, aliases => $rg->{aliases},
               rgType => $rg->{type}, rgComp => _isComp($rg), editions => $editions->{ $rg->{mbid} },
               idGroups => $idGroups, localTracks => $localTracks,
+              # Titles other groups on this page own exactly (0.56.51).
+              pageTitles => $rivals,
+              placed => $placements->{placed},
               otherNames => $otherNames, creditMemo => \%creditMemo });
         # Which streaming candidates a release group CLAIMED. Collected here
         # rather than recomputed, because matching every candidate against
@@ -2623,52 +2973,8 @@ sub _buildList {
     # summary + the same refresh-toggle inline expand the review uses. Awaited
     # in _discographyView, so its row count is fixed for the whole visit.
     # Rows come from _proseSection (LBF's parser — headings, bullets, paragraphs).
-    my @bioRows;
-    if (defined $bio && length $bio) {
-        my $akey     = lc($opts->{artist} // '');
-        my $expanded = $lastCtx{ _cid($client) }{bio}{$akey};
-        my ($prose, $truncated) = _proseSection($bio, $expanded);
-        push @bioRows, @$prose;
-        if ($expanded && $truncated) {
-            push @bioRows, {
-                name        => cstring($client, 'PLUGIN_DISCOGRAPHY_SHOW_LESS'),
-                type        => 'link',
-                image       => MENU_REVIEW,
-                nextWindow  => 'refresh',
-                id          => 'bio:less',
-                itemActions => _listItemActions($opts, 'bio:less'),
-                passthrough => [{ akey => $akey }],
-                url         => sub {
-                    my ($c, $cb, $a, $p) = @_;
-                    delete $lastCtx{ _cid($c) }{bio}{ $p->{akey} };
-                    $cb->({ items => [] });
-                },
-            };
-        }
-        else {
-            if ($truncated) {
-                push @bioRows, {
-                    name        => cstring($client, 'PLUGIN_DISCOGRAPHY_READ_MORE'),
-                    type        => 'link',
-                    image       => MENU_REVIEW,
-                    nextWindow  => 'refresh',
-                    id          => 'bio:more',
-                    itemActions => _listItemActions($opts, 'bio:more'),
-                    passthrough => [{ akey => $akey }],
-                    url         => sub {
-                        my ($c, $cb, $a, $p) = @_;
-                        $lastCtx{ _cid($c) }{bio}{ $p->{akey} } = 1;
-                        $cb->({ items => [] });
-                    },
-                };
-            }
-        }
-    }
-
-    unshift @bioRows, _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_BIOGRAPHY', $useH,
-        IMG_BASE . 'dsc-bio_MTL_icon_person.png', \@bioRows,
-        { id => 'sect:BIO', itemActions => _listItemActions($opts, 'sect:BIO') }) if @bioRows;
-    @bioRows = () if $singlesTab;    # a true tab: Options + Singles only
+    # a true tab (Singles view): Options + Singles only
+    my @bioRows = $singlesTab ? () : _bioSection($client, $opts, $bio, $useH);
 
     # OPTIONS, COLLAPSED (0.56.32; Simon 2026-10-02: "is it possible to hide
     # these like we do with text and open up if needed?", then "keep the Albums
@@ -2689,7 +2995,10 @@ sub _buildList {
     # be unreachable without it; an inline box got lost among the page's rows
     # and Material drew it inline or as a popup with the page's size).
     my $optsOpen = $lastCtx{ _cid($client) }{opts};
-    my @optRows = (($hasAlbums && $hasSingles) ? (_viewToggleItem($client, $opts, $view)) : (),
+    # A composer's album page leads with the way back to his works (plan §9.4),
+    # above the Albums | Singles switch, which it never touches.
+    my @optRows = (($opts->{composer} ? (_worksToggleItem($client, $opts, $mbid, 0)) : ()),
+                   ($hasAlbums && $hasSingles) ? (_viewToggleItem($client, $opts, $view)) : (),
                    ($localOnly ? (_localOnlyToggleItem($client, $opts)) : ()),
                    _searchButtonRow($client, $opts));
     if ($optsOpen) {
@@ -2770,10 +3079,10 @@ sub _buildList {
     # a matched single here). These tiles ARE the playable node (their feed is
     # the album tracklist), no MB detail to drill to.
     if ($prefs->get('show_library_extras')) {
-        my @rgPool = grep { !_hiddenType($_) } @$rgs;
-        my $claimed = ($local && @$local)
-            ? Plugins::Discography::Sources->claimedLocalIds(\@rgPool, $opts->{artist}, $local, $relMap, $editions)
-            : {};
+        # The claims _placements made for this render (the same pool, release
+        # map and edition titles: one pass, not two), plus what it placed.
+        my $claimed = { %{ $placements->{claimed} || {} },
+                        map { ($_ => 1) } keys %{ $placements->{placed} || {} } };
         my @extras  = grep { !$claimed->{ $_->{_albumid} } } @{ $local || [] };
 
         # NOTE: a band's owned albums are NO LONGER folded in here (they used to
@@ -3073,6 +3382,58 @@ sub _buildList {
     return \@items;
 }
 
+# The biography section (header + prose rows + Read more / Show less), shared
+# by the artist page and a composer's works page. Empty when there is no bio.
+sub _bioSection {
+    my ($client, $opts, $bio, $useH) = @_;
+    my @bioRows;
+    if (defined $bio && length $bio) {
+        my $akey     = lc($opts->{artist} // '');
+        my $expanded = $lastCtx{ _cid($client) }{bio}{$akey};
+        my ($prose, $truncated) = _proseSection($bio, $expanded);
+        push @bioRows, @$prose;
+        if ($expanded && $truncated) {
+            push @bioRows, {
+                name        => cstring($client, 'PLUGIN_DISCOGRAPHY_SHOW_LESS'),
+                type        => 'link',
+                image       => MENU_REVIEW,
+                nextWindow  => 'refresh',
+                id          => 'bio:less',
+                itemActions => _listItemActions($opts, 'bio:less'),
+                passthrough => [{ akey => $akey }],
+                url         => sub {
+                    my ($c, $cb, $a, $p) = @_;
+                    delete $lastCtx{ _cid($c) }{bio}{ $p->{akey} };
+                    $cb->({ items => [] });
+                },
+            };
+        }
+        else {
+            if ($truncated) {
+                push @bioRows, {
+                    name        => cstring($client, 'PLUGIN_DISCOGRAPHY_READ_MORE'),
+                    type        => 'link',
+                    image       => MENU_REVIEW,
+                    nextWindow  => 'refresh',
+                    id          => 'bio:more',
+                    itemActions => _listItemActions($opts, 'bio:more'),
+                    passthrough => [{ akey => $akey }],
+                    url         => sub {
+                        my ($c, $cb, $a, $p) = @_;
+                        $lastCtx{ _cid($c) }{bio}{ $p->{akey} } = 1;
+                        $cb->({ items => [] });
+                    },
+                };
+            }
+        }
+    }
+
+    unshift @bioRows, _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_BIOGRAPHY', $useH,
+        IMG_BASE . 'dsc-bio_MTL_icon_person.png', \@bioRows,
+        { id => 'sect:BIO', itemActions => _listItemActions($opts, 'sect:BIO') }) if @bioRows;
+    return @bioRows;
+}
+
 # One "Also a member of" row: a DRILL-IN that renders the band's own discography
 # as a nested sub-feed. (An earlier "re-stash %lastCtx + nextWindow refresh"
 # design did NOT work: a refresh re-issues the person's TOP command WITH its
@@ -3198,6 +3559,7 @@ sub _extraSection {
         if ($t{_albumid}) {
             $t{id} = 'lib:' . $t{_albumid};
             $t{itemActions} = _listItemActions($opts, $t{id}, $t{play});
+            _withLibraryActions(\%t);
         }
         \%t;
     } @dated, @undated;
@@ -3317,6 +3679,427 @@ sub _viewToggleItem {
     };
 }
 
+# ---------------------------------------------------------------------------
+# A COMPOSER'S WORKS PAGE (docs/classical-plan.md §9, step 1; Simon 2026-10-03:
+# "both for now. But if it becomes too messy we stick to works").
+#
+# A composer our Open Opus copy holds (Classical.pm) opens on his works: Popular,
+# then Orchestral, Chamber, Keyboard, Stage and Vocal, each recommended first,
+# then by catalogue number, in the existing 30-row paging. A work the library
+# holds says "In your library" and opens the albums holding it (LMS's own Works
+# data, from the files' WORK tags); the rest are plain rows until the work page
+# (step 2). Library works no Open Opus work matched are listed under "Other
+# works in your library".
+#
+# IT ASKS MUSICBRAINZ NOTHING. The release groups, the streaming pool, the
+# bootleg check and the bands belong to the album page, which the switch opens.
+# What it waits for is the biography and the similar artists, as the artist
+# page does, under the same `official_wait` deadline, which here covers the
+# biography too: a page that never draws is worse than one without a bio.
+# ---------------------------------------------------------------------------
+sub _worksView {
+    my ($client, $callback, $opts, $mbid, $comp) = @_;
+    my $artist = $opts->{artist} // '';
+    _dbg("works page: '$artist' ($mbid) is composer '" . ($comp->{c} // '?') . "'");
+
+    my ($bio, $bioDone, $extDone, $rendered, $deadline);
+    my $render = sub {
+        return if $rendered || !$bioDone || !$extDone;
+        $rendered = 1;
+        Slim::Utils::Timers::killTimers(undef, $deadline) if $deadline;
+        # Cache only: both legs above asked the same-name question first.
+        $opts->{shared_name} = Plugins::Discography::API->sharesNameWithProminent($artist, $mbid);
+        $callback->({ items => _worksList($client, $opts, $mbid, $comp, $bio), cachetime => 0 });
+    };
+
+    my $wait = $prefs->get('official_wait');
+    $wait = OFFICIAL_WAIT_DEFAULT unless defined $wait;
+    if ($wait > 0) {
+        $deadline = sub {
+            return if $rendered;
+            _dbg("works page '$artist': ${wait}s deadline hit - rendering");
+            $bioDone = 1; $extDone = 1;
+            $render->();
+        };
+        Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + $wait, $deadline);
+    }
+    else {
+        $extDone = 1;    # 0 = never wait for the extras, as on the artist page
+    }
+
+    if ($prefs->get('show_bio')) {
+        Plugins::Discography::API->sharesNameWithProminentAsync($artist, $mbid, sub {
+            my $fetch = $_[0] ? \&_fetchExactBio : \&_fetchArtistBio;
+            $fetch->($client, $artist, $mbid, sub { $bio = shift; $bioDone = 1; $render->() });
+        });
+    }
+    else {
+        $bioDone = 1;
+    }
+    _warmArtistExtras($client, $mbid, $artist, sub { $extDone = 1; $render->() });
+    $render->();
+}
+
+# Is this composer's page switched to his albums? Per composer, kept while the
+# same artist is re-entered (topLevel's `works`), like the Albums | Singles view.
+sub _worksOff {
+    my ($client, $mbid) = @_;
+    my $ctx = $lastCtx{ _cid($client) } or return 0;
+    return (ref $ctx->{works} eq 'HASH' && ($ctx->{works}{ lc($mbid // '') } // '') eq 'albums') ? 1 : 0;
+}
+
+# The Works | Albums switch (plan §9.4; Simon 2026-10-07: "classical works should
+# be independant of that, classical compostions dont do singles"). Its own row,
+# apart from the Albums | Singles switch, which it never touches. On the works
+# page it reads "Showing Works (tap for Albums)"; on the album page "Show works",
+# so the page never shows two rows starting "Showing Albums". Same mechanics as
+# _viewToggleItem: an ABSOLUTE target in the id and the ctx, then Material
+# re-fetches the page; a stale tap misses _findRow and changes nothing.
+sub _worksToggleItem {
+    my ($client, $opts, $mbid, $onWorks) = @_;
+    my $to = $onWorks ? 'albums' : 'works';
+    my $id = "act:works:$to";
+    return {
+        name        => $onWorks
+            ? sprintf(cstring($client, 'PLUGIN_DISCOGRAPHY_SHOWING'),
+                      cstring($client, 'PLUGIN_DISCOGRAPHY_WORKS'),
+                      cstring($client, 'PLUGIN_DISCOGRAPHY_ALBUMS'))
+            : cstring($client, 'PLUGIN_DISCOGRAPHY_SHOW_WORKS'),
+        type        => 'link',
+        image       => MENU_WORK,
+        nextWindow  => 'refresh',
+        id          => $id,
+        itemActions => _listItemActions($opts, $id),
+        passthrough => [{ to => $to, mbid => lc($mbid // '') }],
+        url         => sub {
+            my ($c, $cb, $a, $p) = @_;
+            my $ctx = $lastCtx{ _cid($c) } ||= {};
+            if (($p->{to} // '') eq 'albums') { $ctx->{works}{ $p->{mbid} } = 'albums' }
+            else                              { delete $ctx->{works}{ $p->{mbid} } if ref $ctx->{works} eq 'HASH' }
+            $cb->({ items => [] });
+        },
+    };
+}
+
+# The works page's rows. $opts as _buildList takes them (the ENTRY mbid kept
+# apart from the resolved one, for the same reason).
+sub _worksList {
+    my ($client, $opts, $mbid, $comp, $bio) = @_;
+    $opts = { %$opts, entry_mbid => $opts->{mbid}, mbid => $mbid };
+    my $useH = _wantHeaders($opts->{features});
+    my $C    = 'Plugins::Discography::Classical';
+
+    my $works = $C->works($mbid);
+    my $lib   = $C->libraryWorks(artist_id => $opts->{artist_id}, mbid => $mbid,
+                                 names => [ $opts->{artist}, $comp->{c}, $comp->{m} ]);
+    my $own   = $C->owned($mbid, $works, $lib);
+
+    # Options: the switch and Search always; Refresh behind More options (sort
+    # and the local-only filter are the album page's).
+    my @optRows = (_worksToggleItem($client, $opts, $mbid, 1), _searchButtonRow($client, $opts));
+    if ($lastCtx{ _cid($client) }{opts}) {
+        push @optRows, _refreshItem($client, $opts, $mbid), _optionsToggleRow($client, $opts, 0);
+    }
+    else {
+        push @optRows, _optionsToggleRow($client, $opts, 1);
+    }
+    my @items = (
+        _composerSummaryRow($client, $comp, scalar @$works),
+        _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_OPTIONS', $useH,
+            IMG_BASE . 'dsc-opt_MTL_icon_tune.png', \@optRows,
+            { id => 'sect:OPT', itemActions => _listItemActions($opts, 'sect:OPT') }),
+        @optRows,
+        _bioSection($client, $opts, $bio, $useH));
+
+    my @workRows;    # every work row drawn, for the repeated-title fix below
+    my $section = sub {
+        my ($key, $label, $image, $rows) = @_;
+        return unless @$rows;
+        my ($vis, $pgRows) = _pageSection($client, $opts, "W:$key", $rows);
+        my $hdr = {
+            name  => $label . ' (' . scalar(@$rows) . ')',
+            type  => $useH ? _headerType() : 'text',
+            image => $image,
+        };
+        if ($useH) {
+            my @kids = (@$vis, @$pgRows);
+            $hdr->{id}          = "sect:W:$key";
+            $hdr->{itemActions} = _listItemActions($opts, $hdr->{id});
+            $hdr->{url}         = sub { $_[1]->({ items => \@kids }) };
+            $hdr->{passthrough} = [{}];
+        }
+        push @workRows, @$vis;
+        push @items, $hdr, @$vis, @$pgRows;
+    };
+
+    # The composer's name for "About this work" (MAI asks by title + composer).
+    my $about = $comp->{c} // $opts->{artist} // '';
+    my $row = sub { _workRow($client, $opts, $_[0], $own->{byWork}{ $_[0]{id} },
+                             { composer => $about, %{ $_[1] || {} } }) };
+    # What the library holds first, in the list's own order (plan §10.5 item 3);
+    # each work stays in its genre too. The heading says "In your library", so
+    # these rows leave the mark off line 2.
+    $section->('LIB', cstring($client, 'PLUGIN_DISCOGRAPHY_IN_LIBRARY'), MENU_LOCAL,
+               [ map { $row->($_, { inLib => 1 }) } grep { $own->{byWork}{ $_->{id} } } @$works ]);
+    $section->('POP', cstring($client, 'PLUGIN_DISCOGRAPHY_POPULAR'), MENU_POPULAR,
+               [ map { $row->($_) } grep { $_->{popular} } @$works ]);
+    for my $g (Plugins::Discography::Classical::GENRES()) {
+        $section->($g, cstring($client, 'PLUGIN_DISCOGRAPHY_GENRE_' . uc $g), MENU_WORK,
+                   [ map { $row->($_) } grep { $_->{genre} eq $g } @$works ]);
+    }
+    $section->('OTHER', cstring($client, 'PLUGIN_DISCOGRAPHY_OTHER_WORKS'), MENU_LOCAL,
+               [ map { _libWorkLink($client, $opts,
+                                    { name => $_->{title},
+                                      ($_->{artwork} ? (image => "/music/$_->{artwork}/cover") : ()) },
+                                    'lw:' . $_->{work_id}, [ $_->{work_id} ],
+                                    { title => $_->{title}, composer => $about }) } @{ $own->{other} } ]);
+
+    # A popular work is listed twice (Popular and its genre), and Open Opus has
+    # works sharing a title (Candide the opera and the suite): Material keys
+    # these rows by title, and a repeat would lose a row (A2 `A REPEATED
+    # SEARCH-ROW NAME CARRIES INVISIBLE WORD JOINERS`).
+    _distinctTitles(\@workRows);
+
+    my $similar = $opts->{shared_name} ? undef : _peekSimilar($mbid);
+    if ($similar && @$similar) {
+        push @items, _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_SIMILAR_ARTISTS',
+            $useH, IMG_BASE . 'dsc-bio_MTL_icon_person.png',
+            [ map { _similarLinkRow($client, $opts, $_) } @$similar ],
+            { id => 'sect:SIMILAR', itemActions => _listItemActions($opts, 'sect:SIMILAR') });
+        push @items, map { _similarLinkRow($client, $opts, $_) } @$similar;
+    }
+    return \@items;
+}
+
+# One Open Opus work. $held: the library works that name it (several when the
+# tags are movement-level), or undef. Line 2: the year written, "In your
+# library", the instrumentation, Open Opus's subtitle - in that order because
+# Material cuts line 2 at the edge, so the short year and the mark go first.
+# $o: { composer => name (for "About this work"), inLib => 1 for a row in the
+# "In your library" section, whose heading already says it, so no mark }.
+#
+# An owned work shows its album's cover, as Material's own Works list does
+# (plan §10.5 item 1). A work not held stays a plain text row with NO image:
+# Material turns a text row that has an image into a tappable one (browse-
+# resp.js: "treat as a standard actionable item", type "other", and its tap
+# goes to the base go action), and a tap there would open a dead page. Works
+# not held open a page of their own only once Simon decides that (item 5).
+# On a header client (Material) that row is drawn like an owned one
+# (_workTextHtml).
+sub _workRow {
+    my ($client, $opts, $w, $held, $o) = @_;
+    $o ||= {};
+    my $owned = $held && @$held ? 1 : 0;
+    my @l2 = grep { defined && length } ($w->{year},
+        ($owned && !$o->{inLib} ? cstring($client, 'PLUGIN_DISCOGRAPHY_IN_LIBRARY') : ()),
+        $w->{instr}, $w->{subtitle});
+    my $row = { name => $w->{title}, (@l2 ? (line2 => join(" \x{00B7} ", @l2)) : ()) };
+    unless ($owned) {
+        return { %$row, type => 'text' } unless _wantHeaders($opts->{features});
+        return { name => _workTextHtml($w->{title}, \@l2), type => 'text' };
+    }
+    my ($art) = grep { defined && length } map { $_->{artwork} } @$held;
+    $row->{image} = "/music/$art/cover" if $art;
+    return _libWorkLink($client, $opts, $row, 'wk:' . $w->{id}, [ map { $_->{work_id} } @$held ],
+                        { title => $w->{title}, composer => $o->{composer} // '' });
+}
+
+# A work not held, drawn as an owned row is (Simon 2026-10-08: "can the name
+# of the works be in Bold like it is when owned"). Material forces a text
+# row's title to weight 200 (`.browse-text .v-list__tile__title`), where an
+# owned row's title has its --std-weight (400; live 6.4.12 CSS): so the title
+# takes --std-weight, and line 2 the subtitle's style (--std-weight,
+# --small-font-size, --icon-color at --sub-opacity, one line cut at the edge). An explicit weight,
+# never a bare <b>: that resolves against the inherited 200 and lands at 400
+# only where the font has a 200 face (measured for LBF 0.9.156).
+sub _workTextHtml {
+    my ($title, $l2) = @_;
+    my $html = "<div style='font-weight:var(--std-weight,400)'>" . _escHtml($title) . '</div>';
+    $html .= "<div style='font-weight:var(--std-weight,400);font-size:var(--small-font-size,13px);color:var(--icon-color);"
+           . "opacity:var(--sub-opacity,0.7);white-space:nowrap;overflow:hidden;text-overflow:ellipsis'>"
+           . _escHtml(join(" \x{00B7} ", @$l2)) . '</div>' if $l2 && @$l2;
+    return $html;
+}
+
+# A row that opens a work's page (_workPage) for these LMS works. $about:
+# { title, composer }, what "About this work" asks MAI for.
+#
+# Its own play / add / insert play the work: every library track of it, album
+# by album as the page lists them (playCommand's `works`). Material needs them
+# (Simon 2026-10-08, "buttons at top dont do what they should"): the composer
+# page is an online-artist page (the lmsbrowse `type => 'artist'`), so Material
+# gives each row on it STD_ITEM_ONLINE_ARTIST_CATEGORY, and the work page then
+# carries Append / Next / Play acting on THIS row. Without its own actions
+# they fell to the list's base `discography playlist play`, which takes the
+# row's `params` - a bound row has none - so Play went out with no address
+# and played nothing (measured in the live 6.4.12, headless).
+sub _libWorkLink {
+    my ($client, $opts, $row, $id, $workIds, $about) = @_;
+    my @w = grep { defined && /^\d+$/ } @{ $workIds || [] };
+    my $acts = _listItemActions($opts, $id);
+    if (@w) {
+        $acts->{$_} = { command => ['discography', 'playcmd'],
+                        fixedParams => { cmd => $_, works => join(',', @w) } } for qw(play add insert);
+    }
+    return {
+        %$row,
+        type        => 'link',
+        id          => $id,
+        itemActions => $acts,
+        passthrough => [{ works => $workIds, about => $about || {} }],
+        url         => sub {
+            my ($c, $cb, $a, $p) = @_;
+            $cb->({ items => _workPage($c, $opts, $p->{works}, $p->{about}), cachetime => 0 });
+        },
+    };
+}
+
+# A WORK'S PAGE, LMS's own work view with Open Opus's name (plan §10.5 item 4;
+# Simon 2026-10-08, "all good for 1 - 4"): titled by the row tapped (the Open
+# Opus title); "About this work" (MAI, on tap); then "In your library", one
+# row per album holding the work, each opening Material's own album page with
+# only the work's tracks. LMS's own work page cannot stand in: it takes ONE
+# LMS work id, and a library can tag one Open Opus work as several (The Four
+# Seasons: one per concerto, or per movement).
+sub _workPage {
+    my ($client, $opts, $workIds, $about) = @_;
+    my $useH   = _wantHeaders($opts->{features});
+    my $albums = _workAlbumRows($client, $opts, $workIds);
+    my @items  = (_aboutWorkRow($client, $about));
+    if (@$albums && $albums->[0]{type} ne 'text') {
+        my $hdr = _sectionHeader($client, 'PLUGIN_DISCOGRAPHY_IN_LIBRARY', $useH, MENU_LOCAL, $albums);
+        $hdr->{name} .= ' (' . scalar(@$albums) . ')';
+        push @items, $hdr;
+    }
+    return [ @items, @$albums ];
+}
+
+# "About this work": MAI's work review (Wikipedia), asked by title and
+# composer when tapped, so the work page itself waits for nothing. No row
+# without both (MAI answers nothing then).
+sub _aboutWorkRow {
+    my ($client, $about) = @_;
+    return () unless ref $about eq 'HASH'
+        && length($about->{title} // '') && length($about->{composer} // '');
+    return {
+        name        => cstring($client, 'PLUGIN_DISCOGRAPHY_ABOUT_WORK'),
+        type        => 'link',
+        image       => MENU_REVIEW,
+        passthrough => [{ title => $about->{title}, composer => $about->{composer} }],
+        url         => sub {
+            my ($c, $cb, $a, $p) = @_;
+            _fetchWorkAbout($c, $p->{composer}, $p->{title}, sub {
+                my ($text, $why) = @_;
+                my $rows = defined $text ? (_proseSection($text, 1))[0] : [];
+                $rows = [ _proseRow(cstring($c, $why && $why eq 'timeout'
+                    ? 'PLUGIN_DISCOGRAPHY_ABOUT_WORK_LATER' : 'PLUGIN_DISCOGRAPHY_ABOUT_WORK_NONE')) ]
+                    unless @$rows;
+                $cb->({ items => $rows, cachetime => 0 });
+            });
+        },
+    };
+}
+
+# MAI's review of a work: cleaned prose, or undef with 'none' (MAI has none,
+# or is not running) / 'timeout' (no answer in WORK_ABOUT_WAIT; not kept, so
+# the next tap asks again, and a late answer is still kept for it). Kept per
+# composer + title, never by LMS work id: a rescan renumbers those.
+sub _fetchWorkAbout {
+    my ($client, $composer, $title, $cb) = @_;
+    my $key = 'dsc:wrev:1:' . lc($composer) . '|' . lc($title);
+    if (defined(my $c = _cacheGetText($key))) {
+        return $cb->(length $c ? $c : undef, 'none');
+    }
+    my $fn;
+    eval {
+        $fn = Plugins::MusicArtistInfo::WorkInfo->can('getWorkReview')
+            if Slim::Utils::PluginManager->isEnabled('Plugins::MusicArtistInfo::Plugin');
+        1;
+    };
+    return $cb->(undef, 'none') unless $fn;
+
+    my $answered;
+    my $timer = sub {
+        return if $answered++;
+        _dbg("about '$title': no answer from MAI in " . WORK_ABOUT_WAIT . 's');
+        $cb->(undef, 'timeout');
+    };
+    Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + WORK_ABOUT_WAIT, $timer);
+    my $ok = eval {
+        $fn->($client, sub {
+            my $items = shift || [];
+            my $text;
+            for my $it (@$items) {
+                next unless ref $it eq 'HASH';
+                next if _maiNotFound($client, $it->{name});
+                last if defined($text = _cleanProse($it->{name}));
+            }
+            _cacheSetText($key, $text // '', defined $text ? REVIEW_FOUND_TTL : REVIEW_EMPTY_TTL);
+            _dbg("about '$title' ($composer): " . (defined $text ? 'MAI len=' . length $text : 'none'));
+            return if $answered++;
+            Slim::Utils::Timers::killTimers(undef, $timer);
+            $cb->($text, 'none');
+        }, {}, { title => $title, composer => $composer });
+        1;
+    };
+    unless ($ok) {
+        $log->warn("MAI workreview threw: $@");
+        return if $answered++;
+        Slim::Utils::Timers::killTimers(undef, $timer);
+        $cb->(undef, 'none');
+    }
+}
+
+# The library albums holding a work, as LMS lists a work's albums: cover,
+# album, its artist, year. A tap opens Material's own album page with only
+# the work's tracks (Sources::libraryWorkActions), and Play plays them;
+# clients that are not Material get the same tracks through `wka:` in
+# topLevel (the album id, then the track ids).
+sub _workAlbumRows {
+    my ($client, $opts, $workIds) = @_;
+    my $albums = Plugins::Discography::Classical->albumsFor($workIds);
+    return [{ name => cstring($client, 'PLUGIN_DISCOGRAPHY_NO_ALBUMS'), type => 'text' }]
+        unless @$albums;
+    return [ map {
+        my $id     = $_->{_albumid};
+        my $tracks = $_->{_tracks} || [];
+        my $wka    = "wka:$id" . (@$tracks ? ':' . join(',', @$tracks) : '');
+        my $play   = "db:album.id=$id";
+        my @l2     = grep { defined && length } ($_->{_year}, $_->{_artist});
+        my $row = {
+            name        => $_->{name},
+            type        => 'playlist',
+            ($_->{image} ? (image => $_->{image}) : ()),
+            (@l2 ? (line2 => join(" \x{00B7} ", @l2)) : ()),
+            play        => $play,
+            url         => \&Plugins::Discography::Sources::_localAlbumTracks,
+            passthrough => [{ album_id => $id, track_ids => $tracks }],
+            id          => $wka,
+            itemActions => _listItemActions($opts, $wka, $play),
+        };
+        my $a = Plugins::Discography::Sources::libraryWorkActions($id, $tracks);
+        $row->{itemActions} = { %{ $row->{itemActions} }, %$a } if $a;
+        $row;
+    } @$albums ];
+}
+
+# The composer's line under his name (plan §10.5 item 2): his years, his
+# epoch and how many works the page lists, from the shipped table. "born
+# 1935" when Open Opus has no death year: always true, where "1935-" would
+# be wrong for a composer who died after Open Opus last looked.
+sub _composerSummaryRow {
+    my ($client, $comp, $n) = @_;
+    return () unless ref $comp eq 'HASH';
+    my ($b, $d) = map { (defined && /^\d{3,4}$/) ? $_ : '' } @$comp{qw(b d)};
+    my $years = $b && $d ? "$b\x{2013}$d"
+              : $b       ? sprintf(cstring($client, 'PLUGIN_DISCOGRAPHY_BORN'), $b)
+              :            '';
+    my @parts = grep { length } ($years, $comp->{e} // '',
+        $n ? sprintf(cstring($client, $n == 1 ? 'PLUGIN_DISCOGRAPHY_ONE_WORK'
+                                              : 'PLUGIN_DISCOGRAPHY_N_WORKS'), $n) : '');
+    return @parts ? _proseRow(join(" \x{00B7} ", @parts)) : ();
+}
+
 # Action rows live at the TOP of the feature's own view (fleet convention).
 # Both re-enter _discographyView via passthrough with adjusted opts.
 sub _sortToggleItem {
@@ -3389,12 +4172,17 @@ sub _refreshItem {
             # the owned releases' groups, and streaming candidates — so the
             # re-entry re-pulls the lot. (A person view re-resolves by name; a
             # band view keeps its stashed mbid, so it re-pulls by mbid.)
-            # refresh => 1: the re-entry takes MusicBrainz's own list,
-            # awaited, not the first list from ListenBrainz and the community
-            # API (0.56.7).
+            # NOT refresh => 1 (0.56.53; Simon, 2026-10-07: Refresh "updates
+            # the resolving to local or streaming ... it should follow the same
+            # path that built the pages to start with"): the re-entry draws
+            # from the first list (ListenBrainz and the community API) like any
+            # cold page, and MusicBrainz completes it in the background. Taking
+            # MusicBrainz's own list awaited (0.56.7 to 0.56.52) cost a Refresh
+            # about 15 s and, with an album tapped meanwhile, a second browse
+            # of the same artist at the 1 req/s limit (measured: 8.1 s).
             Plugins::Discography::API->clearArtistCache(
                 name => $pass->{artist}, mbid => $pass->{mbid},
-                artist_id => $pass->{artist_id}, refresh => 1);
+                artist_id => $pass->{artist_id});
             Plugins::Discography::Sources->clearCandidates($pass->{artist}, $pass->{mbid})
                 if defined $pass->{artist} && length $pass->{artist};
             $cb->({ items => [] });
@@ -3855,6 +4643,22 @@ sub _poolQuery {
     return (_svcQueryName($en), [ $first, @rest ], 1);
 }
 
+# THE LEADER A BAND IS NAMED AFTER (API::peekEponymous; 2026-10-08, The Oscar
+# Peterson Trio): the names whose service albums are fetched beside the band's
+# to MATCH its own releases (Sources::_resolveWithJoints). Cache-only - the
+# artist read the page makes before its pool wrote it. Never the band's own
+# name, nor the name the pool is searched under.
+sub _poolLeaders {
+    my ($artist, $mbid, $query) = @_;
+    my $l = $mbid ? Plugins::Discography::API->peekEponymous($mbid) : undef;
+    return () unless ref $l eq 'ARRAY' && @$l;
+    my %skip = map { (Plugins::Discography::Sources::_norm($_ // '') => 1) } grep { defined } $artist, $query;
+    my %seen;
+    return grep { my $n = Plugins::Discography::Sources::_norm($_);
+                  length $n && !$skip{$n} && !$seen{$n}++ }
+           map  { $_->{name} } grep { ref $_ eq 'HASH' && defined $_->{name} } @$l;
+}
+
 # THE STREAMING LOOKUP'S OPTIONS, the same for the artist page and the release
 # page (C5, 2026-10-01): $cb->(\%opt) for Sources::getCandidates. The release
 # page used to ask without the shared-name flag and MusicBrainz's aliases, so a
@@ -3885,10 +4689,12 @@ sub _poolOpts {
             # artist was kept even when it was another act's, and stored as this
             # artist's pool.
             my ($query, $alias, $compare) = _poolQuery($artist, $mbid, $names);
+            my @leaders = _poolLeaders($artist, $mbid, $query);
             $cb->({ spine => $spine, mbid => $mbid,
                     (@$alias ? (aliases => $alias) : ()),
                     ($query ? (query => $query) : ()),
                     ($compare ? (compare => 1) : ()),
+                    (@leaders ? (leaders => \@leaders) : ()),
                     ambiguous => $ambig });
         };
 
@@ -3901,6 +4707,174 @@ sub _poolOpts {
         }
         else { $go->(undef) }
     });
+}
+
+# ---------------------------------------------------------------------------
+# THE TOP RESULT IS READIED WHILE THE RESULTS ARE READ (0.56.56; Simon,
+# 2026-10-07: "may be start to cache the top hit after search? But would need to
+# then stop and switch if a different one is picked ... start streaming
+# matching sooner and not destroy performance as a use[r] may be playing music
+# at same time").
+#
+# A big artist's first page took 7.4 s cold (Johnny Cash, Ella Fitzgerald,
+# measured on the rig): the artist read 1.4 s, the release-group lists 2.7 s,
+# the streaming pool 2.0-2.8 s, then matching and drawing 0.5-1.3 s. The first
+# three are network work cached by mbid, so once the results are on screen the
+# Top Result's page runs them ITS OWN WAY - the resolver's name lookup,
+# getReleaseGroups(read => 1), _poolOpts + getCandidates, warmBandMembers +
+# warmOfficial, exactly as _discographyView calls them, so the page finds what
+# it would have built - and stops there:
+#   - nothing is matched or drawn and no cover is fetched (the two things that
+#     stall the server: the matching's CPU and the archive covers' blocking
+#     read); no biography, no owned-album lookups, no MusicBrainz completion:
+#     the page does those;
+#   - THE BOOTLEG CHECK IS RUN TOO (added the same day; Simon, after Oscar
+#     Peterson opened in 1.6 s with the check 1.26 s of it: "lets add to
+#     prefetch if it has no knock on effects"), after the band lookup as the
+#     page runs it, with `prefetch => 1`: a page arriving while it runs JOINS it
+#     and draws filtered (API::warmOfficial), where a page arriving during
+#     another check gets 'busy' and draws unfiltered. Only the prefetch's check
+#     is joinable; a page's own is unchanged;
+#   - every request through the plugin's own queue is BACKGROUND work (API's
+#     $NET_BG, inherited by every answer), sent only while no page has a request
+#     waiting or out, so a tap anywhere waits for at most one already sent; the
+#     streaming plugins' few requests go out directly;
+#   - ONE at a time: a search with another Top Result, or any other artist's page,
+#     stops it at its next step (_prefetchYield); what was already sent lands in
+#     the cache;
+#   - a tap on the Top Result while it runs JOINS it (the artist read,
+#     API::_fastSpine, Sources::_candFlight): nothing is asked twice;
+#   - a library tag whose mbid has no release groups is left to the page (its
+#     library disambiguation browses up to 8 other acts).
+# ---------------------------------------------------------------------------
+my ($PREFETCH_GEN, $PREFETCH_WHO) = (0, undef);
+
+sub _prefetchWho {
+    my ($artistId, $artist, $mbid) = @_;
+    return { artist_id => $artistId // '', artist => lc($artist // ''), mbid => lc($mbid // '') };
+}
+
+# Another artist's page or release is opened (topLevel, _discographyView): the
+# prefetch stops at its next step unless it is for that artist. Generous on
+# purpose: the same library id, mbid or name keeps it going, since a prefetch
+# running on is background work and one stopped wrongly is the page's whole wait.
+sub _prefetchYield {
+    my $who = _prefetchWho(@_);
+    my $p   = $PREFETCH_WHO or return;
+    return if (length $who->{artist_id} && $who->{artist_id} eq $p->{artist_id})
+           || (length $who->{mbid} && $who->{mbid} eq $p->{mbid})
+           || (length $who->{artist} && $who->{artist} eq $p->{artist});
+    _dbg("prefetch of '$p->{artist}' stopped - another artist was opened");
+    $PREFETCH_GEN++;
+    undef $PREFETCH_WHO;
+    return;
+}
+
+# $top: the search page's Top Result row (its tap's own params), or undef when
+# the search found nothing, which stops the prefetch of an earlier search.
+sub _prefetchTop {
+    my ($client, $top) = @_;
+    my $fx = (ref $top eq 'HASH' && ref $top->{itemActions} eq 'HASH'
+              && ref $top->{itemActions}{items} eq 'HASH')
+           ? $top->{itemActions}{items}{fixedParams} : undef;
+    my ($artistId, $artist, $mbid) = ref $fx eq 'HASH'
+        ? map { _cleanParam($_) } @$fx{qw(artist_id artist mbid)} : ();
+    # topLevel's own rule: an owned row opens under the library's name.
+    if ($artistId) {
+        my $c = eval { Slim::Schema->find('Contributor', $artistId) };
+        $artist = $c->name if $c && $c->name;
+    }
+    my $who = ($client && defined $artist && length $artist)
+        ? _prefetchWho($artistId, $artist, $mbid) : undef;
+    my $key = sub { join "\x1f", map { $_[0]{$_} } qw(artist_id artist mbid) };
+    if (my $p = $PREFETCH_WHO) {
+        # The same results again (a view refresh): the one running carries on.
+        return if $who && $key->($p) eq $key->($who);
+        _dbg("prefetch of '$p->{artist}' stopped - a new search");
+        $PREFETCH_GEN++;
+        undef $PREFETCH_WHO;
+    }
+    return unless $who;
+
+    my $gen  = ++$PREFETCH_GEN;
+    $PREFETCH_WHO = $who;
+    my $live = sub { $gen == $PREFETCH_GEN };
+    my $ended;
+    my $end  = sub {
+        return unless $live->();
+        return if $ended++;
+        undef $PREFETCH_WHO;
+        _dbg("prefetch of '$artist': $_[0]");
+    };
+    my $api = 'Plugins::Discography::API';
+    _dbg("prefetch of '$artist' (the Top Result) - background work");
+
+    # Background in every step of its own, not only where it starts: an answer
+    # that runs from outside the plugin's queue (a cached lookup, the library)
+    # carries no flag, and the step after it would go out as a page's request.
+    my $withMbid = sub {
+        my ($m, $fromTag) = @_;
+        local $Plugins::Discography::API::NET_BG = 1;
+        return unless $live->();
+        return $end->('no MusicBrainz artist') unless $m;
+        return $end->('not one artist - its page asks nothing') if $api->isVarious(undef, $m);
+        return $end->('a composer - his works page asks nothing')
+            if Plugins::Discography::Classical->composer($m);
+        $api->getReleaseGroups(mbid => $m, read => 1,
+            onError => sub { $end->('no release groups') },
+            onDone  => sub {
+                my ($rgs) = @_;
+                local $Plugins::Discography::API::NET_BG = 1;
+                return unless $live->();
+                return $end->('the library tag has no release groups - left to the page')
+                    if $fromTag && !($rgs && @$rgs);
+                # The pool and the bootleg check, side by side as the page runs
+                # them; ready when both have answered.
+                my ($pool, $check);
+                my $both = sub {
+                    $end->("ready ($pool; $check)") if defined $pool && defined $check;
+                };
+                if (Plugins::Discography::Sources->peekPool($artist, $m)->{cold}) {
+                    _poolOpts($artist, $m, _spineTitles($rgs), sub {
+                        my ($opt) = @_;
+                        local $Plugins::Discography::API::NET_BG = 1;
+                        return unless $live->();
+                        my $t0 = Time::HiRes::time();
+                        Plugins::Discography::Sources->getCandidates($client, $artist, 0, sub {
+                            $pool = sprintf('streaming took %.1f s', Time::HiRes::time() - $t0);
+                            $both->();
+                        }, $opt);
+                    });
+                }
+                else { $pool = 'streaming already resolved' }
+                # The page's own order: the band lookup (a cache hit after the
+                # read), then the check. `prefetch => 1`: a page arriving while it
+                # runs joins it rather than drawing unfiltered (API::warmOfficial).
+                $api->warmBandMembers($m, sub {
+                    local $Plugins::Discography::API::NET_BG = 1;
+                    return unless $live->();
+                    my $t0 = Time::HiRes::time();
+                    $api->warmOfficial($m, $rgs, sub {
+                        $check = sprintf('bootleg check %s %.1f s',
+                            ($_[0] // '') eq 'failed' ? 'FAILED after' : 'took',
+                            Time::HiRes::time() - $t0);
+                        $both->();
+                    }, prefetch => 1);
+                });
+            });
+    };
+
+    local $Plugins::Discography::API::NET_BG = 1;
+    if ($mbid && $mbid =~ /^[0-9a-f-]{36}$/i) {
+        $withMbid->(lc $mbid);
+    }
+    else {
+        # _resolveArtistMbid's lookup, without its disambiguation (above).
+        $api->getArtistMbid(artist_id => $artistId, artist => $artist,
+            fetch  => Plugins::Discography::API::NAME_FETCH(),
+            onDone => sub { $withMbid->(@_[0, 1]) });
+    }
+    return;
 }
 
 sub _artistSearchView {
@@ -4167,6 +5141,11 @@ sub _withMbCandidates {
         my @hits = @{ _searchResultItems($client, $merged, $features) };
         $reply->(_searchSections($client, $features, $q, $part,
                                  scalar(@{ $merged || [] }), \@hits, \@same, \@distinct, $lead));
+        # The Top Result as _searchSections picks it, readied now that the page
+        # is on screen (_prefetchTop). Not for the Artists heading's More (the
+        # same search, its own rows only).
+        _prefetchTop($client, $lead // (@{ $merged || [] } ? $hits[0] : undef))
+            unless defined $part && length $part;
     };
 
     Plugins::Discography::API->getArtistCandidates($q, sub {
@@ -4930,9 +5909,131 @@ sub _listItemActions {
     return \%a;
 }
 
+# An owned library album opens and plays as a library album: LMS's own
+# BrowseLibrary actions (Sources::libraryAlbumActions) laid over the row's
+# param-addressed ones, so Material draws its native album page (track numbers,
+# durations, artists, the track menu's "Play release starting at track") and
+# follows its "Filter album tracks" setting. Other rows unchanged. Returns $row.
+sub _libraryActions {
+    my ($row, $albumId, $artistId) = @_;
+    my $a = Plugins::Discography::Sources::libraryAlbumActions($albumId, $artistId);
+    $row->{itemActions} = { %{ ref $row->{itemActions} eq 'HASH' ? $row->{itemActions} : {} }, %$a } if $a;
+    return $row;
+}
+
+# A library album row (Local, not a single owned track) gets those actions.
+sub _withLibraryActions {
+    my ($row) = @_;
+    return $row unless ref $row eq 'HASH' && ($row->{_svc} // '') eq 'Local' && !$row->{_track};
+    return _libraryActions($row, $row->{_albumid}, $row->{_listedUnder});
+}
+
 # itemActions for a release tile or a detail-page row. $item = the row id
 # within the detail view (undef for the tile itself -> go opens the detail).
 # $playable adds explicit play/add/insert actions via the playcmd dispatch.
+# MATCHES MADE BY HAND (0.56.61; Simon, 2026-10-08: "a manual match option for
+# cases where there are more than one and it cant work out"). On the release
+# page, after "Refresh streaming matches": "Remove the match to <album>" for
+# each owned album placed HERE by its tracks or by hand, and "Match an album
+# from your library" while the artist has albums in "Also in your library".
+# Not on the owned album's own row: that opens LMS's album page (0.56.58),
+# which takes no rows from us.
+#
+# Every row is addressed by its own params (rg + item), never by position:
+# lm:pick opens the picker, lm:set:<album id> and lm:del:<album id> act, the
+# latter two straight from _rgView, since a picker row is one level down
+# where _findRow cannot reach. Their url coderefs do the same for a walk.
+sub _manualRows {
+    my ($client, $pass, $rg, $plc) = @_;
+    my @rows;
+    for my $id (sort { $a <=> $b } grep { ($plc->{placed}{$_} // '') eq $rg->{mbid} } keys %{ $plc->{placed} }) {
+        my $it = $plc->{items}{$id} or next;
+        push @rows, {
+            name        => cstring($client, 'PLUGIN_DISCOGRAPHY_MATCH_REMOVE', $it->{_candTitle} // ''),
+            type        => 'link',
+            image       => MENU_UNLINK,
+            nextWindow  => 'refresh',
+            id          => "lm:del:$id",
+            itemActions => _rgItemActions($pass, $rg->{mbid}, "lm:del:$id"),
+            url         => sub { my ($c, $cb) = @_; _manualAct($c, $cb, $pass, $rg->{mbid}, 'del', $id) },
+        };
+    }
+    if (@{ $plc->{leftovers} || [] }) {
+        push @rows, {
+            name        => cstring($client, 'PLUGIN_DISCOGRAPHY_MATCH_PICK'),
+            type        => 'link',
+            image       => MENU_LOCAL,
+            id          => 'lm:pick',
+            itemActions => _rgItemActions($pass, $rg->{mbid}, 'lm:pick'),
+            url         => sub {
+                my ($c, $cb) = @_;
+                $cb->({ items => _matchPicker($c, $pass, $rg, $plc), cachetime => 0 });
+            },
+        };
+    }
+    return @rows;
+}
+
+# The picker: the artist's albums in "Also in your library". Those whose tracks
+# point at THIS release first, best first, saying how many tracks agree; then
+# the rest by year. A tap puts the album on this release and goes back to it.
+sub _matchPicker {
+    my ($client, $pass, $rg, $plc) = @_;
+    my (@likely, @rest);
+    for my $it (@{ $plc->{leftovers} || [] }) {
+        my ($c) = grep { ($_->{rg}{mbid} // '') eq $rg->{mbid} && $_->{ev} && $_->{ev}{m} }
+                  @{ $plc->{ranked}{ $it->{_albumid} } || [] };
+        if ($c) { push @likely, [ $it, $c ] } else { push @rest, [ $it, undef ] }
+    }
+    @likely = sort { $b->[1]{score} <=> $a->[1]{score} } @likely;
+    @rest   = sort { ($a->[0]{_year} || 9999) <=> ($b->[0]{_year} || 9999)
+                     || lc($a->[0]{_candTitle} // '') cmp lc($b->[0]{_candTitle} // '') } @rest;
+    my @items;
+    for my $p (@likely, @rest) {
+        my ($it, $c) = @$p;
+        my $id = $it->{_albumid};
+        my $n  = scalar @{ Plugins::Discography::Sources->ownTracks($it) };
+        my $line2 = $c ? cstring($client, 'PLUGIN_DISCOGRAPHY_MATCH_TRACKS', $c->{ev}{m}, $n)
+                       : join(" \x{00B7} ", grep { length } ($it->{_year} || ''), 'Local');
+        push @items, {
+            name        => $it->{_candTitle} // '',
+            line2       => $line2,
+            type        => 'link',
+            ($it->{_cover} ? (image => $it->{_cover}) : (image => MENU_LOCAL)),
+            nextWindow  => 'parent',
+            id          => "lm:set:$id",
+            itemActions => _rgItemActions($pass, $rg->{mbid}, "lm:set:$id"),
+            url         => sub { my ($c2, $cb) = @_; _manualAct($c2, $cb, $pass, $rg->{mbid}, 'set', $id) },
+        };
+    }
+    return \@items;
+}
+
+# Do a manual match ('set': this owned album is this release) or remove one
+# ('del': '-', so the track match leaves it alone too). The album is found
+# again among the artist's owned albums by its id, and stored by title and
+# album artist (Sources::albumKey). Answers ONE text row: Material shows it
+# as a message, then follows the tapped row's nextWindow.
+sub _manualAct {
+    my ($client, $callback, $opts, $rgMbid, $act, $albumId) = @_;
+    my $mbid = lc($opts->{mbid} // '');
+    my $done = sub { $callback->({ items => [{ name => $_[0], type => 'text' }], cachetime => 0 }) };
+    return $done->(cstring($client, 'PLUGIN_DISCOGRAPHY_ERROR'))
+        unless $mbid =~ /^[0-9a-f-]{36}$/ && $rgMbid && defined $albumId;
+    my $local = Plugins::Discography::Sources->localAlbums(
+        $opts->{artist_id}, $opts->{artist}, $mbid, { fallback => _idFallback($opts) });
+    my ($it) = grep { ($_->{_albumid} // '') eq $albumId } @{ $local || [] };
+    my $key = $it ? Plugins::Discography::Sources::albumKey($it) : undef;
+    return $done->(cstring($client, 'PLUGIN_DISCOGRAPHY_ERROR')) unless defined $key;
+    my $ok = Plugins::Discography::DB->manualSet($mbid, $key, $act eq 'set' ? $rgMbid : '-',
+                                                 $it->{_candTitle});
+    _dbg("manual match: '" . ($it->{_candTitle} // '?') . "' " . ($act eq 'set' ? "-> $rgMbid" : 'removed')
+         . ($ok ? '' : ' - NOT STORED'));
+    return $done->(cstring($client, $ok ? ($act eq 'set' ? 'PLUGIN_DISCOGRAPHY_MATCH_DONE'
+                                                          : 'PLUGIN_DISCOGRAPHY_MATCH_REMOVED')
+                                        : 'PLUGIN_DISCOGRAPHY_ERROR'));
+}
+
 sub _rgItemActions {
     my ($opts, $rgMbid, $item, $playable) = @_;
     my $ident = _rgIdent($opts, $rgMbid);
@@ -5132,7 +6233,7 @@ sub _releaseDetail {
     # the whole callback chain runs SYNCHRONOUSLY, and an undef $compose would
     # crash. Composed exactly once, when both legs (url-rels; candidates ->
     # review) have settled — each leg's guard checks the other's completion.
-    my ($links, $reviewDone, $review, $sectionsDone, $sections);
+    my ($links, $reviewDone, $review, $sectionsDone, $sections, $plc);
     my $compose = sub {
 
         my $useHdr = _wantHeaders($pass->{features});
@@ -5222,6 +6323,7 @@ sub _releaseDetail {
                 $keptPlay = 1;
                 $row{id} = 'v:' . $sections->[0]{svc} . ':0';
                 $row{itemActions} = _rgItemActions($pass, $rg->{mbid}, $row{id}, 1);
+                _withLibraryActions(\%row);
                 push @rows, \%row;
 
                 # Inline expand to the full per-service layout (the same
@@ -5278,6 +6380,7 @@ sub _releaseDetail {
                     }
                     $row{id} = 'v:' . $sec->{svc} . ':' . $vidx++;
                     $row{itemActions} = _rgItemActions($pass, $rg->{mbid}, $row{id}, 1);
+                    _withLibraryActions(\%row);
                     push @svcRows, \%row;
                 }
                 my $hdr = {
@@ -5339,6 +6442,8 @@ sub _releaseDetail {
             },
         };
 
+        push @rows, _manualRows($client, $pass, $rg, $plc) if $plc;
+
         # External links: MB always, then whatever url-relationships MB has
         # for this release group (AllMusic, Discogs, Wikipedia, ...).
         my @linkRows = ($mbLink,
@@ -5390,11 +6495,16 @@ sub _releaseDetail {
                               [ map { $_->{_mbid} } grep { $_->{_mbid} } @$local ] ) } };
 
         my $finish = sub {
-            my ($rivalBucket, $eds, $idGroups) = @_;
+            my ($rivalBucket, $eds, $idGroups, $pageTitles) = @_;
             $sections = Plugins::Discography::Sources->matchesFor(
                 $bySvc, $artist, $rg->{title}, $local, $rg->{mbid}, $relMap, $rivalBucket,
                 { aliases => $rg->{aliases}, rgType => $rg->{type}, rgComp => _isComp($rg), editions => $eds,
                   idGroups => $idGroups, localTracks => $localTracks,
+                  # The same titles the tile's page passes (0.56.51), or the
+                  # release page would list another album's copy as a version.
+                  pageTitles => $pageTitles,
+                  # The same placements as the tile's page (0.56.61).
+                  placed => $plc ? $plc->{placed} : undef,
                   # The artist's other MusicBrainz names, as the tile's (C3).
                   otherNames => _otherNames($ambid, $artist) });
             $sectionsDone = 1;
@@ -5423,8 +6533,12 @@ sub _releaseDetail {
                     # ... and the same edition titles, or the drill-in drops a
                     # match the tile shows.
                     my $eds = _editionTitles($rgs, Plugins::Discography::API->peekEditions($ambid));
+                    # ... and the same placements (0.56.61): an owned album put
+                    # on this release by its tracks or by hand.
+                    $plc = _placements(mbid => $ambid, artist => $artist, rgs => $rgs,
+                                       local => $local, relMap => $relMap, editions => $eds);
                     $finish->($rivals->{ Plugins::Discography::Sources::_norm($rg->{title}) },
-                              $eds->{ $rg->{mbid} }, _idGroups($rgs));
+                              $eds->{ $rg->{mbid} }, _idGroups($rgs), $rivals);
                 },
                 onError => sub { $finish->(undef) },
             );

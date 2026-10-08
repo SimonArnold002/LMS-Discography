@@ -35,6 +35,7 @@ our %LIBMBID;             # section 9: the album lookup's kept answers, by libra
 our ($FUZZY, @FUZZY_ASKED); # section 11: the closest names MusicBrainz answers, and who asked
 our @CANDS_ASKED;           # section 12: the names the same-name acts were asked for
 our (%ENREAD, @ALIASES);    # section 13: the artist read's English names / aliases, by mbid
+our (@PREFETCH, $REPLIED);  # section 14: what the Top Result prefetch was handed, and whether the page was out
 
 BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
@@ -158,6 +159,9 @@ my $realHdr   = \&Plugins::Discography::Browse::_sectionHeader;
     *{"${B}::_mbCandidateRow"}    = sub { { name => $_[1]{mbid} } };
     *{"${B}::_sectionHeader"}     = sub { { name => 'header' } };
     *{"${B}::_wantHeaders"}       = sub { 1 };
+    # The Top Result prefetch (0.56.56) is t_prefetch.pl's subject: here only
+    # what the search hands it is recorded (section 14).
+    *{"${B}::_prefetchTop"}       = sub { push @main::PREFETCH, [ $_[1], $main::REPLIED ] };
 }
 
 my ($pass, $fail) = (0, 0);
@@ -1027,6 +1031,62 @@ section('13', sub {
     ok(scalar($got->[0][0] eq "米津玄師 (Kenshi Yonezu)" && $got->[0][1] eq "米津玄師"),
        '13: the one act no row opens, as the Top Result -> "米津玄師 (Kenshi Yonezu)", opening "米津玄師"');
     ($CANDS, %RESOLVED, %COUNT, %ENREAD) = (undef);
+});
+
+section('14', sub {
+    # -----------------------------------------------------------------------
+    # 14. THE TOP RESULT IS HANDED TO THE PREFETCH (0.56.56; Simon, 2026-10-07:
+    #     "start to cache the top hit after search"), once the page is out: the
+    #     row _searchSections puts first, with the params its tap sends; undef
+    #     when nothing was found (that stops an earlier search's prefetch); not
+    #     at all for the Artists heading's More (the same search, its rows only).
+    # -----------------------------------------------------------------------
+    no warnings 'redefine'; no strict 'refs';
+    local *{"${B}::_searchResultItems"} = $realItems;
+    local *{"${B}::_mbCandidateRow"}    = $realMbRow;
+    local *{"${B}::_sectionHeader"}     = $realHdr;
+    local *{"${B}::_useStrips"}         = sub { 0 };
+    ($STRIPS, $LAYOUT) = (0, undef);
+    my $run = sub {
+        my ($q, $merged, $part) = @_;
+        @PREFETCH = (); $REPLIED = 0;
+        my $out;
+        $realWith->('client', sub { $out = $_[0]; $REPLIED = 1 }, '', $q, $merged, $part);
+        return $out;
+    };
+    my $fixed = sub { ((($_[0] || {})->{itemActions} || {})->{items} || {})->{fixedParams} || {} };
+    my $topOf = sub {
+        my @it = @{ ($_[0] || {})->{items} || [] };
+        for my $i (0 .. $#it) {
+            return $it[ $i + 1 ] if ($it[$i]{name} // '') eq 'PLUGIN_DISCOGRAPHY_TOP_RESULT';
+        }
+        return undef;
+    };
+
+    $CANDS = []; %RESOLVED = (); %COUNT = ();
+    my $out = $run->('Genesis', [ { name => 'Genesis', artist_id => 7, sources => ['Local', 'Qobuz'], _seq => 0 },
+                                  { name => 'Genesis Owusu', sources => ['Qobuz'], _seq => 1 } ]);
+    my $top = $topOf->($out);
+    ok(scalar(@PREFETCH == 1 && $PREFETCH[0][1]), '14: the prefetch is started once, after the page is out');
+    ok(scalar($top && ($fixed->($PREFETCH[0][0])->{artist} // '') eq 'Genesis'
+              && ($fixed->($PREFETCH[0][0])->{artist_id} // '') eq '7'
+              && $fixed->($PREFETCH[0][0])->{artist} eq ($fixed->($top)->{artist} // '')),
+       "14: ... with the Top Result's own tap params (Genesis, library id 7), not the second row's");
+
+    $run->('Genesis', [ { name => 'Genesis', artist_id => 7, sources => ['Local'], _seq => 0 } ], 'sect:ARTISTS');
+    ok(scalar(!@PREFETCH), "14: the Artists heading's More (the same search) starts nothing");
+
+    $CANDS = [ { mbid => id(1), name => 'Jandek', type => 'Person', country => 'US' } ];
+    %RESOLVED = ('jandek' => id(1)); %COUNT = (id(1) => 30);
+    $run->('Jandek', [ { name => 'JanDeKid', sources => ['Qobuz'], _seq => 0 } ]);
+    ok(scalar(@PREFETCH == 1 && ($fixed->($PREFETCH[0][0])->{mbid} // '') eq id(1)),
+       '14: the one MusicBrainz act as the Top Result is handed over by its mbid, not the near miss under Artists');
+
+    $CANDS = []; %RESOLVED = (); %COUNT = (); $FUZZY = [];
+    $run->('Zzyzx', []);
+    ok(scalar(@PREFETCH == 1 && !defined $PREFETCH[0][0]),
+       '14: nothing found: undef is handed over (an earlier prefetch stops)');
+    ($CANDS, %RESOLVED, %COUNT, $FUZZY) = (undef);
 });
 
 print "\n$pass passed, $fail failed\n";

@@ -302,9 +302,15 @@ def parse_feed(result):
             })
             continue
 
-        if isinstance(item_id, str) and item_id.startswith("lib:"):
+        # An owned album row. Since 0.56.59 it opens Material's own album page
+        # (`browselibrary items mode:tracks album_id:N`), so it carries no
+        # `lib:` item id; before, it was a `lib:<id>` row of ours.
+        lib_id = (item_id[4:] if isinstance(item_id, str) and item_id.startswith("lib:")
+                  else gp.get("album_id") if current in ("LIB_EXTRAS", "APPEARANCES")
+                  and go.get("cmd") == ["browselibrary", "items"] else None)
+        if lib_id:
             year, _t, sources = parse_line2(line2)
-            rec = {"title": line1, "year": year, "album_id": item_id[4:]}
+            rec = {"title": line1, "year": year, "album_id": str(lib_id)}
             (out["appearances"] if current == "APPEARANCES" else out["lib_extras"]).append(rec)
             continue
 

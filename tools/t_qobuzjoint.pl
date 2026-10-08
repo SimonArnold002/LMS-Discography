@@ -684,5 +684,126 @@ ok(scalar($calls == 1 && !@TIMERS && !grep { $_ eq $JOINT } @FETCHED),
     %SARTISTS = (); %SALBUMS = ();
 }
 
+# ---------------------------------------------------------------------------
+# 13. A BAND NAMED AFTER ITS LEADER (2026-10-08; Simon, on The Oscar Peterson
+#     Trio: "Qobuz only credits Oscar Peterson and not the trio"). Live on
+#     0.56.59: the Trio's page had 78 release tiles, ONE with Qobuz. MusicBrainz
+#     marks Oscar the `eponymous` member (API::peekEponymous); his albums are
+#     fetched beside the band's to MATCH its releases, marked joint, credited to
+#     the band - and they are the pool when the band has no entity of its own.
+# ---------------------------------------------------------------------------
+{
+    my $TRIO  = 'The Oscar Peterson Trio';
+    my $spine = { 'night train' => 1, 'we get requests' => 1, 'stan getz and the oscar peterson trio' => 1 };
+    my $al = sub { +{ id => $_[0], title => $_[1], artist => { id => $_[2], name => $_[3] },
+                      artists => [ main_artist($_[2], $_[3]) ] } };
+    my $OSCAR = [ $al->('p1', 'Night Train', 500, 'Oscar Peterson'),
+                  $al->('p2', 'We Get Requests', 500, 'Oscar Peterson'),
+                  $al->('p3', 'Tristeza on Piano', 500, 'Oscar Peterson') ];
+    my $go = sub {
+        my (%o) = @_;
+        reset_all(); ($got, $calls) = (undef, 0);
+        %ARTISTS = (lc($TRIO) => $o{hits}, 'oscar peterson' => $o{leaderHits} // [ { id => 500, name => 'Oscar Peterson' } ]);
+        %ALBUMS  = (600 => [ $al->('s1', 'Stan Getz and The Oscar Peterson Trio', 600, $TRIO) ],
+                    700 => [ $al->('x1', 'Some Tribute', 700, 'Oscar Peterson Trio Tribute') ],
+                    500 => [ map { +{ %$_ } } @$OSCAR ]);
+        %HOLD = %{ $o{hold} || {} };
+        $S->can('_searchQobuz')->('client', $TRIO, 'Qobuz', sub { $calls++; $got = $_[0] },
+            exists $o{spine} ? $o{spine} : $spine, undef, 0, 0, $o{leaders});
+    };
+    # Strings sorted, not a sort block: this file's `my $b` shadows sort's $b.
+    my $desc = sub { join ' | ', sort map { ($_->{_candTitle} // '?') . '/' . ($_->{_candArtist} // '?') . ($_->{_joint} ? '/J' : '') }
+                                 @{ $got || [] } };
+
+    # a. The band HAS a Qobuz entity: its own album, and the leader's beside it.
+    $go->(hits => [ { id => 600, name => $TRIO } ], leaders => [ 'Oscar Peterson' ]);
+    ok(scalar($calls == 1 && $desc->() eq "Night Train/$TRIO/J | Stan Getz and The Oscar Peterson Trio/$TRIO | "
+              . "Tristeza on Piano/$TRIO/J | We Get Requests/$TRIO/J"),
+       '13a: band entity + leader: the leader\'s albums join, marked joint, credited to the band (' . $desc->() . ')');
+    ok(scalar((grep { $_ eq 'oscar peterson' } @SEARCHED) == 1 && (grep { $_ eq 500 } @FETCHED) == 1),
+       '13a: ... his name searched once (not among the band\'s hits), his albums fetched once');
+
+    # b. NO band entity (the field case): the leader's albums ARE the pool.
+    $go->(hits => [ { id => 700, name => 'Oscar Peterson Trio Tribute' } ], leaders => [ 'Oscar Peterson' ]);
+    ok(scalar($calls == 1 && $desc->() eq "Night Train/$TRIO/J | Tristeza on Piano/$TRIO/J | We Get Requests/$TRIO/J"),
+       '13b: no band entity: the leader\'s albums are the pool, all joint, credited to the band (' . $desc->() . ')');
+
+    # c. The band's hits hold ONLY the leader: the resolver may settle on him;
+    #    his catalogue is fetched ONCE all the same (five Qobuz pages for Oscar).
+    $go->(hits => [ { id => 500, name => 'Oscar Peterson' } ], leaders => [ 'Oscar Peterson' ]);
+    ok(scalar((grep { $_ eq 500 } @FETCHED) == 1), '13c: the leader is the only hit: fetched once, not twice');
+    ok(scalar($calls == 1 && (grep { ($_->{_albumid} // '') eq 'p1' } @{ $got || [] }) == 1),
+       '13c: ... and each album is in the pool once');
+    ok(scalar(!grep { $_ eq 'oscar peterson' } @SEARCHED), '13c: ... no separate search (he was among the hits)');
+
+    # d. Controls: no leaders -> exactly as before (no band entity -> unresolved).
+    $go->(hits => [ { id => 700, name => 'Oscar Peterson Trio Tribute' } ]);
+    ok(scalar($calls == 1 && !defined $got && !grep { $_ eq 500 } @FETCHED),
+       '13d: control: no leader given -> unresolved, nothing extra asked (unchanged)');
+    $go->(hits => [ { id => 600, name => $TRIO } ], leaders => [ $TRIO, 'the oscar peterson trio' ]);
+    ok(scalar((grep { $_ eq lc $TRIO } @SEARCHED) == 1 && $desc->() eq "Stan Getz and The Oscar Peterson Trio/$TRIO"),
+       '13d: a "leader" named as the band itself is ignored (no second search, no extra albums)');
+    $go->(hits => [ { id => 700, name => 'Oscar Peterson Trio Tribute' } ], leaders => [ $TRIO ]);
+    ok(scalar((grep { $_ eq lc $TRIO } @SEARCHED) == 1 && !defined $got),
+       '13d: ... and when the band is not among its own hits, its name is not searched a second time');
+
+    # e. The leader has no entity of that name here: unresolved, as before.
+    $go->(hits => [ { id => 700, name => 'Oscar Peterson Trio Tribute' } ], leaders => [ 'Oscar Peterson' ],
+          leaderHits => [ { id => 501, name => 'Oscar Peterson Jr.' } ]);
+    ok(scalar($calls == 1 && !defined $got && !grep { $_ eq 501 } @FETCHED),
+       '13e: no service artist named EXACTLY as the leader: nothing fetched, the band unresolved as before');
+
+    # f. With no spine (a detail page before its list is cached): the album
+    #    search fallback runs as before, the leader does not stand in for it.
+    $go->(hits => [ { id => 700, name => 'Oscar Peterson Trio Tribute' } ], leaders => [ 'Oscar Peterson' ], spine => {});
+    ok(scalar((grep { $_ eq lc $TRIO } @SEARCHED) >= 2), '13f: no spine: the album-search fallback runs (unchanged)');
+
+    # g. The leader's albums not back in time: the band answers without them.
+    $go->(hits => [ { id => 600, name => $TRIO } ], leaders => [ 'Oscar Peterson' ], hold => { 500 => 1 });
+    ok(scalar($calls == 0 && @TIMERS), '13g: leader still out: the band waits (JOINT_WAIT armed)');
+    fire();
+    ok(scalar($calls == 1 && $desc->() eq "Stan Getz and The Oscar Peterson Trio/$TRIO"),
+       '13g: ... and on the deadline answers with its own albums only');
+    $_->[0]->({ albums => { items => [ map { +{ %$_ } } @$OSCAR ] } }) for splice @HELD;
+    ok(scalar($calls == 1), '13g: ... a late leader answer changes nothing');
+    %HOLD = ();
+}
+
+# 13h. EVERY SERVICE, through getCandidates (the leaders reach each adapter, in
+#      the spelling it takes): no band entity anywhere, the leader on each.
+{
+    no warnings qw(redefine once);
+    local *Plugins::TIDAL::Plugin::getAlbum  = sub { };
+    local *Plugins::Deezer::Plugin::getAlbum = sub { };
+    local *Plugins::Spotty::OPML::album      = sub { };
+    my $TRIO  = 'The Oscar Peterson Trio';
+    my $spine = { 'night train' => 1, 'we get requests' => 1 };
+    my @OP = map { +{ id => "o$_->[0]", title => $_->[1], name => $_->[1] } } [1, 'Night Train'], [2, 'We Get Requests'];
+    reset_all(); @RAWQ = ();
+    my $tribute = [ { id => 'tr1', name => 'Oscar Peterson Trio Tribute' } ];
+    my $op      = [ { id => 'op1', name => 'Oscar Peterson' } ];
+    %ARTISTS  = (lc($TRIO) => $tribute, 'oscar peterson' => $op);
+    %ALBUMS   = (tr1 => [ { id => 'z1', title => 'Some Tribute', name => 'Some Tribute' } ], op1 => [ @OP ]);
+    %SARTISTS = map { ($_ => { lc($TRIO) => $tribute, 'oscar peterson' => $op }) } qw(Tidal Deezer Spotify);
+    %SALBUMS  = map { ($_ => { tr1 => [ { id => 'z1', title => 'Some Tribute', name => 'Some Tribute' } ], op1 => [ @OP ] }) } qw(Tidal Deezer Spotify);
+    my $pool;
+    $S->getCandidates('client', $TRIO, 1, sub { $pool = shift },
+        { mbid => 'mb-trio', spine => $spine, leaders => [ 'Oscar Peterson' ] });
+    for my $svc (qw(Qobuz Tidal Deezer Spotify)) {
+        my @p = @{ ($pool || {})->{$svc} || [] };
+        ok(scalar(join(',', sort map { $_->{_candTitle} // '' } @p) eq 'Night Train,We Get Requests'
+                  && !grep { !$_->{_joint} } @p),
+           "13h: $svc: no band entity, the leader's albums are the pool, all joint ("
+           . join(',', map { $_->{_candTitle} // '?' } @p) . ')');
+    }
+    reset_all(); @RAWQ = (); $pool = undef;
+    %ARTISTS  = (lc($TRIO) => $tribute, 'oscar peterson' => $op);
+    %ALBUMS   = (tr1 => [ { id => 'z1', title => 'Some Tribute', name => 'Some Tribute' } ], op1 => [ @OP ]);
+    %SARTISTS = map { ($_ => { lc($TRIO) => $tribute, 'oscar peterson' => $op }) } qw(Tidal Deezer Spotify);
+    $S->getCandidates('client', $TRIO, 1, sub { $pool = shift }, { mbid => 'mb-trio', spine => $spine });
+    ok(scalar(!grep { /oscar peterson$/ } @SEARCHED), '13h: control: no leaders in the options -> his name is never asked');
+    %SARTISTS = (); %SALBUMS = ();
+}
+
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

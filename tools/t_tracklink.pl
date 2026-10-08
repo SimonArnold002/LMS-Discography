@@ -149,15 +149,17 @@ my $rgTitle = 'Voices Green and Purple / Trip to New Orleans';
     ok(scalar($calls == 1), '... and IS fetched (once) for an unmatched release');
 }
 
-# (e) Cap at MAX_PER_SVC.
+# (e) Cap at MAX_PER_SVC (20 since 0.56.51; was 4). Read from the module, and
+# more tracks than the cap offered, so the cap is what stops the list.
 {
+    my $cap  = Plugins::Discography::Sources::MAX_PER_SVC();
     my @many = map { { _candTitle => 'Voices Green and Purple', _track => 1,
-                       _trackid => $_, play => "db:track.id=$_", _svc => 'Local' } } 1 .. 20;
+                       _trackid => $_, play => "db:track.id=$_", _svc => 'Local' } } 1 .. $cap + 10;
     my $sec = $SRC->matchesFor(
         {}, 'The Bees', $rgTitle, undef, 'rg-1', {}, undef,
         { sources => \@SOURCES, rgType => 'Single', localTracks => \@many });
-    ok(scalar(@{ $sec->[0]{items} } <= 8),
-       'track matches are capped (MAX_PER_SVC): ' . scalar(@{ $sec->[0]{items} }));
+    ok(scalar(@{ $sec->[0]{items} } == $cap),
+       "track matches are capped at MAX_PER_SVC ($cap): " . scalar(@{ $sec->[0]{items} }));
 }
 
 # ---------------------------------------------------------------------------

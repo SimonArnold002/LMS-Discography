@@ -213,6 +213,12 @@ sub initPlugin {
     } or $log->warn("could not register the archive cover handler: $@");
     Plugins::Discography::Covers::init();
 
+    # The track match's library pass (0.56.62): the tracklists an untagged
+    # owned album could be matched by are fetched off the page, after startup,
+    # after every rescan and daily, and kept, so a page only reads them.
+    require Plugins::Discography::TrackWarm;
+    Plugins::Discography::TrackWarm::init();
+
     # HTTP-triggerable cache clear — bust an artist's cached MusicBrainz data
     # (resolution mbid + '' miss sentinel, release groups, bootleg map, band
     # members, bio, streaming candidates) WITHOUT the Material UI. This is the

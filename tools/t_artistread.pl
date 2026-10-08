@@ -146,8 +146,15 @@ sub slurp {
 # are "Kenshi Yonezu" (locale en, PRIMARY), "米津玄師" (ja, the name itself) and a
 # Korean search hint. Captured 2026-10-01.
 my $KY  = '09d4a85c-4916-4b4e-bc96-c4cfcf371046';
+# Two leader-named GROUPS, captured from the rig's MusicBrainz mirror 2026-10-08
+# (the same reply MusicBrainz serves): The Oscar Peterson Trio, its 17 member
+# links all backward, Oscar Peterson's carrying `eponymous`; Bob Marley & The
+# Wailers, whose leader is linked TWICE with `eponymous`.
+my $OPT = 'b083ec9b-27e0-4fda-801d-cb40861a0578';
+my $BMW = 'c296e10c-110a-4103-9e77-47bfebb7fb2e';
 my %RAW = map { $_->[0] => slurp("mb_artist_$_->[1]_aliases_artistrels_releasegroups.json") }
-          ([ $ENO, 'eno' ], [ $RH, 'radiohead' ], [ $LH, 'ladyhawke' ], [ $KY, 'yonezu' ]);
+          ([ $ENO, 'eno' ], [ $RH, 'radiohead' ], [ $LH, 'ladyhawke' ], [ $KY, 'yonezu' ],
+           [ $OPT, 'oscarpetersontrio' ], [ $BMW, 'bobmarleywailers' ]);
 my %BROWSE = ($LH => slurp('mb_rg_browse_ladyhawke.json'));
 our (%NOLIST, %READFAIL, %FAKEREAD);
 # Decoded afresh for every response, as from_json would: the code must never be
@@ -313,8 +320,9 @@ ok(scalar(@URLS) == 0 && ref $nA eq 'ARRAY' && !@$nA && $nB == 1,
    '6: no mbid: no request, and both callers are answered');
 $CACHE{"dsc:bands:v2:$ENO"}      = [];
 $CACHE{"dsc:collabcand:v1:$ENO"} = [];
+$CACHE{"dsc:eponym:v1:$ENO"}     = [];   # written by the same read since 2026-10-08 (section 17)
 $API->warmBandMembers($ENO, sub {});
-ok(scalar(@URLS) == 0, '6: bands + candidates cached: the band lookup is a cache hit');
+ok(scalar(@URLS) == 0, '6: bands + candidates (+ eponymous member) cached: the band lookup is a cache hit');
 delete $CACHE{"dsc:collabcand:v1:$ENO"};
 $API->warmBandMembers($ENO, sub {});
 ok(scalar(@URLS) == 1, '6: a band list alone still triggers a read');
@@ -556,6 +564,53 @@ $CACHE{ $kyKey } = [ 'Kenshi Yonezu' ];
 ok(scalar(join('|', @{ $API->peekArtistAliases($KY) || [] }) eq 'Kenshi Yonezu'
           && !defined $API->peekArtistEnglishName($KY)),
    '16: a plain alias list (the old shape) still answers its aliases, and no English name');
+
+# ---------------------------------------------------------------------------
+# 17. THE MEMBER A BAND IS NAMED AFTER (2026-10-08, The Oscar Peterson Trio):
+#     a BACKWARD "member of band" link carrying `eponymous`, from the read every
+#     page already makes (no request of its own), one entry per person.
+# ---------------------------------------------------------------------------
+reset_all();
+$API->warmBandMembers($OPT, sub {});
+my $ep = $API->peekEponymous($OPT);
+ok(scalar(@URLS) == 1 && ref $ep eq 'ARRAY' && $names->($ep) eq 'Oscar Peterson'
+   && ($ep->[0]{mbid} // '') eq 'ed801bdd-f057-41c0-94fb-76cb5676cd59',
+   '17: the Trio: Oscar Peterson is its eponymous member, from the one read (' . $names->($ep) . ')');
+ok(scalar(ref $API->peekBands($OPT) eq 'ARRAY' && !@{ $API->peekBands($OPT) }),
+   '17: ... and its 17 backward member links are still NOT bands it is in');
+ok(scalar(($API->peekEponymous(uc $OPT) || [])->[0]) ? 1 : 0, '17: ... read whatever case the mbid comes in');
+
+reset_all();
+$API->warmBandMembers($BMW, sub {});
+ok($names->($API->peekEponymous($BMW)) eq 'Bob Marley',
+   '17: Bob Marley & The Wailers: the leader linked twice is listed once');
+
+reset_all();
+$API->warmBandMembers($RH, sub {});
+ok(scalar(ref $API->peekEponymous($RH) eq 'ARRAY' && !@{ $API->peekEponymous($RH) }),
+   '17: Radiohead: 19 member links, none eponymous -> read, and none');
+reset_all();
+$API->warmBandMembers($ENO, sub {});
+ok(scalar(ref $API->peekEponymous($ENO) eq 'ARRAY' && !@{ $API->peekEponymous($ENO) }),
+   '17: Brian Eno (a person, forward links only) -> none');
+ok(!defined $API->peekEponymous($LH), '17: an artist never read -> undef (not "none")');
+
+# A band list and collaborations cached WITHOUT the eponymous entry (written
+# before it existed) must not keep it from ever being read (_bandsKey's v2 note).
+reset_all();
+$API->warmBandMembers($OPT, sub {});
+delete $CACHE{"dsc:eponym:v1:$OPT"};
+@URLS = ();
+$API->warmBandMembers($OPT, sub {});
+ok(scalar(@URLS) == 1 && $names->($API->peekEponymous($OPT)) eq 'Oscar Peterson',
+   '17: bands cached but no eponymous entry -> read again, and it is filled');
+@URLS = ();
+$API->warmBandMembers($OPT, sub {});
+ok(scalar(@URLS) == 0, '17: ... and with all three cached, nothing is asked');
+
+# Refresh forgets it with the bands.
+$API->clearArtistCache(mbid => $OPT);
+ok(!defined $API->peekEponymous($OPT), '17: Refresh (clearArtistCache) forgets the eponymous member');
 
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

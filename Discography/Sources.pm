@@ -25,6 +25,7 @@ use Slim::Utils::Prefs;
 use Slim::Utils::PluginManager;
 use Slim::Utils::Timers;
 use Slim::Control::Request;
+use Time::HiRes ();
 
 # The FUNCTION form (0.56.16): LMS's logger() takes the category as its first
 # argument, so `Slim::Utils::Log->logger(...)` filed this file's lines under
@@ -34,7 +35,7 @@ my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.49';
+use constant CACHE_VERSION => '0.56.65';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
@@ -48,7 +49,11 @@ use constant SVC_TIMEOUT    => 20;          # per-service fetch watchdog (s).
                                             # album list (Tidal: 3 paginated
                                             # bucket pulls). The old 8s was
                                             # sized for a single 50-item search.
-use constant MAX_PER_SVC    => 4;           # editions shown per service
+# Copies kept per service per release (0.56.51: was 4, which cut real editions
+# and, as a copy past the cap counts as unclaimed, sent them to "Also on
+# streaming"). A bound against a generic title pulling in a long tail, not a
+# display choice: every edition a service lists for a release fits under it.
+use constant MAX_PER_SVC    => 20;
 use constant POOL_LOG_MAX   => 25;          # log a pool this small IN FULL
 
 # PERFORMANCE roles — the artist must PERFORM (solo, primary, band member or
@@ -414,10 +419,11 @@ sub _jointRows {
 
 # (B) on its own, for the identity-first path (review 2026-09-19): when the
 # library's MusicBrainz tag has already said WHO the artist is, the name may
-# only ADD joint credits naming them — never another same-name contributor,
-# which the tag has implicitly ruled out. Without this the tag path dropped
-# every collaboration the name ladder used to add (live: Holly Golightly lost
-# the two albums owned under "Holly Golightly and The Brokeoffs").
+# only ADD joint credits naming them, and (since 2026-10-07) the artist's own
+# UNTAGGED exact-name entries (_untaggedNamesakes) — never a same-name
+# contributor TAGGED with another id, which the tag rules out. Without this the
+# tag path dropped every collaboration the name ladder used to add (live: Holly
+# Golightly lost the two albums owned under "Holly Golightly and The Brokeoffs").
 sub _jointArtistIds {
     my ($artist, $exclude) = @_;
     return () unless defined $artist && length $artist;
@@ -485,8 +491,10 @@ sub localAlbums {
     # UNLESS it performs on no album at all and the caller opted in to a
     # fallback (see the end of this sub).
     if (!@ids && $mbid) {
-        my @byMbid = grep { !$opt->{exclude} || $_ ne $opt->{exclude} }
-                     localArtistIdsByMbid($mbid);
+        # The tag's contributors + the artist's own untagged entry (2026-10-07,
+        # localArtistIdsByIdentity: a joint credit carrying the tag must not
+        # stand in for the artist's own albums).
+        my @byMbid = localArtistIdsByIdentity($mbid, $artist, $opt->{exclude});
         if (@byMbid) {
             my %have = map { $_ => 1 } @byMbid;
             my @joint = grep { !$have{$_}++ } _jointArtistIds($artist, $opt->{exclude});
@@ -534,7 +542,7 @@ sub localAlbums {
     # album must appear under EVERY part of the joint credit — that is what
     # makes the result the duo's catalogue rather than the union of two solo
     # discographies. Without it the sets are merged, deduped by album id.
-    my (@rows, %seenAlbum, %hits);
+    my (@rows, %seenAlbum, %hits, %listedUnder);
     for my $id (@ids) {
         my $r = eval {
             Slim::Control::Request::executeRequest(undef,
@@ -544,6 +552,10 @@ sub localAlbums {
         next unless $r;
         for my $e (@{ $r->getResult('albums_loop') || [] }) {
             next unless $e->{id};
+            # The contributor that LISTED this album (the first, when a name
+            # resolved to duplicates): the id "Filter album tracks" narrows by,
+            # the same id and roles that found it here.
+            $listedUnder{ $e->{id} } //= $id;
             $hits{ $e->{id} }++;
             push @rows, $e unless $seenAlbum{ $e->{id} }++;
         }
@@ -626,9 +638,17 @@ sub localAlbums {
             # detail feed's play-string rows (verified in 9.0 source).
             play        => 'db:album.id=' . $id,
             url         => \&_localAlbumTracks,
-            passthrough => [{ album_id => $id }],
+            # The library artist this album was listed under (_listedUnder, below)
+            # rides the passthrough too, for the drill-in that is not Material's
+            # (_localAlbumTracks).
+            passthrough => [{ album_id => $id,
+                              (($intersect || !$listedUnder{$id}) ? () : (artist_id => $listedUnder{$id})) }],
             _svc        => 'Local',
             _albumid    => $id,
+            # The contributor that listed this album, for "Filter album tracks"
+            # (libraryAlbumActions). None for a joint credit matched by
+            # intersection: those albums are the duo's own, every track is theirs.
+            (($intersect || !$listedUnder{$id}) ? () : (_listedUnder => $listedUnder{$id})),
             _cover      => $img,
             _year       => $e->{year},
             _mbid       => ($mbid ? lc $mbid : undef),
@@ -667,8 +687,8 @@ sub localTracks {
     my @ids = $artistId ? ($artistId) : ();
     # The tag, when a fallback hands one over (localAlbums' identity-first).
     if (!$artistId && $opt->{mbid}) {
-        @ids = grep { !$opt->{exclude} || $_ ne $opt->{exclude} }
-               localArtistIdsByMbid($opt->{mbid});
+        # The tag's contributors + the artist's own untagged entry, as localAlbums.
+        @ids = localArtistIdsByIdentity($opt->{mbid}, $artist, $opt->{exclude});
         # Joint credits naming the artist, as localAlbums' tag path adds them.
         if (@ids) {
             my %have = map { $_ => 1 } @ids;
@@ -781,14 +801,106 @@ sub localArtistIdsByMbid {
     return map { $_->{artist_id} } @{ localArtistsByMbid($mbid) };
 }
 
+# A contributor's MusicBrainz artist tag: '' when it carries none, undef when the
+# schema cannot be read (callers treat both as untagged, the name ladder's view).
+sub _contributorTag {
+    my ($id) = @_;
+    return undef unless defined $id && $id =~ /^\d+$/;
+    return eval {
+        require Slim::Schema;
+        my $c = Slim::Schema->find('Contributor', $id);
+        $c ? ($c->musicbrainz_id // '') : undef;
+    };
+}
+
+# THE ARTIST'S OWN UNTAGGED ENTRY STANDS BESIDE THE TAG (field, Simon 2026-10-07).
+# LMS gives a joint credit's contributor the FIRST id of its files'
+# MUSICBRAINZ_ARTISTID list, so "Suzanne Vega & Joe Jackson", off one tagged
+# compilation, carries Suzanne Vega's id, while her own entry, off untagged
+# rips, carries none. The identity read then answered with the duo ALONE, the
+# name ladder never ran, and her own albums read Qobuz on every page reached
+# without her library id: a Similar artists row (name only), a band row, an
+# mbid entry. Measured live on 0.56.58: Suzanne Vega (3 owned albums), Julien
+# Baker (2), The Cinematic Orchestra (4); the search's owned rows carry no tag
+# for all three (`_ident_mbid` none), the by-id pages read Local. The same shape
+# is the review's "tagged contributor that owns nothing" (CLAUDE.md §B).
+#
+# An UNTAGGED contributor of the artist's own exact name cannot contradict the
+# tag, and the name ladder takes it anyway, so it counts beside the tagged ones.
+# A same-name contributor tagged with ANOTHER id stays out: that is the act the
+# tag rules out (0.51.3). Spelling ladder only (no term probes), as the joint
+# lookup beside it.
+sub _untaggedNamesakes {
+    my ($name, $exclude) = @_;
+    return () unless defined $name && length $name;
+    my $an = _normKey($name);
+    return () unless length $an;
+    my %seen;
+    return grep { !$seen{$_}++ && !length(_contributorTag($_) // '') }
+           map  { $_->{artist_id} }
+           grep { $_->{artist_id} && (!$exclude || $_->{artist_id} ne $exclude)
+                  && _normKey($_->{name} // '') eq $an }
+           @{ _localArtistRows($name, { no_probe => 1 }) };
+}
+
+# The library entries that ARE this MusicBrainz artist: every contributor carrying
+# the tag, then the artist's own untagged exact-name entries (above). EMPTY when
+# nothing carries the tag, so an untagged library takes the name ladder as before.
+sub localArtistIdsByIdentity {
+    my ($mbid, $name, $exclude) = @_;
+    my @ids = grep { !$exclude || $_ ne $exclude } localArtistIdsByMbid($mbid);
+    return () unless @ids;
+    my %have = map { $_ => 1 } @ids;
+    return (@ids, grep { !$have{$_}++ } _untaggedNamesakes($name, $exclude));
+}
+
+# THE LIBRARY ARTIST A NAME-ONLY PAGE MEANS (2026-10-08; Simon: "lets look to
+# fix that so it works for all artists correctly"). A page opened with a name and
+# nothing else - a Similar artists row - resolved that name on MusicBrainz alone,
+# and for a short name MB's search ranks a famous act above every act really
+# called it: "Bob" opened Bob Dylan, "Black" Black Sabbath, "Stan" Stan Getz, "The
+# Bad Seeds" Nick Cave & the Bad Seeds (measured, 6 of the 94 library artists with
+# a joint credit lost owned albums that way). When the library holds an artist of
+# EXACTLY that name (_normKey), the page is that library artist's, as its own
+# library page and the search's Top Result already open it: by its id, so its tag
+# (or its own albums, C2) says which act it is. Several entries of the name: the
+# one holding the most albums (the search's owner rule). None holding an album
+# (a composer-only credit): undef, and the name is resolved as before.
+sub libraryArtistIdByName {
+    my ($name) = @_;
+    return undef unless defined $name && length $name;
+    my $want = _normKey($name);
+    return undef unless length $want;
+    # The spelling ladder without its term probes: the name is a canonical one,
+    # not a user's typing (the probes' reason, _localArtistRows).
+    my $rows = _localArtistRows($name, { no_probe => 1 });
+    my %seen;
+    my @ids = grep { !$seen{$_}++ }
+              map  { $_->{artist_id} }
+              grep { $_->{artist_id} && _normKey($_->{name} // '') eq $want } @{ $rows || [] };
+    return undef unless @ids;
+    my %n = map { ($_ => _albumCountFor($_)) } @ids;
+    my ($best) = sort { $n{$b} <=> $n{$a} || $a <=> $b } @ids;
+    return $n{$best} > 0 ? $best : undef;
+}
+
 # Resolve a MusicBrainz band to a library Contributor id: MB id (exact) first,
 # then a normalised name match (same discipline as localAlbums' name path — a
 # fuzzy `artists search:` must not adopt the wrong contributor).
 sub _bandContributorId {
     my ($mbid, $name) = @_;
     if ($mbid) {
-        my ($id) = localArtistIdsByMbid($mbid);
-        return $id if $id;
+        # Every entry that is this band: the tag's, plus its own untagged one
+        # (localArtistIdsByIdentity, 2026-10-07). With several, open the one
+        # holding the albums, as the search's tag attach does (API): the first by
+        # DB order could be a joint credit carrying the tag, or an empty duplicate.
+        my @ids = localArtistIdsByIdentity($mbid, $name);
+        return $ids[0] if @ids == 1;
+        if (@ids) {
+            my %n = map { $ids[$_] => _albumCountFor($ids[$_]) } 0 .. $#ids;
+            my ($best) = map { $ids[$_] } sort { $n{ $ids[$b] } <=> $n{ $ids[$a] } || $a <=> $b } 0 .. $#ids;
+            return $best;
+        }
     }
     return undef unless defined $name && length $name;
     my $an  = _norm($name);
@@ -803,16 +915,193 @@ sub _bandContributorId {
     return undef;
 }
 
-sub _localAlbumTracks {
-    my ($client, $cb, $args, $pass) = @_;
+# Material's "Filter album tracks" (its settings, Browse): the SERVER pref
+# `noArtistFilter` of plugin.material-skin - 0 is "Only display tracks from
+# current artist", 1 "Display all tracks of album" (Material's own default). Its
+# client adds artist_id to the tracks request of an album opened from a library
+# artist page; our page is a plugin feed, where it cannot, so we read the same
+# pref and apply it ourselves (Simon, 2026-10-07). Unset - Material absent, or
+# never saved - is Material's default: every track.
+sub _filterAlbumTracks {
+    my $v = eval { preferences('plugin.material-skin')->get('noArtistFilter') };
+    return (defined $v && !$v) ? 1 : 0;
+}
+
+# The artist line under each track of an album, as Material's own album page
+# draws it (browse-resp.js, "add artist to subtitle"): the track's credit is
+# trackartist, else artist, else albumartist; the lines show on EVERY track or on
+# none - when the tracks' credits differ from each other, or from the album's
+# artist. A single-artist album stays bare, a compilation names each track's
+# artist, a joint album names only what differs. Returns one entry per row,
+# undef = no line.
+sub _trackArtistLines {
+    my ($rows) = @_;
+    my $key = sub { my $s = lc($_[0] // ''); $s =~ s/\s+/ /g; $s =~ s/^ | $//g; $s };
+    my @who = map {
+        my ($w) = grep { defined && length } @$_{qw(trackartist artist albumartist)};
+        $w;
+    } @$rows;
+    my ($albumArtist) = grep { defined && length } map { $_->{albumartist} } @$rows;
+    my %distinct = map { $key->($_) => 1 } grep { defined } @who;
+    my $show = keys %distinct > 1
+            || (defined $albumArtist
+                && grep { defined && $key->($_) ne $key->($albumArtist) } @who);
+    return [ map { $show ? $_ : undef } @who ];
+}
+
+# The params that narrow an owned album's tracks to one artist, exactly what
+# Material adds for an album opened from a library artist page when "Filter
+# album tracks" is on (standarditems.js addParentParams: artist_id, and role_id
+# unless the server's noRoleFilter is set). LMS's tracks query honours both with
+# tags requested (measured 2026-10-07: role_id COMPOSER -> 0 tracks, the
+# performance roles -> the artist's own). PERFORMANCE_ROLES because that is the
+# role set localAlbums LISTED the album under. None when the setting is off, or
+# no artist is known (a works page, a joint album): every track.
+sub _albumNarrowing {
+    my ($artistId) = @_;
+    return () unless defined $artistId && $artistId =~ /^\d+$/ && _filterAlbumTracks();
+    # LMS's own server pref (Slim/Menu/BrowseLibrary.pm reads it too); 0 on Simon's.
+    my $noRole = eval { preferences('server')->get('noRoleFilter') };
+    return (artist_id => $artistId, ($noRole ? () : (role_id => PERFORMANCE_ROLES)));
+}
+
+# The actions of an owned library album, in the shape LMS's own BrowseLibrary
+# gives an album row (Slim/Menu/BrowseLibrary.pm `_albums`: items = browselibrary
+# mode:tracks, play/add/insert = playlistcontrol). Used instead of a hand-built
+# track list so Material draws the album page it draws for any library album
+# (Simon, 2026-10-07: *"We need to copy exactly how LMS does this so its not
+# different from how it normally displays this data"*):
+#   - items: Material rewrites `browselibrary items mode:tracks` into its own
+#     `tracks` request with the full tag set (browse-functions.js, "Convert local
+#     browse commands into their non-SlimBrowse equivalents"), so the page has
+#     track numbers, durations, artist lines, disc headers and the track menu.
+#   - play/add/insert: playlistcontrol on the album, so "Play release starting at
+#     track" (the clicked row's own play command + play_index) plays the album
+#     from that track. material_skin_artist_id is what Material adds so the
+#     artist's tracks are highlighted when every track is shown.
+#   - info + allAvailableActionsDefined, as BrowseLibrary has them. Not cosmetic
+#     (field, Simon 2026-10-07, 0.56.57: under My Apps the first tap drew an EMPTY
+#     page and Back showed the tracks; console `Cannot read properties of undefined
+#     (reading 'indexOf')` in browseHandleListResponse). Under Apps, Material ids a
+#     row `fixId(params.item_id)` = "2", no colon; a `tracks album_id:` page then
+#     runs `curitem.id.split(':')[1].indexOf(...)`, throws after drawing, and its
+#     catch draws an empty page over the finished one. With every action defined,
+#     XMLBrowser sends no positional `params` (its `allAvailableActionsDefined`
+#     gate) and the row is id'd from its favourites URL instead ("radio:db:album.id=N",
+#     playable rows always carry one); outside Apps "<parent>.<n>". Reproduced and
+#     cleared in Material 6.4.12's own code (scratchpad mathar/, jsc). `info` is
+#     XMLBrowser's `more`: LMS's own album context menu, as for a library album.
+# $artistId: the contributor that listed the album (localAlbums' _listedUnder).
+sub libraryAlbumActions {
+    my ($albumId, $artistId) = @_;
+    return undef unless defined $albumId && $albumId =~ /^\d+$/;
+    my %p  = (album_id => $albumId, _albumNarrowing($artistId));
+    my %go = (mode => 'tracks', %p,
+              (defined $artistId && $artistId =~ /^\d+$/ ? (material_skin_artist_id => $artistId) : ()));
+    return {
+        allAvailableActionsDefined => 1,
+        info  => { command => ['albuminfo', 'items'], fixedParams => { %p } },
+        items => { command => ['browselibrary', 'items'], fixedParams => \%go },
+        map { my $cmd = $_;
+              ($cmd => { command => ['playlistcontrol'],
+                         fixedParams => { cmd => ($cmd eq 'play' ? 'load' : $cmd), %p } }) }
+            qw(play add insert),
+    };
+}
+
+# An album holding a classical work, opened on the work's page (plan §10.5
+# item 4): the libraryAlbumActions shape, with only the work's tracks.
+#   - items: `browselibrary items mode:tracks album_id track_id:<list>
+#     work_id:-1`. Material turns it into its own `tracks` request keeping the
+#     params (browseBuildCommand); LMS's tracks query narrows by a track id
+#     list (Queries.pm `tracks.id IN`; measured on the rig 2026-10-08, the 3
+#     tracks asked of the 21 on the album) and work_id:-1 is "any work", the
+#     same tracks. The work_id param is what makes Material draw it as LMS's
+#     own Works view draws a work's album (browse-resp.js `isWork`: no track
+#     numbers).
+#   - play/add/insert: playlistcontrol on the same ids, in the album's order
+#     (Classical::albumsFor sorts them by disc and track number, as the page's
+#     sort:tracknum does), so "Play release starting at track" (the row's play
+#     + play_index) starts on the track tapped. work_id:-1 as Material sends
+#     for a work's tracks: LMS marks them added from a work, and the track id
+#     list is what it plays (Commands.pm playlistcontrol: work_id -1 falls to
+#     the track_id branch).
+#   - no artist narrowing: a work's album shows the work, whoever plays it.
+# Undef without an album id or tracks (the caller keeps its own actions).
+sub libraryWorkActions {
+    my ($albumId, $trackIds) = @_;
+    return undef unless defined $albumId && $albumId =~ /^\d+$/;
+    my @t = grep { defined && /^\d+$/ } @{ $trackIds || [] };
+    return undef unless @t;
+    my %p = (track_id => join(',', @t), work_id => -1);
+    return {
+        allAvailableActionsDefined => 1,
+        info  => { command => ['albuminfo', 'items'], fixedParams => { album_id => $albumId } },
+        items => { command => ['browselibrary', 'items'],
+                   fixedParams => { mode => 'tracks', album_id => $albumId, %p } },
+        map { my $cmd = $_;
+              ($cmd => { command => ['playlistcontrol'],
+                         fixedParams => { cmd => ($cmd eq 'play' ? 'load' : $cmd), %p } }) }
+            qw(play add insert),
+    };
+}
+
+# An owned album's playable tracks, narrowed by LMS when asked (see
+# _albumNarrowing), or to a work's tracks ($trackIds), with the artist,
+# credits and url.
+sub _albumTrackRows {
+    my ($albumId, $artistId, $narrow, $trackIds) = @_;
+    my @t = grep { defined && /^\d+$/ } @{ $trackIds || [] };
     my $req = eval {
         Slim::Control::Request::executeRequest(undef,
-            ['titles', 0, 999, 'album_id:' . $pass->{album_id}, 'sort:tracknum', 'tags:u']);
+            ['titles', 0, 999, 'album_id:' . $albumId,
+             (@t ? ('track_id:' . join(',', @t)) : ()),
+             ($narrow ? _albumNarrowingParams($artistId) : ()),
+             'sort:tracknum', 'tags:uaA']);
     };
+    return [ grep { $_->{url} } @{ ($req && $req->getResult('titles_loop')) || [] } ];
+}
+sub _albumNarrowingParams {
+    my %n = _albumNarrowing($_[0]);
+    return map { "$_:$n{$_}" } sort keys %n;
+}
+
+# A library album's tracks as a plain feed: the drill-in for a client that is not
+# Material (no native album page), for a legacy positional walk, and for the
+# works page's `wka:` rows. $pass: album_id, and artist_id (the contributor that
+# listed it, stamped by localAlbums). Under "Filter album tracks" LMS narrows to
+# that artist, as Material does; an empty narrowing shows the whole album rather
+# than nothing. Each track names its artist where the credits differ, as Material
+# draws them.
+sub _localAlbumTracks {
+    my ($client, $cb, $args, $pass) = @_;
+    # A work's tracks on the album (the works page, `track_ids`): those alone,
+    # never the artist narrowing; none left (a rescan renumbered them) shows
+    # the whole album, as an empty narrowing does.
+    if (ref $pass->{track_ids} eq 'ARRAY' && @{ $pass->{track_ids} }) {
+        my $rows = _albumTrackRows($pass->{album_id}, undef, 0, $pass->{track_ids});
+        $rows = _albumTrackRows($pass->{album_id}) unless @$rows;
+        return _trackFeed($cb, $rows);
+    }
+    my $artistId = $pass->{artist_id};
+    my $narrow   = scalar(my @n = _albumNarrowing($artistId));
+    my $rows     = _albumTrackRows($pass->{album_id}, $artistId, $narrow);
+    $rows = _albumTrackRows($pass->{album_id}) if $narrow && !@$rows;
+    _trackFeed($cb, $rows);
+}
+
+# The rows of _localAlbumTracks as a feed: each track playable, with its
+# artist where the credits differ (Material's rule, _trackArtistLines).
+sub _trackFeed {
+    my ($cb, $rows) = @_;
+    my @rows = @$rows;
+
+    my $lines = _trackArtistLines(\@rows);
     my @items;
-    for my $e (@{ ($req && $req->getResult('titles_loop')) || [] }) {
-        next unless $e->{url};
-        push @items, { name => $e->{title} // '', type => 'audio', url => $e->{url}, play => $e->{url} };
+    for my $i (0 .. $#rows) {
+        my $e = $rows[$i];
+        push @items, { name => $e->{title} // '', type => 'audio', url => $e->{url}, play => $e->{url},
+                       (defined $lines->[$i] ? (line2 => $lines->[$i]) : ()) };
     }
     $cb->({ items => \@items });
 }
@@ -991,6 +1280,12 @@ sub getCandidates {
     # reached Deezer, which takes bytes, as characters.
     my @aChars = map { my $c = $_; utf8::decode($c) unless utf8::is_utf8($c); $c } @{ $aliases || [] };
     my @aBytes = map { my $b = $_; utf8::encode($b) if utf8::is_utf8($b); $b } @{ $aliases || [] };
+    # leaders => the members a band is named after (Browse::_poolLeaders): their
+    # albums are fetched beside the band's, to match its own releases
+    # (_resolveWithJoints). Both spellings, as the aliases.
+    my $leaders = ref $opt->{leaders} eq 'ARRAY' ? $opt->{leaders} : [];
+    my @lChars = map { my $c = $_; utf8::decode($c) unless utf8::is_utf8($c); $c } @$leaders;
+    my @lBytes = map { my $b = $_; utf8::encode($b) if utf8::is_utf8($b); $b } @$leaders;
 
     my %out;
     my $pending = scalar @adapters;
@@ -1020,7 +1315,8 @@ sub getCandidates {
         # would have from a fetch of its own.
         my $flight = $force ? 0 : _candFlight();
         my $fkey = join("\x1f", $key, $svcName, $strict,
-                        (ref $spine eq 'HASH' ? scalar(keys %$spine) : 0), @{ $aliases || [] });
+                        (ref $spine eq 'HASH' ? scalar(keys %$spine) : 0), @{ $aliases || [] },
+                        "\x1e", @$leaders);
         if ($flight) {
             next unless $flight->join($fkey, onDone => $land, onError => sub { $land->([]) });
         }
@@ -1074,7 +1370,8 @@ sub getCandidates {
                      @{$items}[0 .. ($n > $show ? $show - 1 : $n - 1)]))
                 : '';
             # An UNRESOLVED artist settles undef exactly like a handler error or
-            # a timeout does (see the spine branch in _qobuz/_tidal/_deezer), so
+            # a timeout does (see the spine branch in _searchQobuz/_searchTidal/
+            # _searchDeezer/_searchSpotify), so
             # this line must not claim a cause it cannot know. It read
             # "error (handler/timeout/renderer)" and sent a field diagnosis
             # after a Qobuz timeout that was really "this artist could not be
@@ -1097,7 +1394,8 @@ sub getCandidates {
         my $chars = ($a->{query_enc} || 'bytes') eq 'chars';
         my $query = $chars ? $qChars : $qBytes;
         my $names = $aliases ? ($chars ? \@aChars : \@aBytes) : undef;
-        eval { $a->{run}->($client, $query, $svc, $settle, $spine, $names, $strict, $compare); 1 } or do {
+        my $lead  = @$leaders ? ($chars ? \@lChars : \@lBytes) : undef;
+        eval { $a->{run}->($client, $query, $svc, $settle, $spine, $names, $strict, $compare, $lead); 1 } or do {
             $log->warn("candidates $svc failed: $@");
             $settle->(undef);
         };
@@ -2387,6 +2685,8 @@ sub matchesFor {
     # whole list build.
     my $other = $opt->{otherNames};
     my $memo  = $opt->{creditMemo} || {};
+    # { owned album id => group } put there by the track match or by hand.
+    my $placed = $opt->{placed};
 
     my %all = %{ $bySvc || {} };
     $all{Local} = $local if $local && @$local;
@@ -2408,9 +2708,15 @@ sub matchesFor {
 
         my (%seen, @matched);
         for my $it (@$iter) {
+            # A PLACED owned copy (0.56.61, $opt->{placed}: the track match or
+            # the user's own match, Browse::_placements) is its group's alone,
+            # as an MBID places it: matched there without a title, nowhere else.
+            my $pg = ($a->{local} && $placed && defined $it->{_albumid})
+                   ? $placed->{ $it->{_albumid} } : undef;
+            next if defined $pg && $pg ne ($rgMbid // '');
             # Identity (tier 0) is never second-guessed by the rival rule: an
             # MBID says which group this IS.
-            unless (_mbidMatch($it, $rgMbid, $relMap)) {
+            unless (defined $pg || _mbidMatch($it, $rgMbid, $relMap)) {
                 # Its id places it in another group on this page: it is that
                 # group's, never this one's by title.
                 next if defined _idGroup($it, $relMap, $opt->{idGroups});
@@ -2446,8 +2752,37 @@ sub matchesFor {
                 # Several same-title groups matched it; only its owner keeps it.
                 next if $rivals && @$rivals > 1 && $rgMbid
                      && _rivalOwner($it->{_year}, $rivals) ne $rgMbid;
+                # ANOTHER ALBUM ON THIS PAGE IS CALLED EXACTLY THIS (0.56.51;
+                # Simon, Stan Getz, 2026-10-07): the edition-suffix rule read
+                # "Getz/Gilberto #2" and "Getz / Gilberto '76" as editions of
+                # "Getz / Gilberto", though each is its own MusicBrainz album on
+                # the same page. A copy whose title is exactly another group's
+                # belongs to that group alone. $opt->{pageTitles} is the page's
+                # rivals map (Browse::_rivalsByTitle: every group the page can
+                # show, by normalised title), so a hidden or bootleg group never
+                # takes a copy from a shown one, as for the rival rule above.
+                # Only an owner that can TAKE the copy counts: a Single never
+                # takes an album-sized one (the gate above), so Kraftwerk's
+                # album copy "Radio-Activity", matched through the album's
+                # alias, stays the album's although a single has that title.
+                if (my $pt = $opt->{pageTitles}) {
+                    my $cn = _norm($it->{_candTitle} // '');
+                    if (length $cn && $cn ne $albumNorm && (my $own = $pt->{$cn})) {
+                        my $size = ($a->{local} ? _localSize($it) : $it->{_size}) // '';
+                        next if grep { ($_->{type} // '') ne 'Single' || $size ne 'album' }
+                                     @{ ref $own eq 'ARRAY' ? $own : [] };
+                    }
+                }
             }
-            my $k = join('|', $it->{name} // '', $it->{line2} // '');
+            # ONE ROW PER COPY, NOT PER LABEL (0.56.51; Simon, 2026-10-07: "under
+            # all services we need to expose the versions they have and not throw
+            # them away"). Copies were deduplicated on name|line2, so a service's
+            # look-alike editions (three 1964 "Getz/Gilberto" on Qobuz) showed as
+            # one. A copy with an album id is now one row per id (%seen is this
+            # service's); one without keeps the old key.
+            my $k = defined $it->{_albumid} && length $it->{_albumid}
+                  ? join('|', 'id', $it->{_albumid})
+                  : join('|', $it->{name} // '', $it->{line2} // '');
             next if $seen{$k}++;
             my %item = %$it;   # per-release copy — never decorate the shared cache entry
             # native_favurl (Spotify): the service's own favurl already works, and
@@ -2523,9 +2858,14 @@ sub matchesFor {
 # every RG the caller passes (including type-filtered ones) so a hidden
 # section can't resurface its matches as "unmatched".
 sub claimedLocalIds {
-    my ($class, $rgs, $artist, $local, $relMap, $editions) = @_;
+    my ($class, $rgs, $artist, $local, $relMap, $editions, $placed) = @_;
     my %claimed;
     return \%claimed unless $local && @$local;
+    # A placed owned copy (0.56.61, Browse::_placements) has its tile.
+    if ($placed) {
+        $claimed{ $_->{_albumid} } = 1
+            for grep { defined $_->{_albumid} && defined $placed->{ $_->{_albumid} } } @$local;
+    }
     my $artistNorm = _norm($artist);
     # The pool's groups, for the same "placed by id elsewhere" rule as matchesFor.
     my %idGroups = map { $_->{mbid} => 1 } grep { $_->{mbid} } @{ $rgs || [] };
@@ -3232,6 +3572,178 @@ sub _localSize {
     return $it->{_size} = $size;
 }
 
+# ===========================================================================
+# THE TRACK MATCH (0.56.61; Simon, 2026-10-08). An owned album no group claims
+# by title, id, alias or edition title - "Also in your library" - is put on the
+# ONE group whose tracklist it carries. A tester's "McCoy Tyner Plays John
+# Coltrane" missed MusicBrainz's "McCoy Tyner plays John Coltrane: Live at the
+# Village Vanguard": the title rules only let the OWNED side be longer. Simon:
+# match some of the name, then the track count and names; and "base it on a
+# weighting match"; when it cannot work out which, a manual match (Browse,
+# the release page's "Match an album from your library").
+#
+# MEASURED BEFORE IT WAS BUILT (CLAUDE.md, the 11 real matcher gaps, the
+# 2026-10-08 replay; tools/leftover/): 7 matched in Simon's library + the
+# tester's, all right; with every matched album's real group HIDDEN (1,193 with
+# a candidate left) the first rule took 166 wrong groups - two-album sets
+# ("Raintown / When the World Knows Your Name": all its tracks there) and
+# live / demo versions ListenBrainz has no running times for - this one 6,
+# each MusicBrainz holding the same or an overlapping tracklist twice. So:
+#   - candidates: groups sharing a title WORD (the artist's words and
+#     the/a/an/of/and/s aside), the 5 with the most title evidence;
+#   - the tracks decide, both ways: your tracks found on the group's list
+#     >= 0.65 (your copy may carry bonus tracks), the group's in your copy
+#     >= 0.9 (the group may not: a two-album set, an album + EP);
+#   - running times KNOWN for >= 80% of the paired tracks, and >= 80% of
+#     those within max(4 s, 4%) (a live or demo version fails here);
+#   - score 0.7 x tracks + 0.3 x title x _titleWeight; the best passing group
+#     must reach 0.75 AND lead every other passing one by 0.1, or nothing is
+#     matched ("a tie decides nothing", as the resolver's weighting).
+# DSC-ONLY call-site logic: the shared matcher subs are untouched.
+# ===========================================================================
+use constant TRK_SHORTLIST => 5;
+use constant TRK_FOUND_MIN => 0.65;
+use constant TRK_COVER_MIN => 0.9;
+use constant TRK_TIMED_MIN => 0.8;
+use constant TRK_DUR_MIN   => 0.8;
+use constant TRK_SCORE_MIN => 0.75;
+use constant TRK_MARGIN    => 0.1;
+
+my %TRK_STOP = map { $_ => 1 } qw(the a an of and s);
+sub _trkToks { grep { length && !$TRK_STOP{$_} } split / /, ($_[0] // '') }
+
+# Title evidence, 0..1, for an owned title against one group title (both
+# _norm'd): 0.75 x the share of the owned title's words found + 0.25 x the
+# share of the group title's. The artist's own words are set aside on each
+# side unless nothing else is left. 0 = no word shared.
+sub _trkTitle {
+    my ($o, $g, $an) = @_;
+    my %art = map { $_ => 1 } _trkToks($an);
+    my @a = grep { !$art{$_} } _trkToks($o); @a = _trkToks($o) unless @a;
+    my @b = grep { !$art{$_} } _trkToks($g); @b = _trkToks($g) unless @b;
+    return 0 unless @a && @b;
+    my %as = map { $_ => 1 } @a;
+    my %bs = map { $_ => 1 } @b;
+    my $common = grep { $bs{$_} } keys %as;
+    return 0 unless $common;
+    return 0.75 * $common / keys(%as) + 0.25 * $common / keys(%bs);
+}
+
+# The groups an owned title could be: [ { rg, tscore }, ... ], best first, at
+# most TRK_SHORTLIST. A group is judged by its title, its aliases and its
+# edition titles ($editions: Browse::_editionTitles' { rg => [[norm, raw, ...]] }),
+# whichever says most.
+sub trackShortlist {
+    my ($class, $title, $artist, $groups, $editions) = @_;
+    my $o  = _norm($title // '');
+    my $an = _norm($artist // '');
+    return () unless length $o;
+    my @c;
+    for my $rg (@{ $groups || [] }) {
+        my $best = 0;
+        for my $g (_norm($rg->{title} // ''), map({ _norm($_) } @{ $rg->{aliases} || [] }),
+                   map({ $_->[0] } @{ ($editions || {})->{ $rg->{mbid} } || [] })) {
+            next unless length $g;
+            my $t = _trkTitle($o, $g, $an);
+            $best = $t if $t > $best;
+        }
+        push @c, { rg => $rg, tscore => $best } if $best > 0;
+    }
+    @c = sort { $b->{tscore} <=> $a->{tscore} || ($a->{rg}{mbid} // '') cmp ($b->{rg}{mbid} // '') } @c;
+    splice @c, TRK_SHORTLIST if @c > TRK_SHORTLIST;
+    return @c;
+}
+
+# A track title as both sides are compared: _norm (brackets go), after a
+# trailing " - Remastered 2009" / " - Live" style qualifier is dropped.
+my $TRK_TAIL = qr/remaster|version|mix|edit|mono|stereo|live|demo|take|single|bonus|acoustic|instrumental|session/i;
+sub _trkNorm {
+    my $t = shift // '';
+    $t =~ s/\s+[-\x{2013}\x{2014}]\s+.*$// if $t =~ /\s[-\x{2013}\x{2014}]\s+.*$TRK_TAIL/;
+    return _norm($t);
+}
+
+# Evidence from two tracklists, each [ [title, seconds], ... ]: { found (share
+# of OWN tracks on the group's list), cover (share of the GROUP's in the owned
+# copy), m (pairs), timed (pairs with both times), dur (share of the timed
+# pairs within max(4 s, 4%); undef with none) }. One-to-one, in list order: an
+# exact title first, else one title that is the other plus words.
+sub trackEvidence {
+    my ($class, $own, $grp) = @_;
+    my @o = map { [ _trkNorm($_->[0]), $_->[1] || 0 ] } @{ $own || [] };
+    my @g = map { [ _trkNorm($_->[0]), $_->[1] || 0 ] } @{ $grp || [] };
+    my (%used, @pairs);
+    for my $x (@o) {
+        next unless length $x->[0];
+        my ($hit) = grep { !$used{$_} && $g[$_][0] eq $x->[0] } 0 .. $#g;
+        ($hit) = grep { !$used{$_} && length $g[$_][0]
+                        && (index($g[$_][0], "$x->[0] ") == 0 || index($x->[0], "$g[$_][0] ") == 0) } 0 .. $#g
+            unless defined $hit;
+        next unless defined $hit;
+        $used{$hit} = 1;
+        push @pairs, [ $x->[1], $g[$hit][1] ];
+    }
+    my @timed = grep { $_->[0] > 0 && $_->[1] > 0 } @pairs;
+    my $close = grep { my $tol = 0.04 * $_->[1]; $tol = 4 if $tol < 4; abs($_->[0] - $_->[1]) <= $tol } @timed;
+    return { found => @o ? @pairs / @o : 0, cover => @g ? @pairs / @g : 0,
+             m => scalar @pairs, timed => scalar @timed, dur => @timed ? $close / @timed : undef };
+}
+
+# Score one candidate ({ tscore, ev }) with the owned title's weight: sets
+# `agree` (the tracks pass) and `score`, and returns the candidate.
+sub _trkScore {
+    my ($c, $w) = @_;
+    my $e = $c->{ev};
+    unless ($e) { @$c{qw(agree score)} = (0, 0); return $c }
+    my $dur = $e->{dur} // 0;
+    $c->{agree} = ($e->{found} >= TRK_FOUND_MIN && $e->{cover} >= TRK_COVER_MIN
+                   && $e->{m} && $e->{timed} >= TRK_TIMED_MIN * $e->{m} && $dur >= TRK_DUR_MIN) ? 1 : 0;
+    $c->{score} = 0.7 * (2 * $e->{found} + $e->{cover}) / 3 * (0.5 + 0.5 * $dur)
+                + 0.3 * $c->{tscore} * $w;
+    return $c;
+}
+
+# The decision for one owned album: (the winning candidate or undef, the
+# candidates best first). Each candidate carries { rg, tscore, ev } (ev undef
+# when the group has no tracklist); $title/$artist give the title weight.
+sub trackPick {
+    my ($class, $cands, $title, $artist) = @_;
+    my $w = _titleWeight($title, $artist);
+    my @r = sort { $b->{score} <=> $a->{score} || ($a->{rg}{mbid} // '') cmp ($b->{rg}{mbid} // '') }
+            map { _trkScore($_, $w) } @{ $cands || [] };
+    my @pass = grep { $_->{agree} } @r;
+    my $win = (@pass && $pass[0]{score} >= TRK_SCORE_MIN
+               && (@pass == 1 || $pass[0]{score} - $pass[1]{score} >= TRK_MARGIN)) ? $pass[0] : undef;
+    return ($win, \@r);
+}
+
+# An owned album's tracks, [ [title, seconds], ... ] in disc/track order, read
+# once and kept on the item (a per-call copy, never a cached entry: localAlbums
+# builds its items fresh, as _localSize relies on too).
+sub ownTracks {
+    my ($class, $it) = @_;
+    return $it->{_tracks} if $it->{_tracks};
+    my @t;
+    if (my $al = $it->{_albumid}) {
+        my $r = eval {
+            Slim::Control::Request::executeRequest(undef,
+                ['titles', 0, 500, "album_id:$al", 'tags:dti', 'sort:tracknum']);
+        };
+        @t = map { [ $_->{title} // '', $_->{duration} || 0 ] }
+             sort { ($a->{disc} || 1) <=> ($b->{disc} || 1) || ($a->{tracknum} || 0) <=> ($b->{tracknum} || 0) }
+             @{ $r ? ($r->getResult('titles_loop') || []) : [] };
+    }
+    return $it->{_tracks} = \@t;
+}
+
+# An owned album as the `manual` table keys it (DB.pm): its title and album
+# artist, lower-cased and trimmed - not LMS's album id, which a rescan renumbers.
+sub albumKey {
+    my ($it) = @_;
+    my ($t, $a) = map { my $v = lc($_ // ''); $v =~ s/^\s+|\s+$//g; $v } $it->{_candTitle}, $it->{_candArtist};
+    return length $t ? "$t\x{1f}$a" : undef;
+}
+
 sub _decorate {
     my ($item, $svc, $album, $candArtist) = @_;
     $item->{_size}       = _candSize($album);
@@ -3241,10 +3753,43 @@ sub _decorate {
     $item->{_candTitle}  = $album->{title};
     $item->{_candArtist} = $candArtist;
     $item->{_year}       = _candYear($album);
+    _addVersion($item, $album);
     # Qobuz search albums sometimes carry an editorial description — kept as a
     # review fallback for the detail page (MAI wins when it has one).
     $item->{_desc}       = $album->{description}
         if defined $album->{description} && !ref $album->{description} && length $album->{description};
+}
+
+# THE SERVICE'S OWN EDITION NAME ON ITS ROW (0.56.51; Simon, 2026-10-07). Qobuz
+# album objects carry `version` ("Expanded Edition", "Remastered"), which the
+# Qobuz plugin shows for tracks only; with every copy now listed (matchesFor),
+# three 1964 "Getz/Gilberto" rows would otherwise read the same. Appended to
+# line1, the title Material shows, right after the title (before the plugin's
+# own " (Hi-Res)" or " [E]"), unless the title already says it, so a plugin that
+# starts showing it does not double it. "Says it" is every WORD of the version,
+# in any order (Simon, 2026-10-07: Qobuz's "Radio-Activity (2009 Digital
+# Remaster)" with version "2009 Remaster" read the edition twice). Any service
+# whose album carries the field gets it; Tidal's plugin and Deezer's do not read one, and a copy with
+# none is unchanged. Display only: matching reads `_candTitle`, the raw title.
+sub _addVersion {
+    my ($item, $album) = @_;
+    my $v = ref $album eq 'HASH' ? $album->{version} : undef;
+    return unless defined $v && !ref $v;
+    $v =~ s/^\s+|\s+$//g;
+    return unless length $v;
+    my $l1 = $item->{line1};
+    return unless defined $l1 && !ref $l1 && length $l1;
+    my %have = map { $_ => 1 } (lc $l1) =~ /(\w+)/g;
+    my @want = (lc $v) =~ /(\w+)/g;
+    return if !grep { !$have{$_} } @want;
+    my $t = $album->{title};
+    if (defined $t && !ref $t && length $t && index($l1, $t) == 0) {
+        $item->{line1} = $t . " ($v)" . substr($l1, length $t);
+    }
+    else {
+        $item->{line1} = "$l1 ($v)";
+    }
+    return;
 }
 
 # Normalise a fetch result to an arrayref of albums, or undef.
@@ -3330,7 +3875,7 @@ use constant JOINT_MAX  => 3;
 use constant JOINT_WAIT => 3;    # seconds past the artist's own answer
 
 sub _searchQobuz {
-    my ($client, $query, $svc, $collect, $spine, $aliases, $strict, $compare) = @_;
+    my ($client, $query, $svc, $collect, $spine, $aliases, $strict, $compare, $leaders) = @_;
 
     my $api = Plugins::Qobuz::Plugin::getAPIHandler($client);
     unless ($api) { $collect->(undef); return }
@@ -3339,11 +3884,13 @@ sub _searchQobuz {
         my ($id, $done) = @_;
         $api->getArtist(sub {
             my $r = shift;
-            # Filtered BEFORE scoring as well as rendering: a foreign album must
-            # not contribute to a candidate's spine score either.
-            $done->(_filterForeignArtist(
-                _albumArray(ref $r eq 'HASH' ? $r->{albums} : undef),
-                'Qobuz', $id, $query));
+            # The plugin's getArtist stops at 200 albums; the rest are asked
+            # for here (_qobuzMoreAlbums), or not at all if it cannot be.
+            _qobuzMoreAlbums($api, $id, $r, _albumArray(ref $r eq 'HASH' ? $r->{albums} : undef), sub {
+                # Filtered BEFORE scoring as well as rendering: a foreign album
+                # must not contribute to a candidate's spine score either.
+                $done->(_filterForeignArtist($_[0], 'Qobuz', $id, $query));
+            });
         }, $id);
     };
 
@@ -3363,8 +3910,13 @@ sub _searchQobuz {
                 unless ($artist) {
                     # With a spine, an unresolved artist is DELIBERATE (nothing
                     # corroborated) and the album-search fallback would pull the
-                    # prominent same-named act — settle unresolved instead.
-                    if ($spine && %$spine) { return $collect->(undef) }
+                    # prominent same-named act — settle unresolved instead. Unless
+                    # the band's LEADER came back (_resolveWithJoints): the service
+                    # files the band under him, and his albums are the pool, to
+                    # match the band's own releases only (_leaderOnly).
+                    if ($spine && %$spine) {
+                        return $collect->(_leaderOnly('Qobuz', $query, $extra, sub { _renderQobuzAlbums($client, $_[0], $svc, $_[1]) }));
+                    }
                     _dbg("Qobuz: no artist hit for '$query' - album-search fallback");
                     return _qobuzAlbumSearch($api, $client, $query, $svc, $collect);
                 }
@@ -3375,8 +3927,113 @@ sub _searchQobuz {
                 $collect->(_appendJoint('Qobuz', $query, $artist->{name},
                     _renderQobuzAlbums($client, $albums, $svc, $artist->{name}, $query), $extra,
                     sub { _renderQobuzAlbums($client, $_[0], $svc, $_[1]) }));
-            });
+            }, $leaders);
     }, lc($query), 'artists');
+}
+
+# A QOBUZ ARTIST PAST THE PLUGIN'S 200 ALBUMS (0.56.54; Simon, 2026-10-07, Stan
+# Getz: a fourth Qobuz copy of Getz/Gilberto sat past the 200th album; the Qobuz
+# plugin's developer: "the API function artist/get ... is called with 'extra' =
+# 'albums' and a 'limit' of 200 ... the maximum permitted limit is 500", more
+# only through the catalog search). The plugin's getArtist fixes that limit and
+# passes no offset, so the rest are asked for here through its own handler, the
+# way the plugin asks (`_get`: its token, app id, cache and timeout), and put
+# through the plugin's own `_precacheAlbum` (an exported function: drops what
+# cannot be played, flattens genre and image) so a row is the same shape as one
+# from getArtist.
+#
+# API manners: only when the first answer says there is more (`albums.total`),
+# never blind; pages of 500, the largest limit the API allows; ONE request at a
+# time, never in parallel; at most QOBUZ_ARTIST_MAX albums (a few requests) per
+# artist, once per pool fetch (the pool is kept CAND_FOUND_TTL). The Qobuz
+# plugin caches each page itself (its _ttl, set here to a day). The per-service
+# watchdog (SVC_TIMEOUT) would throw away the WHOLE Qobuz pool, so the extra
+# pages have a shorter deadline of their own and give up with what they have.
+#
+# Anything missing or failing leaves the 200 getArtist gave, as before: no
+# handler `_get`, no `_precacheAlbum`, no `total`, an empty or failed page, the
+# deadline. Verified live 2026-10-07: Qobuz honours `offset` on artist/get and
+# sends `total`. Added time on a COLD open (logged, "the extra pages took"):
+# 0.9 s for 806 albums, 1.4 s for 1023, 2.3 s for 1905 cut at 1500 - hence the
+# 1000 cap (two extra requests at most).
+use constant QOBUZ_PAGE_MAX     => 500;    # artist/get's largest limit (the plugin's QOBUZ_LIMIT)
+use constant QOBUZ_FIRST_PAGE   => 200;    # the plugin's QOBUZ_DEFAULT_LIMIT, when the answer does not say
+use constant QOBUZ_ARTIST_MAX   => 1000;   # albums read for one artist (Simon, 2026-10-07: 1500 cost Miles Davis 2.3 s; "cap at 1000")
+use constant QOBUZ_PAGE_BUDGET  => 10;     # seconds the extra pages may take
+
+sub _qobuzMoreAlbums {
+    my ($api, $id, $r, $albums, $done) = @_;
+
+    my $block = ref $r eq 'HASH' && ref $r->{albums} eq 'HASH' ? $r->{albums} : {};
+    my $total = $block->{total};
+    my $have  = ref $albums eq 'ARRAY' ? scalar @$albums : 0;
+    my $first = $block->{limit};
+    $first = QOBUZ_FIRST_PAGE unless defined $first && !ref $first && $first =~ /^\d+$/ && $first > 0;
+    my $next  = (defined $block->{offset} && !ref $block->{offset} && $block->{offset} =~ /^\d+$/
+                 ? $block->{offset} : 0) + $first;
+
+    my $precache = Plugins::Qobuz::API::Common->can('_precacheAlbum');
+    if (!defined $total || ref $total || $total !~ /^\d+$/) {
+        _dbg("Qobuz artist $id: $have albums, the answer carries no total - not paging") if $have >= $first;
+        return $done->($albums);
+    }
+    if ($total <= $next) {
+        _dbg("Qobuz artist $id: $have albums of $total - complete");
+        return $done->($albums);
+    }
+    unless ($api->can('_get') && $precache && ref $albums eq 'ARRAY') {
+        _dbg("Qobuz artist $id: $have albums of $total - paging unavailable (handler _get or _precacheAlbum missing)");
+        return $done->($albums);
+    }
+
+    my $want = $total > QOBUZ_ARTIST_MAX ? QOBUZ_ARTIST_MAX : $total;
+    _dbg("Qobuz artist $id: $have albums of $total - asking for the rest"
+        . ($want < $total ? " (cut at $want)" : '') . ", pages of " . QOBUZ_PAGE_MAX);
+
+    my @all  = @$albums;
+    my %seen = map { (defined $_->{id} ? $_->{id} : '') => 1 } grep { ref $_ eq 'HASH' } @all;
+    my ($settled, $timer, $step);
+    my $t0 = Time::HiRes::time();
+    my $finish = sub {
+        my ($why) = @_;
+        return if $settled++;
+        Slim::Utils::Timers::killSpecific($timer) if $timer;
+        undef $step;    # the closure holds itself
+        # The time the extra pages added to this fetch, in the log: Simon, 2026-10-07,
+        # "Dont want added time as some is slow enough already".
+        _dbg("Qobuz artist $id: " . scalar(@all) . " albums read ($why), the extra pages took "
+            . sprintf('%.1f', Time::HiRes::time() - $t0) . ' s');
+        $done->(\@all);
+    };
+    $timer = Slim::Utils::Timers::setTimer(undef, time() + QOBUZ_PAGE_BUDGET, sub {
+        $timer = undef;
+        $finish->('deadline - what had arrived is used');
+    });
+    $step = sub {
+        return $finish->('all read') if $next >= $want;
+        my $at = $next;
+        $api->_get('artist/get', sub {
+            return if $settled;
+            my $res   = shift;
+            my $items = ref $res eq 'HASH' && ref $res->{albums} eq 'HASH' ? $res->{albums}{items} : undef;
+            unless (ref $items eq 'ARRAY' && @$items) {
+                return $finish->("the page at offset $at gave nothing");
+            }
+            my $raw = scalar @$items;
+            my $kept = eval { $precache->($items) };
+            $kept = [] unless ref $kept eq 'ARRAY';
+            for my $al (@$kept) {
+                next unless ref $al eq 'HASH';
+                next if defined $al->{id} && $seen{ $al->{id} }++;
+                push @all, $al;
+            }
+            _dbg("Qobuz artist $id: offset $at gave $raw albums, " . scalar(@$kept) . " playable");
+            $next = $at + $raw;
+            $step->() if $step;
+        }, { artist_id => $id, extra => 'albums', offset => $at, _ttl => 86400,
+             limit => ($want - $at < QOBUZ_PAGE_MAX ? $want - $at : QOBUZ_PAGE_MAX) });
+    };
+    $step->();
 }
 
 # The joint artists a service's artist search returned for $name: entries whose
@@ -3421,16 +4078,47 @@ sub _jointArtists {
 # joint artist, one extra request); the other three services' shapes are read
 # in their plugins' sources, not yet measured live.
 sub _resolveWithJoints {
-    my ($svc, $query, $items, $spine, $fetch, $aliases, $search, $strict, $compare, $done) = @_;
+    my ($svc, $query, $items, $spine, $fetch, $aliases, $search, $strict, $compare, $done, $leaders) = @_;
     my @joint = _jointArtists($items, $query);
-    my ($main, @got, $finished, $waitTimer);
-    my $left = scalar @joint;
+    my ($main, @got, @lead, $finished, $waitTimer);
+    # THE BAND'S LEADER (2026-10-08, The Oscar Peterson Trio; API::peekEponymous):
+    # the service entity named EXACTLY as the member MusicBrainz says the band is
+    # named after, found among the band's own search hits, else by one search of
+    # his name, run beside the band's lookup. His albums join as a joint artist's
+    # do (match-only, never extras), and ALSO when the band has no entity of its
+    # own here (the adapters' _leaderOnly): that is the case it exists for.
+    my $wantN = _norm($query // '');
+    my %seenL;
+    my @want = grep { my $n = _norm($_ // ''); length $n && $n ne $wantN && !$seenL{$n}++ }
+               @{ ref $leaders eq 'ARRAY' ? $leaders : [] };
+    my %fetching = map { (($_->{id} // '') => 1) } @joint;
+    my $left = scalar(@joint) + scalar(@want);
+    # ONE FETCH PER SERVICE ARTIST in this lookup: when the band's search hits
+    # hold only its leader, _resolveArtist can settle on that same entity (his
+    # albums back up the band's titles), and the leader's own fetch would ask
+    # again - for Oscar Peterson, five Qobuz pages. Each caller gets its own
+    # copy of the list.
+    my %memo;
+    my $copy = sub { defined $_[0] ? [ map { ref $_ eq 'HASH' ? { %$_ } : $_ } @{ $_[0] } ] : undef };
+    my $fetchOnce = sub {
+        my ($id, $cb) = @_;
+        my $k = $id // '';
+        if (my $m = $memo{$k}) {
+            return $m->{done} ? $cb->($copy->($m->{list})) : push @{ $m->{wait} }, $cb;
+        }
+        $memo{$k} = { wait => [ $cb ] };
+        $fetch->($id, sub {
+            my $m = $memo{$k};
+            @$m{qw(done list)} = (1, $_[0]);
+            $_->($copy->($_[0])) for @{ delete $m->{wait} || [] };
+        });
+    };
     my $finish = sub {
         my ($force) = @_;
         return if $finished || !$main || ($left && !$force);
         $finished = 1;
         Slim::Utils::Timers::killSpecific($waitTimer) if $waitTimer;
-        _dbg("$svc: '$query' - $left joint artist(s) not back after "
+        _dbg("$svc: '$query' - $left joint/leader artist(s) not back after "
             . JOINT_WAIT . 's, going without them') if $left;
         my ($artist, $albums, $beside) = @$main;
         my %have = map { (($_->{id} // '') => 1) } grep { ref $_ eq 'HASH' } @{ $albums || [] };
@@ -3440,11 +4128,13 @@ sub _resolveWithJoints {
             ? (map { +{ %$_, _jointOf => $beside->[0]{name} } }
                grep { ref $_ eq 'HASH' && defined $_->{id} } @{ $beside->[1] || [] })
             : ();
-        my @extra = $artist ? (grep { !$have{ $_->{id} // '' }++ } @got, @dup) : ();
+        # Joint credits only beside an identified artist; the leader's albums
+        # either way.
+        my @extra = grep { !$have{ $_->{id} // '' }++ } (($artist ? (@got, @dup) : ()), @lead);
         $done->($artist, $albums, \@extra);
     };
     for my $ja (@joint) {
-        $fetch->($ja->{id}, sub {
+        $fetchOnce->($ja->{id}, sub {
             return if $finished;
             push @got, map { +{ %$_, _jointOf => $ja->{name} } }
                        grep { ref $_ eq 'HASH' && defined $_->{id} } @{ $_[0] || [] };
@@ -3452,12 +4142,59 @@ sub _resolveWithJoints {
             $finish->();
         });
     }
-    _resolveArtist($svc, $query, $items, $spine, $fetch, sub {
+    my $fetchLeader = sub {
+        my ($hit, $name) = @_;
+        if (!$hit || $fetching{ $hit->{id} }++) {
+            _dbg("$svc: '$query' - no artist named '$name' (the band's leader) here") unless $hit;
+            $left--;
+            return $finish->();
+        }
+        _dbg("$svc: '$query' - fetching the band's leader '$name' ($hit->{id}) beside it");
+        $fetchOnce->($hit->{id}, sub {
+            return if $finished;
+            push @lead, map { +{ %$_, _jointOf => $name } }
+                        grep { ref $_ eq 'HASH' && defined $_->{id} } @{ $_[0] || [] };
+            $left--;
+            $finish->();
+        });
+    };
+    for my $name (@want) {
+        my $n = _norm($name);
+        if (my $hit = _exactArtist($items, $n)) { $fetchLeader->($hit, $name); next }
+        unless ($search) { $fetchLeader->(undef, $name); next }
+        $search->($name, sub {
+            return if $finished;
+            $fetchLeader->(_exactArtist($_[0], $n), $name);
+        });
+    }
+    _resolveArtist($svc, $query, $items, $spine, $fetchOnce, sub {
         $main = [ @_ ];
         $finish->();
         $waitTimer = Slim::Utils::Timers::setTimer(undef, time() + JOINT_WAIT,
             sub { $waitTimer = undef; $finish->(1) }) unless $finished;
     }, $aliases, $search, $strict, $compare);
+}
+
+# The first artist in a service's search hits whose name, normalised, IS $norm.
+sub _exactArtist {
+    my ($items, $norm) = @_;
+    return undef unless ref $items eq 'ARRAY' && length($norm // '');
+    for my $a (@$items) {
+        next unless ref $a eq 'HASH' && defined $a->{id} && defined $a->{name};
+        return $a if _norm($a->{name}) eq $norm;
+    }
+    return undef;
+}
+
+# A band with NO entity of its own on the service, whose leader's albums came
+# back (_resolveWithJoints): those albums are its pool, rendered as joint albums
+# (match-only, credited to the band for the matcher's gate). Nothing came back:
+# undef, unresolved, exactly as before.
+sub _leaderOnly {
+    my ($svc, $query, $extra, $render) = @_;
+    return undef unless ref $extra eq 'ARRAY' && @$extra;
+    _dbg("$svc: '$query' has no artist of its own here - its leader's albums are the pool");
+    return _appendJoint($svc, $query, $query, [], $extra, $render);
 }
 
 # The joint albums rendered with the adapter's own renderer ($render->(\@albums,
@@ -3503,7 +4240,7 @@ sub _renderQobuzAlbums {
 }
 
 sub _searchTidal {
-    my ($client, $query, $svc, $collect, $spine, $aliases, $strict, $compare) = @_;
+    my ($client, $query, $svc, $collect, $spine, $aliases, $strict, $compare, $leaders) = @_;
 
     my $api = Plugins::TIDAL::Plugin::getAPIHandler($client);
     unless ($api) { $collect->(undef); return }
@@ -3537,7 +4274,9 @@ sub _searchTidal {
             $spine, $fetch, $aliases, $search, $strict, $compare, sub {
                 my ($artist, $albums, $extra) = @_;
                 unless ($artist) {
-                    if ($spine && %$spine) { return $collect->(undef) }
+                    if ($spine && %$spine) {
+                        return $collect->(_leaderOnly('Tidal', $query, $extra, sub { _renderTidalAlbums($_[0], $svc, $_[1]) }));
+                    }
                     _dbg("Tidal: no artist hit for '$query' - album-search fallback");
                     return _tidalAlbumSearch($api, $query, $svc, $collect);
                 }
@@ -3545,7 +4284,7 @@ sub _searchTidal {
                 $collect->(_appendJoint('Tidal', $query, $artist->{name},
                     _renderTidalAlbums($albums, $svc, $artist->{name}, $query), $extra,
                     sub { _renderTidalAlbums($_[0], $svc, $_[1]) }));
-            });
+            }, $leaders);
     }, { type => 'artists', search => $query, limit => 25 });
 }
 
@@ -3565,7 +4304,7 @@ sub _renderTidalAlbums {
 }
 
 sub _searchDeezer {
-    my ($client, $query, $svc, $collect, $spine, $aliases, $strict, $compare) = @_;
+    my ($client, $query, $svc, $collect, $spine, $aliases, $strict, $compare, $leaders) = @_;
 
     my $api = Plugins::Deezer::Plugin::getAPIHandler($client);
     unless ($api) { $collect->(undef); return }
@@ -3587,7 +4326,9 @@ sub _searchDeezer {
             $spine, $fetch, $aliases, $search, $strict, $compare, sub {
                 my ($artist, $albums, $extra) = @_;
                 unless ($artist) {
-                    if ($spine && %$spine) { return $collect->(undef) }
+                    if ($spine && %$spine) {
+                        return $collect->(_leaderOnly('Deezer', $query, $extra, sub { _renderDeezerAlbums($_[0], $svc, $_[1]) }));
+                    }
                     _dbg("Deezer: no artist hit for '$query' - album-search fallback");
                     return _deezerAlbumSearch($api, $query, $svc, $collect);
                 }
@@ -3599,7 +4340,7 @@ sub _searchDeezer {
                 $collect->(_appendJoint('Deezer', $query, $artist->{name},
                     _renderDeezerAlbums($albums, $svc, $artist->{name}, $query), $extra,
                     sub { _renderDeezerAlbums($_[0], $svc, $_[1]) }));
-            });
+            }, $leaders);
     }, { search => $query, type => 'artist', strict => 'off', limit => 25 });
 }
 
@@ -3708,7 +4449,7 @@ sub _spotifyAlbum {
 }
 
 sub _searchSpotify {
-    my ($client, $query, $svc, $collect, $spine, $aliases, $strict, $compare) = @_;
+    my ($client, $query, $svc, $collect, $spine, $aliases, $strict, $compare, $leaders) = @_;
 
     # A CLASS method, and it needs a client: none -> no handler -> unresolved
     # (never a confirmed miss). hasCredentials is deliberately never called: it
@@ -3763,7 +4504,9 @@ sub _searchSpotify {
             $aliases, $search, $strict, $compare, sub {
                 my ($artist, $albums, $extra) = @_;
                 unless ($artist) {
-                    if ($spine && %$spine) { return $collect->(undef) }
+                    if ($spine && %$spine) {
+                        return $collect->(_leaderOnly('Spotify', $query, $extra, sub { _renderSpotifyAlbums($client, $_[0], $svc, $_[1]) }));
+                    }
                     _dbg("Spotify: no artist hit for '$query' - album-search fallback");
                     return _spotifyAlbumSearch($api, $client, $query, $svc, $collect);
                 }
@@ -3771,7 +4514,7 @@ sub _searchSpotify {
                 $collect->(_appendJoint('Spotify', $query, $artist->{name},
                     _renderSpotifyAlbums($client, $albums, $svc, $artist->{name}, $query), $extra,
                     sub { _renderSpotifyAlbums($client, $_[0], $svc, $_[1]) }));
-            });
+            }, $leaders);
     }, { query => $query, type => 'artist', limit => SPOTIFY_ARTIST_LIMIT });
 }
 

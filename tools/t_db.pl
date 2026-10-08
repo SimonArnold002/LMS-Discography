@@ -10,6 +10,9 @@
 #   6. degrade, never die, when the file cannot be opened
 #   7. the REAL API module writes its artist-mbid family into the mbid table and
 #      clearArtistMbid removes it (same key on both sides)
+#  12. the user's own matches (the manual table)
+#  13. the keep table (0.56.62): kept tracklists and the track match pass's
+#      marks survive a build; a version-2 file (0.56.61, installed) gains it
 use strict;
 use warnings;
 use FindBin;
@@ -93,7 +96,9 @@ sub fresh {
     ok(!$t{cache},  "1: LMS's cache table is dropped");
     ok(!$t{expiry}, "1: LMS's expiry index is dropped");
     ok($t{kv} && $t{mbid} && $t{meta}, '1: kv, mbid and meta tables exist');
-    ok(($h2->selectrow_array('PRAGMA user_version'))[0] == 1, '1: schema version 1 recorded');
+    ok(($h2->selectrow_array('PRAGMA user_version'))[0] == 3, '1: schema version 3 recorded (0.56.62: the keep table)');
+    ok($t{manual}, '1: ... and the manual table exists');
+    ok($t{keep} && $t{keep_expiry}, '1: ... and the keep table, with its expiry index');
     $h2->disconnect;
 }
 
@@ -410,6 +415,9 @@ my %FAMILY = (
     my $curLib = Plugins::Discography::API::_libMbidKey(5, 'zz');
     $h->do("INSERT INTO mbid (k, kind, lookup, mbid, fetched_at, expires_at)
             VALUES (?, 'library', '5:zz', 'cur', ?, 0)", undef, $curLib, time());
+    my $curTrk = Plugins::Discography::API::_grpTracksKey('4b65bc2e-8fc5-30ee-bec9-7b8c1da84354');
+    $h->do("INSERT INTO keep (k, v, expires_at) VALUES ('dsc:grptrk:1:4b65bc2e-8fc5-30ee-bec9-7b8c1da84354', NULL, 0)");
+    $h->do('INSERT INTO keep (k, v, expires_at) VALUES (?, NULL, 0)', undef, $curTrk);
     $h->disconnect;
     $DB->_reset;
     {   # re-run API's load-time registration, as a server start would
@@ -423,6 +431,9 @@ my %FAMILY = (
     my %mb = map { $_->[0] => 1 } @{ $h2->selectall_arrayref('SELECT k FROM mbid') };
     ok(!$mb{'dsc:mbid:1:zz'} && $mb{$cur}, "10: API's own key version decides what is retired");
     ok(!$mb{'dsc:libmbid:0:5:zz'} && $mb{$curLib}, '10: the library album answers\' too (registered by API)');
+    my %kp = map { $_->[0] => 1 } @{ $h2->selectall_arrayref('SELECT k FROM keep') };
+    ok(!$kp{'dsc:grptrk:1:4b65bc2e-8fc5-30ee-bec9-7b8c1da84354'} && $kp{$curTrk},
+       "10: ... and the kept tracklists' (0.56.62): an old key version goes, the current stays");
     $h2->disconnect;
 }
 
@@ -523,6 +534,145 @@ package main;
     Plugins::Discography::DB::set(Plugins::Discography::API::_mbidKey('Radiohead'), $NAM, 3600);
     ($cl, $used) = $API->clearArtistCache(name => 'Radiohead', artist_id => 999);
     ok(($used // '') eq $NAM, "11c: control: an untagged artist_id falls back to the name's mbid, as before");
+}
+
+# ---------------------------------------------------------------------------
+# 12. THE USER'S OWN MATCHES (0.56.61): the `manual` table. A version-1 file
+#     gains it and keeps every row it had; a build (CACHE_VERSION change)
+#     empties kv and never touches it; set / read / remove, accented titles,
+#     '-' rows, and refused input.
+{
+    fresh();
+    my $h = raw();
+    $h->do('CREATE TABLE kv (k TEXT PRIMARY KEY, v BLOB, expires_at INTEGER NOT NULL DEFAULT 0)');
+    $h->do('CREATE TABLE mbid (k TEXT PRIMARY KEY, kind TEXT NOT NULL, lookup TEXT NOT NULL,
+            mbid TEXT NOT NULL, fetched_at INTEGER NOT NULL, expires_at INTEGER NOT NULL DEFAULT 0)');
+    $h->do('CREATE TABLE artist (mbid TEXT PRIMARY KEY, name BLOB, name_v TEXT NOT NULL DEFAULT \'\',
+            name_at INTEGER NOT NULL DEFAULT 0, name_exp INTEGER NOT NULL DEFAULT 0, aliases BLOB,
+            aliases_v TEXT NOT NULL DEFAULT \'\', aliases_at INTEGER NOT NULL DEFAULT 0,
+            aliases_exp INTEGER NOT NULL DEFAULT 0)');
+    $h->do('CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT)');
+    $h->do("INSERT INTO meta VALUES ('cache_version', '1.0')");
+    $h->do("INSERT INTO mbid VALUES ('dsc:mbid:2:radiohead', 'artist', 'radiohead', 'rh', 1, 0)");
+    $h->do('PRAGMA user_version = 1');
+    $h->disconnect;
+
+    my $s = $DB->store('1.0');
+    ok(($s->get('dsc:mbid:2:radiohead') // '') eq 'rh', '12: a version-1 file opens, its rows kept');
+    my $h2 = raw();
+    ok(($h2->selectrow_array('PRAGMA user_version'))[0] == 3, '12: ... and is moved to version 3');
+    ok(scalar(@{ $h2->selectall_arrayref("SELECT name FROM sqlite_master WHERE name = 'manual'") }) == 1,
+       '12: ... gaining the manual table');
+    $h2->disconnect;
+
+    my $A = 'aaaaaaaa-0000-4000-8000-000000000001';
+    my $G = '4b65bc2e-8fc5-30ee-bec9-7b8c1da84354';
+    my $key = "mccoy tyner plays john coltrane\x{1f}mccoy tyner";
+    my $acc = "bj\x{f6}rk: d\x{e9}but\x{1f}bj\x{f6}rk";
+    ok($DB->manualSet(uc $A, $key, uc $G, 'McCoy Tyner Plays John Coltrane'), '12: a match is stored');
+    ok($DB->manualSet($A, $acc, '-', "Bj\x{f6}rk: D\x{e9}but"), "12: a '-' row is stored, for an accented title");
+    my $m = $DB->manualFor($A);
+    ok(($m->{$key} // '') eq $G, '12: read back for the artist, ids lower-cased');
+    ok(($m->{$acc} // '') eq '-', '12: ... the accented key comes back as the same characters');
+    my $wide = "what\x{2019}s going on\x{1f}marvin gaye";
+    ok($DB->manualSet($A, $wide, $G) && ($DB->manualFor($A)->{$wide} // '') eq $G,
+       '12: ... and a key with a wide character (a curly apostrophe)');
+    my $hb = raw();
+    my ($stored) = $hb->selectrow_array('SELECT album FROM manual WHERE album LIKE ?', undef, 'bj%');
+    $hb->disconnect;
+    ok(($stored // '') eq "bj\xc3\xb6rk: d\xc3\xa9but\x1fbj\xc3\xb6rk", '12: ... stored as UTF-8, not as a Latin-1 byte');
+    $DB->manualRemove($A, $wide);
+    ok(scalar(keys %{ $DB->manualFor('bbbbbbbb-0000-4000-8000-000000000002') }) == 0,
+       "12: another artist's page sees none of them");
+    ok(!$DB->manualSet($A, $key, 'not-an-id'), '12: a release group that is not an mbid is refused');
+    ok(!$DB->manualSet($A, '', $G), '12: ... and an empty album key');
+    ok(($DB->manualFor($A)->{$key} // '') eq $G, '12: ... leaving the stored row as it was');
+    ok($DB->manualSet($A, $key, '-'), '12: a match replaced by its removal');
+    ok(($DB->manualFor($A)->{$key} // '') eq '-', '12: ... one row per album, the latest wins');
+
+    $s->set('dsc:bio:2:x', 'hello', 3600);
+    $DB->_reset;
+    my $s2 = $DB->store('2.0');
+    ok(!defined $s2->get('dsc:bio:2:x'), '12: a new build empties kv ...');
+    ok(scalar(keys %{ $DB->manualFor($A) }) == 2, '12: ... and keeps every manual row');
+    ok(($DB->counts->{manual} // 0) == 2, '12: counts() reports them');
+    ok($DB->manualRemove($A, $acc) && !exists $DB->manualFor($A)->{$acc}, '12: a row is removed');
+}
+
+# ---------------------------------------------------------------------------
+# 13. THE KEEP TABLE (0.56.62): the track match's tracklists (`dsc:grptrk:`) and
+#     its library pass's marks (`dsc:trkwarm:`). A version-2 file (0.56.61, the
+#     installed build) gains the table and keeps its manual rows; the families
+#     go to `keep`, never kv; a build (CACHE_VERSION change) empties kv and keeps
+#     them; an old key version is retired at open; a lifetime of 0 is never
+#     swept; remove; counts.
+{
+    fresh();
+    $DB->store('1.0'); $DB->dbh;
+    my $A = 'aaaaaaaa-0000-4000-8000-000000000001';
+    my $G = '4b65bc2e-8fc5-30ee-bec9-7b8c1da84354';
+    $DB->manualSet($A, "k\x{1f}a", $G);
+    my $h = raw();
+    $h->do('DROP INDEX keep_expiry');
+    $h->do('DROP TABLE keep');
+    $h->do('PRAGMA user_version = 2');
+    $h->disconnect;
+    $DB->_reset;
+
+    my $s = $DB->store('1.0');
+    my $tk = "dsc:grptrk:2:$G";
+    ok($s->set($tk, { t => [ [ 'Naima', 737 ] ], due => 0 }, 0), '13: a version-2 file takes a tracklist');
+    my $h2 = raw();
+    ok(($h2->selectrow_array('PRAGMA user_version'))[0] == 3, '13: ... and is moved to version 3');
+    ok(($DB->manualFor($A)->{"k\x{1f}a"} // '') eq $G, '13: ... its manual rows kept');
+    my ($inKeep) = $h2->selectrow_array('SELECT COUNT(*) FROM keep WHERE k = ?', undef, $tk);
+    my ($inKv)   = $h2->selectrow_array('SELECT COUNT(*) FROM kv WHERE k = ?', undef, $tk);
+    ok($inKeep == 1 && $inKv == 0, '13: a tracklist goes to keep, not kv');
+    $h2->disconnect;
+    ok(deep($s->get($tk)) eq deep({ t => [ [ 'Naima', 737 ] ], due => 0 }), '13: ... and reads back whole');
+
+    my $mk = "dsc:trkwarm:1:bj\x{f6}rk";
+    ok($s->set($mk, { sig => 'abc', at => 1, ok => 1 }, 0) && ($s->get($mk) || {})->{sig} eq 'abc',
+       '13: a pass mark (accented artist) goes in and reads back');
+    $s->set('dsc:bio:2:x', 'hello', 3600);
+    ok(!defined $s->get('dsc:grptrk:1:' . $G), '13: control: the old (0.56.61, kv) tracklist key is another key');
+
+    $DB->_reset;
+    my $s2 = $DB->store('2.0');                    # a new build
+    ok(!defined $s2->get('dsc:bio:2:x'), '13: a new build empties kv ...');
+    ok(defined $s2->get($tk) && defined $s2->get($mk), '13: ... and keeps the tracklists and the marks');
+
+    {   # sweep: a lifetime of 0 never goes; an expired row does
+        my $h3 = raw();
+        $h3->do("INSERT INTO keep (k, v, expires_at) VALUES ('dsc:grptrk:2:old', NULL, 1)");
+        $h3->disconnect;
+        $DB->_reset; $DB->store('2.0'); $DB->dbh;   # opening sweeps
+        my $h4 = raw();
+        my %k = map { $_->[0] => 1 } @{ $h4->selectall_arrayref('SELECT k FROM keep') };
+        $h4->disconnect;
+        ok(!$k{'dsc:grptrk:2:old'} && $k{$tk}, '13: the sweep collects an expired keep row, never one kept for good');
+    }
+
+    {   # an old key version is retired at open, by the family's registered prefix
+        my $h5 = raw();
+        $h5->do("INSERT INTO keep (k, v, expires_at) VALUES ('dsc:grptrk:1:$G', NULL, 0)");
+        $h5->disconnect;
+        $DB->_reset;
+        $DB->keepCurrent('dsc:grptrk:2:', 'dsc:trkwarm:1:');
+        $DB->store('2.0'); $DB->dbh;
+        my $h6 = raw();
+        my %k = map { $_->[0] => 1 } @{ $h6->selectall_arrayref('SELECT k FROM keep') };
+        $h6->disconnect;
+        ok(!$k{"dsc:grptrk:1:$G"} && $k{$tk} && $k{ Plugins::Discography::DB::_key($mk) },
+           '13: an old key version of a kept family is retired at open, the current rows stay');
+    }
+
+    ok(($DB->counts->{keep} // 0) == 2, '13: counts() reports the keep rows');
+    ok($s2->remove($tk) && !defined $s2->get($tk), '13: remove works on the keep table');
+    my $h7 = raw();
+    my ($left) = $h7->selectrow_array('SELECT COUNT(*) FROM keep WHERE k = ?', undef, $tk);
+    $h7->disconnect;
+    ok($left == 0, '13: ... the row is gone from it');
 }
 
 print "\n$pass passed, $fail failed\n";

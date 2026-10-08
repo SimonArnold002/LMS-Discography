@@ -439,12 +439,13 @@ print "# 8. matchesFor keeps Spotty's favurl (with the control)\n";
     ok(!exists $bySvc->{Spotify}[0]{extid} && $bySvc->{Spotify}[0]{favorites_url} eq 'spotify:album:a1',
        'the pool entry itself is not decorated');
 
-    # VERSION DEDUPE on name|line2 (matchesFor), with Spotty's REAL name shape
+    # VERSIONS ARE KEPT BY ALBUM ID (0.56.51), with Spotty's REAL name shape
     # (OPML.pm _albumItem: "<name>[ (YYYY)] BY <artists>", the year only with
-    # LMS showYear). Pins what the ledger's SPOTIFY ROWS KEEP SPOTTY'S OWN says:
-    # with showYear OFF two same-titled editions (explicit + clean) share
-    # name|line2 and collapse to ONE version row; with it ON, editions from
-    # different years stay apart.
+    # LMS showYear). Until 0.56.51 two same-titled editions (explicit + clean)
+    # shared name|line2 with showYear OFF and collapsed to ONE version row;
+    # Simon, 2026-10-07: "under all services we need to expose the versions
+    # they have and not throw them away". Now each Spotify album is its own row
+    # whatever showYear says; the same album listed twice is still one.
     my $ed = sub { my ($id, $name) = @_;
         { name => $name, line1 => 'Spectrum', line2 => 'Sonic Boom', _svc => 'Spotify', _albumid => $id,
           _candTitle => 'Spectrum', _candArtist => 'Sonic Boom', favorites_url => "spotify:album:$id" } };
@@ -453,8 +454,12 @@ print "# 8. matchesFor keeps Spotty's favurl (with the control)\n";
     my @off = $spRows->($S->matchesFor({ Spotify => [ $ed->('e1', 'Spectrum BY Sonic Boom'),
                                                       $ed->('e2', 'Spectrum BY Sonic Boom') ] },
                                        'Sonic Boom', 'Spectrum', []));
-    ok(scalar(@off == 1 && $off[0]{_albumid} eq 'e1'),
-       'showYear OFF: two same-titled Spotify editions collapse to ONE version row (the first)');
+    ok(scalar(@off == 2 && $off[0]{_albumid} eq 'e1' && $off[1]{_albumid} eq 'e2'),
+       'showYear OFF: two same-titled Spotify editions are TWO version rows, in the pool\'s order');
+    my @dup = $spRows->($S->matchesFor({ Spotify => [ $ed->('d1', 'Spectrum BY Sonic Boom'),
+                                                      $ed->('d1', 'Spectrum BY Sonic Boom') ] },
+                                       'Sonic Boom', 'Spectrum', []));
+    ok(scalar(@dup == 1), 'the SAME album listed twice is still one version row');
     my @on = $spRows->($S->matchesFor({ Spotify => [ $ed->('y1', 'Spectrum (1990) BY Sonic Boom'),
                                                      $ed->('y2', 'Spectrum (2020) BY Sonic Boom') ] },
                                       'Sonic Boom', 'Spectrum', []));

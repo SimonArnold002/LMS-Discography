@@ -23,7 +23,7 @@ package Plugins::Discography::DB;
 # (On Windows LMS hashed namespaces longer than 8 characters, so there the cache
 # file was never called discography.db; nothing to take over.)
 #
-# TWO TABLES, BY HOW THEY ARE INVALIDATED:
+# THE TABLES, BY HOW THEY ARE INVALIDATED:
 #
 #   kv    every cache family, exactly as before (same keys, same lifetimes).
 #         Emptied when CACHE_VERSION changes, which is what
@@ -50,6 +50,22 @@ package Plugins::Discography::DB;
 #         and the name wiped, the first page after every build searched the
 #         services without MusicBrainz's name (British Sea Power lost Qobuz again,
 #         the 0.45.0 case) until the band lookup refilled it.
+#   manual  the user's own matches (0.56.61): an owned album the matcher left in
+#         "Also in your library", put on a release by hand on its release page,
+#         or a match the user removed ('-': never match this album by its
+#         tracks). One row per (artist mbid, album). NOT a cache: never emptied
+#         by a build, never expires, untouched by Refresh and `clearcache`. The
+#         album is keyed by its title and album artist (Sources::albumKey), not
+#         LMS's album id, which a full rescan renumbers. Read and written
+#         through manualFor / manualSet / manualRemove, not the store's keys.
+#   keep  answers that cost a request and do not go stale with a build (0.56.62):
+#         a release group's tracklist for the track match (`dsc:grptrk:<v>:<rg>`)
+#         and the track match's background pass, per artist (`dsc:trkwarm:<v>:`).
+#         kv's shape, through the same get / set / remove; NOT emptied by a
+#         build, so a new build does not ask ListenBrainz for every tracklist
+#         again (Simon, 2026-10-08: the page must neither wait for them nor show
+#         a different answer on a later visit, so they are kept, and fetched off
+#         the page). A family's key version still retires its old rows at open.
 #
 # The call sites do not change: `store()` returns an object answering get / set
 # / remove like Slim::Utils::Cache, and routes these families to their tables by
@@ -82,6 +98,8 @@ my @ARTIST_COLS = qw(name aliases);   # the answers an `artist` row holds (see _
 # _artistRoute) cannot leave its rows to be collected as orphans.
 my $ARTIST_ORPHAN = join ' AND ', map { "$_ IS NULL" } @ARTIST_COLS;
 my %ARTIST_FAMILY = ('dsc:mbname:' => 'name', 'dsc:alias:' => 'aliases');
+# The families the `keep` table holds (see the header), by family prefix.
+my %KEEP_FAMILY = map { ($_ => 1) } qw(dsc:grptrk: dsc:trkwarm:);
 
 # family ('dsc:mbid:') => [ current version, current prefix ('dsc:mbid:2:') ]
 my %current;
@@ -93,7 +111,7 @@ my %current;
 # replaced purged on its own cycle, so without this Discography would regress.
 use constant SWEEP_INTERVAL => 6 * 3600;
 
-use constant SCHEMA_VERSION => 1;
+use constant SCHEMA_VERSION => 3;
 
 sub _path {
     my $dir = preferences('server')->get('cachedir') || '/tmp';
@@ -154,11 +172,13 @@ sub _sweepTick {
 }
 
 # KEYS FROM AN OLD VERSION, retired at open (PFR's _retireOldStreamKeys, LBF's
-# retirePrefixes). The kept tables (mbid, artist) are not emptied by a build, so
+# retirePrefixes). The kept tables (mbid, artist, keep) are not emptied by a build, so
 # after a key-version bump the old rows would otherwise sit there, never read,
 # until they expired. API.pm registers the CURRENT prefix of each kept family by
 # calling its own key builders with an empty argument (`_mbidKey('')` is
-# 'dsc:mbid:2:'), so the version exists in exactly one place.
+# 'dsc:mbid:2:'), so the version exists in exactly one place; TrackWarm does the
+# same for its pass marks (`_markKey('')`, from its init, after the store is open,
+# so those are retired at that call rather than at open).
 sub keepCurrent {
     my (undef, @prefixes) = @_;
     for my $p (@prefixes) {
@@ -177,6 +197,10 @@ sub _retire {
         if (my $c = $ARTIST_FAMILY{$fam}) {
             $n += $h->do("UPDATE artist SET $c = NULL, ${c}_v = '', ${c}_exp = 0
                           WHERE $c IS NOT NULL AND ${c}_v <> ?", undef, $v);
+        }
+        elsif ($KEEP_FAMILY{$fam}) {
+            $n += $h->do('DELETE FROM keep WHERE substr(k, 1, ?) = ? AND substr(k, 1, ?) <> ?',
+                         undef, length($fam), $fam, length($p), $p);
         }
         else {
             $n += $h->do('DELETE FROM mbid WHERE substr(k, 1, ?) = ? AND substr(k, 1, ?) <> ?',
@@ -226,6 +250,24 @@ sub _migrate {
         $h->commit;
         $h->do('PRAGMA user_version = 1');
     }
+    if ($have < 2) {
+        $h->do('CREATE TABLE IF NOT EXISTS manual (
+                    artist TEXT    NOT NULL,
+                    album  TEXT    NOT NULL,
+                    rg     TEXT    NOT NULL,
+                    title  TEXT,
+                    set_at INTEGER NOT NULL,
+                    PRIMARY KEY (artist, album))');
+        $h->do('PRAGMA user_version = 2');
+    }
+    if ($have < 3) {
+        $h->do('CREATE TABLE IF NOT EXISTS keep (
+                    k          TEXT PRIMARY KEY,
+                    v          BLOB,
+                    expires_at INTEGER NOT NULL DEFAULT 0)');
+        $h->do('CREATE INDEX IF NOT EXISTS keep_expiry ON keep (expires_at)');
+        $h->do('PRAGMA user_version = 3');
+    }
     return;
 }
 
@@ -247,6 +289,7 @@ sub _sweep {
     my $now = time();
     $h->do('DELETE FROM kv   WHERE expires_at > 0 AND expires_at < ?', undef, $now);
     $h->do('DELETE FROM mbid WHERE expires_at > 0 AND expires_at < ?', undef, $now);
+    $h->do('DELETE FROM keep WHERE expires_at > 0 AND expires_at < ?', undef, $now);
     for my $c (@ARTIST_COLS) {
         $h->do("UPDATE artist SET $c = NULL, ${c}_v = '', ${c}_exp = 0
                 WHERE ${c}_exp > 0 AND ${c}_exp < ?", undef, $now);
@@ -282,6 +325,12 @@ sub _artistRoute {
     return ('name',    $1, $2) if $k =~ /\Adsc:mbname:([^:]*):(.+)\z/s;
     return ('aliases', $1, $2) if $k =~ /\Adsc:alias:([^:]*):(.+)\z/s;
     return;
+}
+
+# True for a key of a family the `keep` table holds. Anything else is kv.
+sub _keepRoute {
+    my ($k) = @_;
+    return ($k =~ /\A(dsc:[a-z0-9]+:)/ && $KEEP_FAMILY{$1}) ? 1 : 0;
 }
 
 sub _freeze { Storable::nfreeze({ v => $_[0] }) }
@@ -320,10 +369,11 @@ sub get {
         return _thaw($row->[0]);
     }
 
+    my $t = _keepRoute($k) ? 'keep' : 'kv';
     my $row = eval { $h->selectrow_arrayref(
-        'SELECT v, expires_at FROM kv WHERE k = ?', undef, $k) } or return undef;
+        "SELECT v, expires_at FROM $t WHERE k = ?", undef, $k) } or return undef;
     if ($row->[1] && $row->[1] < time()) {
-        eval { $h->do('DELETE FROM kv WHERE k = ?', undef, $k) };
+        eval { $h->do("DELETE FROM $t WHERE k = ?", undef, $k) };
         return undef;
     }
     return _thaw($row->[0]);
@@ -358,7 +408,8 @@ sub set {
         }
         else {
             $h->do('DELETE FROM mbid WHERE k = ?', undef, $k) if $kind;
-            my $sth = $h->prepare_cached('INSERT OR REPLACE INTO kv (k, v, expires_at) VALUES (?, ?, ?)');
+            my $t = _keepRoute($k) ? 'keep' : 'kv';
+            my $sth = $h->prepare_cached("INSERT OR REPLACE INTO $t (k, v, expires_at) VALUES (?, ?, ?)");
             $sth->bind_param(1, $k);
             $sth->bind_param(2, _freeze($value), DBI::SQL_BLOB);
             $sth->bind_param(3, $exp);
@@ -382,17 +433,64 @@ sub remove {
             $h->do("DELETE FROM artist WHERE mbid = ? AND $ARTIST_ORPHAN",
                    undef, $mbid);
         }
-        $h->do('DELETE FROM kv WHERE k = ?', undef, $k);
+        $h->do('DELETE FROM ' . (_keepRoute($k) ? 'keep' : 'kv') . ' WHERE k = ?', undef, $k);
         1;
     } or return 0;
     return 1;
+}
+
+# THE USER'S OWN MATCHES (the `manual` table, see the header). { album key =>
+# release-group mbid, or '-' for "never match this album by its tracks" } for one
+# artist mbid; {} when there are none or the store is unavailable.
+sub manualFor {
+    my (undef, $artist) = @_;
+    return {} unless defined $artist && length $artist;
+    my $h = dbh() or return {};
+    my $rows = eval { $h->selectall_arrayref(
+        'SELECT album, rg FROM manual WHERE artist = ?', undef, lc $artist) } || [];
+    my %m;
+    for my $r (@$rows) {
+        my $album = $r->[0];
+        utf8::decode($album);      # stored as UTF-8 octets (manualSet)
+        $m{$album} = $r->[1];
+    }
+    return \%m;
+}
+
+# One match (or '-') for an owned album on an artist's page. 1 on success.
+sub manualSet {
+    my (undef, $artist, $album, $rg, $title) = @_;
+    return 0 unless defined $artist && length $artist && defined $album && length $album
+                 && defined $rg && ($rg eq '-' || $rg =~ /\A[0-9a-f-]{36}\z/i);
+    my $h = dbh() or return 0;
+    # ALWAYS as UTF-8 octets: a title like "Björk" is not flagged wide in
+    # Perl, and written as it stands it would go in as one Latin-1 byte.
+    my ($a, $t) = ($album, $title);
+    utf8::encode($a);
+    utf8::encode($t) if defined $t;
+    my $ok = eval {
+        $h->do('INSERT OR REPLACE INTO manual (artist, album, rg, title, set_at) VALUES (?, ?, ?, ?, ?)',
+               undef, lc $artist, $a, lc $rg, $t, time());
+        1;
+    };
+    $log->warn("dsc: manual match write failed: $@") unless $ok;
+    return $ok ? 1 : 0;
+}
+
+sub manualRemove {
+    my (undef, $artist, $album) = @_;
+    return 0 unless defined $artist && length $artist && defined $album && length $album;
+    my $h = dbh() or return 0;
+    my $a = $album;
+    utf8::encode($a);
+    return eval { $h->do('DELETE FROM manual WHERE artist = ? AND album = ?', undef, lc $artist, $a); 1 } ? 1 : 0;
 }
 
 # Row counts per table, for checks and diagnostics.
 sub counts {
     my $h = dbh() or return {};
     my %n;
-    for my $t (qw(kv mbid artist)) {
+    for my $t (qw(kv mbid artist manual keep)) {
         ($n{$t}) = eval { $h->selectrow_array("SELECT COUNT(*) FROM $t") };
     }
     return \%n;

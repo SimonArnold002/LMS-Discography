@@ -48,8 +48,15 @@ BEGIN {
     *{'Plugins::Discography::DB::store'} = sub { bless {}, 'T::Cache' }; $INC{'Plugins/Discography/DB.pm'} = 1;
     *{'Slim::Utils::Prefs::preferences'} = sub { bless {}, 'T::Prefs' };
     *{'Plugins::Discography::Plugin::dbg'} = sub { };
-    *{'Slim::Utils::Timers::setTimer'}   = sub { $_[2]->() };
+    # A short gap fires at once (the test is synchronous). A WATCHDOG never
+    # fires: the release-group flight's (API::RG_FLIGHT_MAX, 0.56.51) is 600 s
+    # out, and firing it at once would reject the very browse it guards.
+    *{'Slim::Utils::Timers::setTimer'}   = sub {
+        return 0 if ($_[1] // 0) - CORE::time() > 300;
+        $_[2]->();
+    };
     *{'Slim::Utils::Timers::killTimers'} = sub { 1 };
+    *{'Slim::Utils::Timers::killSpecific'} = sub { 1 };
     *{'JSON::XS::VersionOneAndTwo::to_json'}   = sub { '' };
     *{'JSON::XS::VersionOneAndTwo::from_json'} = sub { $DATA };
     *{'Slim::Networking::SimpleAsyncHTTP::new'} = sub {

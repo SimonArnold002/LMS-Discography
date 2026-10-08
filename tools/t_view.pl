@@ -55,8 +55,24 @@ BEGIN {
     *{"${S}::orderedSources"} = sub { ({ name => 'Qobuz' }) };
     *{"${S}::localAlbums"}    = sub { [] };
     *{"${S}::localTracks"}    = sub { [] };
+    # Sources::libraryAlbumActions' shape, filter off (t_localalbumtracks.pl tests the real one).
+    *{"${S}::libraryAlbumActions"} = sub {
+        my ($al, $ar) = @_;
+        return undef unless defined $al && $al =~ /^\d+$/;
+        return { allAvailableActionsDefined => 1,
+                 info  => { command => ['albuminfo', 'items'], fixedParams => { album_id => $al } },
+                 items => { command => ['browselibrary', 'items'],
+                            fixedParams => { mode => 'tracks', album_id => $al, ($ar ? (material_skin_artist_id => $ar) : ()) } },
+                 map { $_ => { command => ['playlistcontrol'], fixedParams => { cmd => ($_ eq 'play' ? 'load' : $_), album_id => $al } } } qw(play add insert) };
+    };
     *{"${S}::peekPool"}       = sub { $main::POOL };
     *{"${S}::claimedLocalIds"} = sub { {} };
+    # The track match's subs Browse::_placements calls (0.56.61; t_trackmatch.pl
+    # tests the real ones): no id placement, no candidate, nothing placed.
+    *{"${S}::_idGroup"}       = sub { undef };
+    *{"${S}::albumKey"}       = sub { lc($_[0]{_candTitle} // '') };
+    *{"${S}::trackShortlist"} = sub { () };
+    *{"${S}::ownTracks"}      = sub { [] };
     *{"${S}::peekMatches"}    = sub { my ($c, $artist, $title) = @_;
         { sections => $main::MATCH{$title} || [], resolved => 1 } };
     *{"${A}::caaImage"}           = sub { 'caa' };

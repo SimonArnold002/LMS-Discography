@@ -1,0 +1,44 @@
+{
+ "_about": [
+  "Our corrections to Open Opus (docs/classical-plan.md, decision 1 in section 6, and section 9.1).",
+  "Kept apart from Open Opus's own data, so build_data.py can apply them to any newer dump and say which no longer apply.",
+  "composer = Open Opus's complete_name; title = Open Opus's title exactly, outer spaces trimmed.",
+  "Applied in this order: retitle, searchterms, add; then repeated entries are dropped (same words in title and subtitle, same genre).",
+  "wikidata: Wikidata's facts (wikidata_works.json, section 10) we leave out: item = the Q id, drop = its fields (inc, prem, pub, instr), when Wikidata has them wrong. Reported stale once Wikidata no longer has them."
+ ],
+ "retitle": [
+  {"composer": "Aram Khachaturian", "title": "Masquerada", "to": "Masquerade",
+   "why": "misspelt; albums title it Masquerade (plan 8.2: found nowhere under Open Opus's spelling)"}
+ ],
+ "searchterms": [
+  {"composer": "Iannis Xenakis", "title": "Metastasis, for 60 musicians", "add": ["Metastaseis"],
+   "why": "albums use Xenakis's own title (plan 8.2)"},
+  {"composer": "Georg Philipp Telemann",
+   "title": "Wasser Overture in C major, for 2 recorders, flute, 2 oboes, bassoon, strings and continuo, TWV.55:C3, \"Hamburger Ebb und Fluth\"",
+   "add": ["Wassermusik"], "why": "albums title it Wassermusik (plan 8.2)"},
+  {"composer": "Giuseppe Verdi", "title": "Don Carlo", "add": ["Don Carlos"],
+   "why": "the French version's name, which albums also use (plan 8.2 hand check)"},
+  {"composer": "Antonín Dvořák", "title": "The Noon Witch, B.196, op. 108", "add": ["The Noonday Witch"],
+   "why": "the usual English title (plan 8.2 hand check)"},
+  {"composer": "Dmitri Shostakovich", "title": "2 Pieces for String Quartet", "add": ["Elegy", "Élégie"],
+   "why": "the pieces are Elegy and Polka; Simon's library tags the first as its own work, 'Élégie' (plan 8.3)"}
+ ],
+ "add": [
+  {"composer": "Claude Debussy", "title": "Deux arabesques, L.66", "genre": "Keyboard",
+   "why": "missing from Open Opus (plan 8.3)"},
+  {"composer": "Aaron Copland", "title": "Three Latin-American Sketches", "genre": "Orchestral",
+   "why": "missing from Open Opus (plan 8.3)"},
+  {"composer": "Manuel de Falla", "title": "Siete canciones populares españolas", "genre": "Vocal",
+   "why": "missing from Open Opus (plan 8.3)"},
+  {"composer": "Joaquín Rodrigo", "title": "Sonata a la española, for guitar", "genre": "Keyboard",
+   "why": "missing from Open Opus (plan 8.3); Keyboard, as Open Opus files his 5 Sonatas de Castilla for guitar"},
+  {"composer": "Erik Satie", "title": "La belle excentrique", "subtitle": "For orchestra or piano four hands", "genre": "Orchestral",
+   "why": "missing from Open Opus (plan 8.3)"},
+  {"composer": "Erik Satie", "title": "Croquis et agaceries d'un gros bonhomme en bois", "genre": "Keyboard",
+   "why": "missing from Open Opus (plan 8.3)"}
+ ],
+ "wikidata": [
+  {"item": "Q206015", "drop": ["instr"],
+   "why": "The Rite of Spring: Wikidata gives lihua (a Chinese percussion instrument) as its only instrument (2026-10-08); it is for orchestra"}
+ ]
+}

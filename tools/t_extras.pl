@@ -342,5 +342,41 @@ print "# PART D - MusicBrainz's type on an Appearances row (0.56.39)\n";
        'D1: ... an untagged one stays as it was');
 }
 
+# ------------------------------------------------------------------ PART E
+print "# PART E - every version a tile claims stays claimed (0.56.51, Stan Getz)\n";
+# Qobuz lists three 1964 "Getz/Gilberto" whose rows read the same. Until 0.56.51
+# versions were deduplicated on name|line2, so two of them were claimed by no
+# tile and, with "Also on streaming" on, listed there as albums of their own.
+# The real _buildList and the real matcher.
+{
+    local $PEEK_REAL = 1;
+    local @SOURCES = ('Qobuz');
+    my $getz = 'Stan Getz';
+    my @rgs = ({ mbid => 'b248d212-aace-3c3e-a23d-e13aaac1f87a', title => 'Getz / Gilberto',
+                 type => 'Album', secondary => [], date => '1964-03' },
+               { mbid => '1ae98569-1603-3f38-8bc3-158d9430ff78', title => 'Getz/Gilberto #2',
+                 type => 'Album', secondary => [ 'Live' ], date => '1966' });
+    my $pool = { Qobuz => [
+        copy('Qobuz', 'Getz/Gilberto',    1964, 'tr097unrzq42a', artist => $getz),
+        copy('Qobuz', 'Getz/Gilberto',    1964, 'jzbek1vkmssja', artist => $getz),
+        copy('Qobuz', 'Getz/Gilberto',    1964, 'np5innplc97oa', artist => $getz),
+        copy('Qobuz', 'Getz/Gilberto #2', 1964, '0060253775767', artist => $getz),
+        copy('Qobuz', 'Jazz Samba',       1962, 'js1962',        artist => $getz),
+    ] };
+    my @seen;
+    no strict 'refs'; no warnings 'redefine';
+    local *{"${S}::peekMatches"} = sub { push @seen, $_[-1]{pageTitles}; $REAL_PEEK->(@_) };
+    local $POOL = { bySvc => $pool };
+    my $items = $B->can('_buildList')->(undef, { %$opts, artist => $getz }, 'getz-mbid', [ map { +{ %$_ } } @rgs ], '', []);
+    my %str = map { ($_->{id} => 1) } grep { ($_->{id} // '') =~ /^str:/ } @$items;
+    ok(scalar(!grep { $str{"str:Qobuz:$_"} } qw(tr097unrzq42a jzbek1vkmssja np5innplc97oa)),
+       'E1: none of the three look-alike 1964 copies is listed under Also on streaming (all claimed)');
+    ok(scalar(!$str{'str:Qobuz:0060253775767'}), 'E1: the #2 copy is claimed too (by the #2 album)');
+    ok(scalar($str{'str:Qobuz:js1962'}), 'E1: CONTROL: an album no group lists is still there');
+    my $n = $S->can('_norm');
+    ok(scalar(@seen && !grep { ref $_ ne 'HASH' || !$_->{ $n->('Getz/Gilberto #2') } } @seen),
+       'E2: the artist page hands every release\'s match the page\'s titles (pageTitles)');
+}
+
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

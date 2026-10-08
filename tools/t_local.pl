@@ -36,6 +36,7 @@ our @QUERIES;    # every search: string the code asked LMS for, in order
 our %LIBRARY;    # search string -> rows LMS would return
 our %CONTRIB;    # lc MusicBrainz artist mbid -> library contributors carrying it
 our %OWNS;       # artist_id -> { albums => [...], titles => [...] } it PERFORMS on
+our %TAGS;       # artist_id -> its own MusicBrainz tag ('' / absent = untagged)
 
 BEGIN {
     for my $m (qw(Slim::Utils::Log Slim::Utils::Prefs Slim::Utils::Cache
@@ -74,6 +75,12 @@ BEGIN {
     # The library's own MusicBrainz artist tag, the column getArtistMbid
     # already trusts ahead of any MB search (Contributor.musicbrainz_id).
     *{'Slim::Schema::rs'} = sub { bless {}, 'T::RS' };
+    # One contributor's own tag (Sources::_contributorTag): %TAGS{id}, '' = untagged.
+    *{'Slim::Schema::find'} = sub {
+        my (undef, $table, $id) = @_;
+        return undef unless ($table // '') eq 'Contributor';
+        return bless { mbid => $main::TAGS{$id} // '' }, 'T::Tagged';
+    };
     for my $p (qw(Slim::Utils::Log Slim::Utils::Prefs JSON::XS::VersionOneAndTwo)) {
         push @{"${p}::ISA"}, 'Exporter';
     }
@@ -96,6 +103,8 @@ sub search {
     return bless { rows => \@hit }, 'T::RS';
 }
 sub all { @{ $_[0]{rows} || [] } }
+package T::Tagged;
+sub musicbrainz_id { $_[0]{mbid} }
 package T::Contrib;
 sub new  { my ($c, %a) = @_; bless {%a}, $c }
 sub id   { $_[0]{id} }
@@ -422,7 +431,8 @@ ok(scalar(@QUERIES) == 0, 'an explicit artist_id outranks the tag (and the name)
 #     That lived only in the NAME ladder, and 0.51.3's tag-first read skipped
 #     the ladder whenever the tag hit. Live, 2026-09-19: her name-opened page
 #     lost Medicine County / No Help Coming (owned under contributor 135756).
-#     The tag decides WHO she is; the name only ADDS joint credits naming her.
+#     The tag decides WHO she is; the name only ADDS joint credits naming her
+#     and (2026-10-07, §12) her own UNTAGGED entries, never one tagged otherwise.
 # ---------------------------------------------------------------------------
 {
     my $MBH   = '0b0a6c9e-2f5a-4bb7-9b7a-3f6a2a8e1c11';
@@ -434,23 +444,32 @@ ok(scalar(@QUERIES) == 0, 'an explicit artist_id outranks the tag (and the name)
     local %OWNS = (135757 => { albums => [ $SOLO ], titles => [] },
                    135756 => { albums => $JOINT,   titles => [ $VA ] },
                    999    => { albums => [ { id => 504, album => 'Other Act', artist => 'Holly Golightly' } ] },
-                   998    => { albums => [ { id => 505, album => 'Nope', artist => 'Holly Golightly Smith & Co' } ] });
+                   998    => { albums => [ { id => 505, album => 'Nope', artist => 'Holly Golightly Smith & Co' } ] },
+                   997    => { albums => [ { id => 506, album => 'Another Holly', artist => 'Holly Golightly' } ] });
     local %CONTRIB = ($MBH => [ T::Contrib->new(id => 135757, name => 'Holly Golightly') ]);
+    local %TAGS    = (135757 => $MBH, 997 => '11111111-2222-3333-4444-555555555555');
     local %LIBRARY = ('Holly Golightly' => [
         { id => 135757, artist => 'Holly Golightly' },
         { id => 135756, artist => 'Holly Golightly and The Brokeoffs' },
         { id => 999,    artist => 'Holly Golightly' },              # an UNTAGGED same-name contributor
+        { id => 997,    artist => 'Holly Golightly' },              # same name, TAGGED with another act's id
         { id => 998,    artist => 'Holly Golightly Smith & Co' },   # a part that is NOT her
     ]);
     my $ids = sub { join ',', sort map { $_->{_albumid} } @{ $_[0] || [] } };
 
-    ok($ids->(Plugins::Discography::Sources->localAlbums(undef, 'Holly Golightly', $MBH)) eq '501,502,503',
-       'tag path keeps the joint credit naming her (Medicine County, No Help Coming)');
     my $la = Plugins::Discography::Sources->localAlbums(undef, 'Holly Golightly', $MBH);
-    ok(!grep({ $_->{_albumid} == 504 } @$la),
-       '... but NOT an untagged same-name contributor: the tag, not the name, says who she is');
+    ok(scalar(grep { $_->{_albumid} == 502 } @$la) && scalar(grep { $_->{_albumid} == 503 } @$la),
+       'tag path keeps the joint credit naming her (Medicine County, No Help Coming)');
+    # REVERSED 2026-10-07 (was "NOT an untagged same-name contributor"): an
+    # UNTAGGED entry of her own name cannot contradict the tag, and losing it lost
+    # owned albums live (Suzanne Vega, Julien Baker, The Cinematic Orchestra; §B).
+    ok(scalar(grep { $_->{_albumid} == 504 } @$la) == 1,
+       '... and an UNTAGGED same-name contributor: it cannot contradict the tag (2026-10-07)');
+    ok(!grep({ $_->{_albumid} == 506 } @$la),
+       '... but NOT a same-name contributor TAGGED with another act: the tag rules that one out');
     ok(!grep({ $_->{_albumid} == 505 } @$la),
        '... and not a joint credit whose part is merely LONGER than her name');
+    ok($ids->($la) eq '501,502,503,504', '... exactly her own, the untagged namesake and the joint credit');
 
     # No name to go on (a same-name page's 'mbid' fallback passes none): the tag alone.
     ok($ids->(Plugins::Discography::Sources->localAlbums(undef, undef, $MBH)) eq '501',
@@ -470,6 +489,61 @@ ok(scalar(@QUERIES) == 0, 'an explicit artist_id outranks the tag (and the name)
     my $u = $ids->(Plugins::Discography::Sources->localAlbums(undef, 'Holly Golightly', $MBH));
     ok($u =~ /502/ && $u =~ /503/, 'untagged library: the name ladder still adds the joint credit (unchanged)');
     %LIBRARY = ();
+}
+
+# ---------------------------------------------------------------------------
+# 12. A JOINT CREDIT CARRYING THE TAG MUST NOT STAND IN FOR THE ARTIST (field,
+#     Simon 2026-10-07, 0.56.58). LMS gives "Suzanne Vega & Joe Jackson" (off a
+#     tagged compilation) the FIRST id of its MUSICBRAINZ_ARTISTID list, hers;
+#     her own entry, off untagged rips, carries none. Opened without her library
+#     id (a Similar artists row), the tag answered with the duo alone and her
+#     three owned albums read Qobuz. Same live for Julien Baker and The Cinematic
+#     Orchestra. Her own untagged entry now counts beside the tag.
+# ---------------------------------------------------------------------------
+{
+    my $MBV = 'a4d4bd2c-1111-4222-8333-944444444444';
+    local %OWNS = (155399 => { albums => [ map { { id => $_->[0], album => $_->[1], artist => 'Suzanne Vega' } }
+                                               [41, 'Suzanne Vega'], [42, 'Solitude Standing'], [43, '99.9 F°'] ],
+                               titles => [ { id => 71, title => 'Luka (live)', album => 'A VA Comp', compilation => '1',
+                                             artist_ids => '155399' } ] },
+                   157765 => { albums => [ { id => 44, album => 'Life Moves Pretty Fast', artist => 'Various Artists' } ],
+                               titles => [] });
+    local %CONTRIB = ($MBV => [ T::Contrib->new(id => 157765, name => 'Suzanne Vega & Joe Jackson') ]);
+    local %TAGS    = (157765 => $MBV);
+    local %LIBRARY = ('Suzanne Vega' => [ { id => 155399, artist => 'Suzanne Vega' },
+                                          { id => 157765, artist => 'Suzanne Vega & Joe Jackson' } ]);
+    my $ids = sub { join ',', sort { $a <=> $b } map { $_->{_albumid} } @{ $_[0] || [] } };
+
+    my @by = Plugins::Discography::Sources::localArtistIdsByIdentity($MBV, 'Suzanne Vega');
+    ok(join(',', @by) eq '157765,155399', 'identity = the tag\'s contributor, then her own UNTAGGED entry');
+    ok($ids->(Plugins::Discography::Sources->localAlbums(undef, 'Suzanne Vega', $MBV)) eq '41,42,43,44',
+       'localAlbums by tag: her own albums are back (were only the duo\'s compilation)');
+    my $t = Plugins::Discography::Sources->localTracks(undef, 'Suzanne Vega', { mbid => $MBV });
+    ok(scalar(grep { $_->{_trackid} == 71 } @{ $t || [] }) == 1, 'localTracks by tag: her own VA track is back');
+
+    # Edges of the helper.
+    ok(scalar(() = Plugins::Discography::Sources::localArtistIdsByIdentity($MBV, undef)) == 1,
+       'no name: the tag alone (as before)');
+    ok(join(',', Plugins::Discography::Sources::localArtistIdsByIdentity($MBV, 'Suzanne Vega', 155399)) eq '157765',
+       'an excluded id (a fallback away from an empty contributor) is never added back by name');
+    { local %CONTRIB = ();
+      ok(scalar(() = Plugins::Discography::Sources::localArtistIdsByIdentity($MBV, 'Suzanne Vega')) == 0,
+         'nothing carries the tag: empty, so callers take the name ladder exactly as before'); }
+    { local %TAGS = (157765 => $MBV, 155399 => '99999999-8888-4777-8666-555555555555');
+      ok(join(',', Plugins::Discography::Sources::localArtistIdsByIdentity($MBV, 'Suzanne Vega')) eq '157765',
+         'her name on an entry TAGGED with another id: left out (another act, the tag says so)'); }
+
+    # The band row (Also a member of): open the entry that HOLDS the albums.
+    ok((Plugins::Discography::Sources::_bandContributorId($MBV, 'Suzanne Vega') // '') eq '155399',
+       'band row: her own entry (3 albums) over the joint credit carrying the tag (1)');
+    { local %LIBRARY = ();
+      ok((Plugins::Discography::Sources::_bandContributorId($MBV, 'Suzanne Vega') // '') eq '157765',
+         'band row: one entry only -> that one (unchanged)'); }
+    { local %CONTRIB = ($MBV => [ T::Contrib->new(id => 900, name => 'Suzanne Vega'),
+                                  T::Contrib->new(id => 155399, name => 'Suzanne Vega') ]);
+      local %TAGS = (900 => $MBV, 155399 => $MBV); local %LIBRARY = ();
+      ok((Plugins::Discography::Sources::_bandContributorId($MBV, 'Suzanne Vega') // '') eq '155399',
+         'band row: two tagged duplicates -> the one owning albums, not the first by DB order'); }
 }
 
 # ---------------------------------------------------------------------------
@@ -521,6 +595,35 @@ ok(scalar(@QUERIES) == 0, 'an explicit artist_id outranks the tag (and the name)
     $rows->('Janes Addiction', { how => \$how });
     ok($how eq 'probe', "... 'probe' for a term probe");
     %LIBRARY = ();
+}
+
+# ---------------------------------------------------------------------------
+# 13. A NAME-ONLY PAGE OPENS THE LIBRARY ARTIST OF EXACTLY THAT NAME
+#     (libraryArtistIdByName, 2026-10-08). Field: a Similar artists row "Bob"
+#     opened Bob Dylan (MB ranks him above every act called Bob), "Black" Black
+#     Sabbath, "Stan" Stan Getz; 6 of the 94 joint-credit library artists lost
+#     owned albums that way. Exact name only; the entry holding the most albums.
+# ---------------------------------------------------------------------------
+{
+    my $one = sub { my $n = shift; { albums => [ map { { id => $_, album => "A$_" } } 1 .. $n ], titles => [] } };
+    local %OWNS = (152344 => $one->(4), 99 => $one->(30),
+                   154978 => $one->(1), 158778 => $one->(3),
+                   700 => $one->(0), 156010 => $one->(1));
+    local %LIBRARY = ('Bob'            => [ { id => 99, artist => 'Bob Dylan' }, { id => 152344, artist => 'Bob' } ],
+                      'The Pirates'    => [ { id => 154978, artist => 'The Pirates' }, { id => 158778, artist => 'The Pirates' } ],
+                      'Black'          => [ { id => 5, artist => 'Black Sabbath' } ],
+                      'Composer Only'  => [ { id => 700, artist => 'Composer Only' } ],
+                      'the bad seeds'  => [ { id => 156010, artist => 'The Bad Seeds' } ]);
+    my $by = sub { Plugins::Discography::Sources::libraryArtistIdByName($_[0]) // 'undef' };
+    ok($by->('Bob') eq '152344', "13: 'Bob' -> the library's Bob, never Bob Dylan (a longer name)");
+    ok($by->('The Pirates') eq '158778', '13: two entries of the name -> the one holding the most albums');
+    ok($by->('Black') eq 'undef', '13: no library artist of EXACTLY the name -> undef (resolved by name, as before)');
+    ok($by->('Composer Only') eq 'undef', '13: an entry holding no album (a composer-only credit) -> undef');
+    ok($by->('the bad seeds') eq '156010', '13: case and punctuation fold (_normKey)');
+    ok($by->('') eq 'undef' && $by->(undef) eq 'undef', '13: no name -> undef, nothing asked');
+    @QUERIES = ();
+    $by->('Bob');
+    ok(scalar(@QUERIES) == 1, '13: one library search: the spelling ladder without its term probes');
 }
 
 print "\n$pass passed, $fail failed\n";

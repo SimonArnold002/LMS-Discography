@@ -22,7 +22,8 @@
 #      leaves nothing cached and is answered at once (no wait for the other);
 #      a special-purpose artist (Various Artists) asks neither;
 #   4. getReleaseGroups(read => 1): the read's whole list first; the first list
-#      for 25 or more; a Refresh or `force` takes the browse; an expired spine
+#      for 25 or more; a `refresh => 1` clear (no caller in the plugin since
+#      0.56.53) or `force` takes the browse; an expired spine
 #      takes MusicBrainz's completed list with no request;
 #   5. warmOfficial on a first list: the community's verdicts, at most two by-id
 #      requests before the draw and the rest after it, in the background, merged
@@ -33,8 +34,9 @@
 #      newest added; the first list's own groups kept only past a cut browse;
 #      aliases pruned over the whole; verdicts merged; nothing stored on a
 #      failure or after a Refresh; one at a time;
-#   7. promoteCompleted and clearArtistCache's keys and Refresh marker;
-#   8. a Refresh past the cap (0.56.8): ListenBrainz and the community API asked
+#   7. promoteCompleted and clearArtistCache's keys and `refresh => 1` marker;
+#   8. a `refresh => 1` browse past the cap (0.56.8; the page's Refresh row has
+#      not asked for one since 0.56.53): ListenBrainz and the community API asked
 #      once the browse's count says it will be cut, alongside its remaining
 #      pages; the groups past the cap kept with the community's verdicts for
 #      those groups only; MusicBrainz's own still asked by id; either source
@@ -73,8 +75,15 @@ BEGIN {
     *{'Plugins::Discography::DB::store'} = sub { bless {}, 'T::Cache' }; $INC{'Plugins/Discography/DB.pm'} = 1;
     *{'Slim::Utils::Prefs::preferences'} = sub { bless {}, 'T::Prefs' };
     *{'Plugins::Discography::Plugin::dbg'} = sub { };
-    *{'Slim::Utils::Timers::setTimer'}   = sub { $_[2]->() };
+    # A short gap fires at once (the test is synchronous). A WATCHDOG never
+    # fires: the release-group flight's (API::RG_FLIGHT_MAX, 0.56.51) is 600 s
+    # out, and firing it at once would reject the very browse it guards.
+    *{'Slim::Utils::Timers::setTimer'}   = sub {
+        return 0 if ($_[1] // 0) - CORE::time() > 300;
+        $_[2]->();
+    };
     *{'Slim::Utils::Timers::killTimers'} = sub { 1 };
+    *{'Slim::Utils::Timers::killSpecific'} = sub { 1 };
     *{'JSON::XS::VersionOneAndTwo::to_json'}   = sub { JSON::XS::encode_json($_[0]) };
     *{'JSON::XS::VersionOneAndTwo::from_json'} = sub { JSON::XS::decode_json($_[0]) };
     *{'Slim::Schema::find'} = sub { undef };
@@ -632,7 +641,7 @@ section('7', sub {
     ok(!defined $CACHE{$FAST} && !defined $CACHE{$NEXT} && !defined $CACHE{$CMD} && !defined $CACHE{$FULL},
        '7: clearcache clears the first list and its completion, and sets no Refresh marker (a plain cold start)');
     $A->clearArtistCache(mbid => $ART, refresh => 1);
-    ok($CACHE{$FULL}, "7: the page's Refresh sets the marker: the next list is MusicBrainz's own");
+    ok($CACHE{$FULL}, "7: refresh => 1 sets the marker: the next list is MusicBrainz's own (the page's Refresh row has not passed it since 0.56.53)");
 });
 
 section('8', sub {
