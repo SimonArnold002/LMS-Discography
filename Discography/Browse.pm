@@ -24,6 +24,7 @@ use Slim::Utils::Misc;
 use Slim::Schema;
 use File::Spec;
 use Time::HiRes ();
+use Digest::MD5 ();
 
 use Plugins::Discography::API;
 use Plugins::Discography::Sources;
@@ -38,7 +39,7 @@ my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.65';
+use constant CACHE_VERSION => '0.56.66';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -389,6 +390,31 @@ sub _editionTitles {
 use constant PLC_MEMO_TTL => 120;
 my %plcMemo;   # input signature => [ time, claims ]
 
+# The memo's key: everything Sources::claimedLocalIds reads, by CONTENT (review
+# 2026-10-08: it was the COUNT of groups, release map and edition titles, so a
+# completed list swapped in at the same size, aliases and all, reused the claims
+# made without them). Per group its id, title, type and aliases; per owned album
+# what its claim reads; the release map only for the release ids the owned
+# albums carry (the only entries a claim looks up); the edition titles. About
+# 1.8 ms on the London Symphony Orchestra's 2,003 groups, against 254 ms for the
+# claims. Octets before md5 (titles are characters).
+sub _plcSig {
+    my ($mbid, $artist, $pool, $local, $relMap, $editions) = @_;
+    my %ids = map { $_->{_mbid} => 1 } grep { $_->{_mbid} } @$local;
+    $editions ||= {};
+    my $s = join "\0", $mbid // '', $artist // '',
+        join("\x1e", map { join "\x1f", $_->{mbid} // '', $_->{title} // '', $_->{type} // '',
+                                         @{ $_->{aliases} || [] } } @$pool),
+        join("\x1e", map { join "\x1f", $_->{_albumid} // '', $_->{_candTitle} // '', $_->{_mbid} // '',
+                                         $_->{_otherArtist} ? 1 : 0, $_->{_candArtist} // '' } @$local),
+        join("\x1e", map { "$_\x1f" . ($relMap->{$_} // '') } sort keys %ids),
+        join("\x1e", map { my $k = $_; join "\x1f", $k, map { join "\x1d", map { $_ // '' } @$_[0 .. 2] }
+                                                             @{ $editions->{$k} || [] } }
+                     sort keys %$editions);
+    utf8::encode($s) if utf8::is_utf8($s);
+    return Digest::MD5::md5_hex($s);
+}
+
 sub _placements {
     my (%a) = @_;
     my %out = (placed => {}, how => {}, leftovers => [], ranked => {}, items => {}, claimed => {});
@@ -398,10 +424,7 @@ sub _placements {
 
     my @pool     = grep { !_hiddenType($_) } @$rgs;
     my $relMap   = $a{relMap} || {};
-    my $sig = join "\0", $mbid // '', $a{artist} // '', scalar(@$rgs), scalar(@pool),
-                  join("\x1e", map { join "\x1f", $_->{_albumid} // '', $_->{_candTitle} // '',
-                                                  $_->{_mbid} // '', $_->{_otherArtist} ? 1 : 0 } @$local),
-                  scalar(keys %$relMap), scalar(keys %{ $a{editions} || {} });
+    my $sig = _plcSig($mbid, $a{artist}, \@pool, $local, $relMap, $a{editions});
     my $now = time();
     my $memo = $plcMemo{$sig};
     my $claimed = ($memo && $now - $memo->[0] < PLC_MEMO_TTL) ? $memo->[1]

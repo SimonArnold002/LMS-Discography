@@ -176,6 +176,9 @@ because line numbers rot on the next edit.
 | Various Artists / Various Composers / LMS's own name for them / MB's special entities are never one artist: a search for one is one line saying so, nothing asked; their rows are dropped from every search and from the closest names; their page (by name, by a special library tag or mbid) is that line + Search for another artist, nothing asked; the same-name set drops MB's special entities; `getReleaseGroups` answers an empty list for one. "Various Artsts", "VA", "Various" and names that only contain it are NOT covered (0.56.41; Simon: "A short message") | A2 | `NEVER ONE ARTIST: VARIOUS ARTISTS` |
 | A search row whose name has no Latin letter is titled "<name> (<English name>)", the English name being MusicBrainz's PRIMARY locale-en alias (never the first alias), from the search reply or the artist read's cache, no request; display only, a tap opens the real name; such a row drops its "aka"; Latin names (Björk, Kenshi Yonezu) never retitled; an owned untagged row gets none (0.56.42; Simon: "In the title") | A2 | `A NON-LATIN NAME IS TITLED WITH ITS ENGLISH ONE` |
 | `%MB_SPECIAL_ARTIST` kept MB's special entities (Various Artists 89ad4ac3) out of every MusicBrainz name lookup | A3 | `THE SAME-NAME SET KEPT THE SPECIAL ENTITIES` |
+| The track match should skip groups the user's type filter hides (`show_types`), as `_rivalsByTitle` does, or an owned album vanishes | A3 | `THE TRACK MATCH IGNORES show_types ON PURPOSE` |
+| TrackWarm loses tracklists (and waits a day) when `warmGroupTracks` skips a group already out, or `ARTIST_TIMEOUT` fires while background work is held | A3 | `A FAILED MARK LOSES NO TRACKLIST` |
+| `Classical::_composerIdsNamed` / the name tier miss a composer past the first 20 `artists search:` hits | A3 | `ARTISTS SEARCH ANDS THE WORDS` |
 | The search soak's `fewer_matches` (search path one match short of the artist row) means search loses matches | A3 | `THE SOAK'S ARTIST-ROW PAGE IS A FIRST VISIT` |
 | The search soak's falling Local / matched counts mean owned albums dropped off their pages | A3 | `THE SOAK COUNTS ONLY THE FIRST 30 TILES` |
 | A failed Qobuz search reaches us as a failure | A3 | `QOBUZ CACHES A FAILED SEARCH AS AN EMPTY ONE` |
@@ -1640,7 +1643,7 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   MusicBrainz's "McCoy Tyner plays John Coltrane: Live at the Village Vanguard", 2026-10-08; Simon: match some of the
   name, then the tracks, *"we could also base it on a weighting match"*). An owned album NO rule claims (title, alias,
   edition title, id) and credited to the artist ("Also in your library", never Appearances) goes on the ONE group whose
-  tracklist it carries. Candidates: the page's shown groups (not hidden, not bootleg-only) sharing a title WORD, the
+  tracklist it carries. Candidates: every group the page can list (`_hiddenType` aside, not bootleg-only; the user's TYPE FILTER INCLUDED, as for every claim: A3 `THE TRACK MATCH IGNORES show_types ON PURPOSE`) sharing a title WORD, the
   artist's words and the/a/an/of/and/s aside, the 5 with the most title evidence (0.75 x the owned title's words found
   + 0.25 x the group title's, best of its title / aliases / edition titles). Tracks from ListenBrainz
   (`metadata/release_group?inc=recording`, the canonical release, 25 groups a request). The group passes when your
@@ -1679,7 +1682,7 @@ always with its reason, and those stay suppressed. The code a fix added is new a
   ListenBrainz list per artist with an untagged album (486 in the July data) and one tracklist request per artist with
   candidates, once, then only for what changes. An album whose candidates are not ALL kept is never decided on part of
   the evidence. The claims behind it are worked out once per render and reused by "Also in your library" (memo,
-  `PLC_MEMO_TTL` 120 s, keyed on the inputs incl. titles). Known misses, to the manual list: classical track names
+  `PLC_MEMO_TTL` 120 s, keyed by the CONTENT the claims read, `Browse::_plcSig`: groups' ids, titles, types and aliases, the owned albums, the release map for the owned ids, the edition titles; until the 2026-10-08 review it was the COUNTS of groups, release map and edition titles, so a completed list swapped in at the same size reused claims made without its aliases; pinned in `t_trackmatch.pl` §4). Known misses, to the manual list: classical track names
   that pair badly (Bavouzet's Debussy box: 104 = 104, times agree, 36 titles pair) and the 6.3% of tracklists missing a
   length. NOT the shared matcher: `_albumMatches` untouched; DSC-only call-site logic, as `_aliasMatches`.
 - **MATCHES MADE BY HAND** (0.56.61; `Browse::_manualRows` / `_matchPicker` / `_manualAct`, `_rgView`'s `lm:` dispatch,
@@ -1763,6 +1766,9 @@ is what a fresh reviewer re-derives. Re-raise only by disproving the evidence na
 | `return $m->{done} ? $cb->(...) : push @{ $m->{wait} }, $cb;` (`Sources::_resolveWithJoints`' `$fetchOnce`, 0.56.60) parses as `(... ? ... : push(@{...})), $cb`, so a second caller of an in-flight fetch is never queued | **WRONG** — `push` IS A LIST OPERATOR AND TAKES THE REST OF THE LIST (Deparse + run 2026-10-08, review of 0.56.50-0.56.62) | `perl -MO=Deparse,-p` gives `($d ? &$c(1) : push(@{$$m{'wait'};}, $cb))`; run, the not-done call queues `$cb` (wait list 1) and the done call calls back. |
 | `Browse::_addrDecode`'s fallback is broken: `Encode::decode_utf8($raw, FB_CROAK)` without `LEAVE_SRC` consumes `$raw` before it croaks, so `defined $dec ? $dec : $raw` falls back to a truncated value | **WRONG on the Mac's Encode 3.08** — THE SOURCE IS UNTOUCHED WHEN IT CROAKS (run 2026-10-08, review of 0.56.50-0.56.62; the SERVER's Encode version NOT read) | `uri_unescape` then `decode_utf8(..., FB_CROAK)` on `Ant\xF4nio` (not UTF-8) croaks `"\xF4" does not map to Unicode` and on a wide-character value croaks `Wide character`; in both `$raw` still equals its value before the call, so the fallback lands the whole value. The only writer of `<key>_u8` is our own `_addrOf` (`uri_escape_utf8`, always valid UTF-8), so the fallback only meets a hop that already unescaped it. Re-check on the server's Encode before relying on it there. |
 | A works-page row for a work NOT held (a `type => 'text'` row) can be given the work icon and stay a plain, untappable row (plan §10.5 item 1 offered "the work icon on the rest") | **WRONG** — A TEXT ROW WITH AN IMAGE IS TAPPABLE IN MATERIAL (read 2026-10-08, lms-material master `browse-resp.js`, `browse-functions.js`, `utils-deferred.js`) | `browse-resp.js`: "If this is a 'text' item with an image then treat as a standard actionable item" sets `i.type="other"`; `isTextItem` is then false, and `browseClick` falls through to `browseDoClick` -> `fetchItems` with the base go action (no `canClickItem` check on that path), so a tap walks to the row and opens a dead page. XMLBrowser's `itemNoAction` style does not stop it. So a work not held stays imageless (`Browse::_workRow`; pinned in `t_works.pl` §3, "no image"); the icon needs those works to open a page of their own (plan §10.5 item 5, waiting). |
+| `Browse::_placements` shortlists from `@shown` and ignores `show_types`, so an untagged owned album can be placed on a group the user hid and disappear from the page (raised by the whole-codebase review, 2026-10-08) | **WRONG — THE TRACK MATCH IGNORES show_types ON PURPOSE** (read 2026-10-08, 0.56.65) | Every claim on an owned album spans the type-filtered groups BY DESIGN: `Sources::claimedLocalIds` ("Claims run across every RG the caller passes (including type-filtered ones) so a hidden section can't resurface its matches"), `Browse.pm`'s "Also in your library" block (the same words), and the user's match (`%onPage` is the pool, not the shown types). Hiding Singles hides an owned single claimed by title; the track match does the same, so it agrees with them. Filtering its candidates instead would make the PLACEMENT depend on a pref (TrackWarm computes it with no filter) and would hand an album to a lesser visible group when its real group is hidden: exactly the case measured before 0.56.61 was built, 6 wrong of 1,193 with each album's real group hidden (A2 `THE TRACK MATCH`). `_rivalsByTitle` is a different job (who owns a STREAMING candidate, where a hidden winner leaves the visible album with nothing). |
+| TrackWarm loses an artist's tracklists for a day: `warmGroupTracks` skips groups already out (`%grpTracksOut`) and calls back at once, and `ARTIST_TIMEOUT` (120 s) counts time background work is held behind pages, so `_mark(..., 0)` runs and the late answers are discarded (raised 2026-10-08) | **HALF WRONG — A FAILED MARK LOSES NO TRACKLIST** (read 2026-10-08, 0.56.65) | Both paths do mark the artist failed (`RETRY_FAILED`, a day). But `$settled` only stops `$done`: `_artist`'s chain runs on after the watchdog (`_placements`, `warmGroupTracks`), and `warmGroupTracks` writes every answer to `keep` itself; the request that was already out does the same. The page reads `peekGroupTracks`, so it has the tracklists as soon as they land. The day-later redo finds them kept (`groupTracksDue` 0, "none to ask") and costs at most the ListenBrainz list request when no page has kept the artist's groups. Only the pass's "to retry" count in the debug log is wrong. |
+| `Classical::_composerIdsNamed` and `libraryWorks`' name tier ask `artists 0 20 search:<name> role_id:COMPOSER`, so a library with 20+ composer entries containing "Bach" never finds Johann Sebastian Bach (raised 2026-10-08) | **WRONG — ARTISTS SEARCH ANDS THE WORDS** (measured live 2026-10-08 on plex:9000, Simon's library) | LMS matches every word of the search at a word start: `search:Bach` gives 5 (Randy Bachman, Burt Bacharach, The Bachelor Pad, Johann Sebastian Bach, Carl Philipp Emanuel Bach), `search:Johann Sebastian Bach` gives 1. The only caller (`Browse::_worksList`) passes FULL names: the page's name, Open Opus's complete name (`c`) and MusicBrainz's (`m`), never the short name (`n`, "Bach"). So more than 20 hits needs 21 composer entries holding every word of the full name. Re-raise with a library that has them. |
 
 ### B. KNOWN-OPEN AND ACCEPTED — do not re-report as new
 
@@ -2564,6 +2570,30 @@ drift happened (LBF missed the P!nk/EP/ascii rules for months).
   counterpart there.
 
 ## Development Log
+
+### 0.56.66 (2026-10-08) — the track match's claims memo keyed by content; review of the whole code base — BUILT, NOT INSTALLED, sha 100d52fe
+- **Build (Simon: "build, commit and push to dev"):** install.xml, repo.xml, CACHE_VERSION (API / Sources / Browse)
+  0.56.66; zip 990,619 bytes, 256 files (265 entries with directories, the same list as 0.56.65), byte-identical to
+  the tree; sha `100d52fe4c39d880963774b48ddab802fcd273bf`; `syntax_check.sh` OK; 77 suites / 4,144, 0 failed.
+- **Source:** a whole-code-base review (2026-10-08, Simon: "do a review across the code base", then "verify each one,
+  check fix is right, check all carriers"). Six findings; four cleared and logged in A3 (`THE TRACK MATCH IGNORES
+  show_types ON PURPOSE`, `A FAILED MARK LOSES NO TRACKLIST` for two, `ARTISTS SEARCH ANDS THE WORDS`).
+- **Fix 1, `Browse::_placements`' claims memo (`_plcSig`):** keyed by the COUNTS of groups, release map and edition
+  titles, so the same-size completed list (aliases and all) swapped in within `PLC_MEMO_TTL` reused claims made
+  without its aliases: an album an alias claims stayed in "Also in your library" a visit longer. Now an md5 of what
+  `claimedLocalIds` reads: each listable group's id, title, type, aliases; each owned album's id, title, MusicBrainz
+  id, other-artist flag, credit; the release map for the owned albums' ids only; the edition titles (octets before
+  md5). 1.8 ms on the London Symphony Orchestra's 2,003 groups, against 254 ms for the claims. Carriers: the artist
+  page draw, the release page and TrackWarm (one answer when their inputs agree, now also when the release map
+  differs only in entries no owned album carries); "Also in your library" copies the claims, never mutates them.
+  `t_trackmatch.pl` §4: the old "again when the release map changes" assertion changed an entry no owned album
+  carries (it passed only because the key was loose: now a memo hit), plus a same-count alias and a same-size
+  release-map answer for an owned id, each asserting the CLAIMS' answer; 4 of the new assertions fail against
+  0.56.65's Browse.pm (scratchpad `anti/`), 80 / 0 against the fix.
+- **Fix 2 (simplification), `Classical::libraryWorks`' name tier:** calls `_composerIdsNamed([ $name ])` per name
+  instead of a copy of its loop; the first name whose entries hold works still decides. `t_classical.pl` 58 / 0.
+- **LIVE CHECK, once installed:** none user-visible to look for beyond "nothing changed": an artist page with an
+  owned untagged album placed by its tracks (McCoy Tyner) still reads Local on its tile, and its release page agrees.
 
 ### 0.56.65 (2026-10-08) — a work row plays the work; FOUND: Play at the top of an artist page sends a load with no filter — INSTALLED 2026-10-08, VERIFIED LIVE by Simon ("installed and works"), sha 39f1c135
 - **Build (Simon: "yes" to building 0.56.65):** install.xml, repo.xml, CACHE_VERSION (API / Sources / Browse) 0.56.65;

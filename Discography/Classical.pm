@@ -633,11 +633,8 @@ sub libraryWorks {
     for my $name (grep { defined && length } @{ $a{names} || [] }) {
         my $k = _nameKey($name);
         next if !length $k || $keys{$k}++;
-        my $r = _query(['artists', 0, 20, 'search:' . _chars($name), 'role_id:COMPOSER']) or next;
-        my @ids = grep { !$tried{$_}++ }
-                  map  { $_->{id} }
-                  grep { $_->{id} && _nameKey($_->{artist}) eq $k }
-                  @{ $r->getResult('artists_loop') || [] };
+        # One name at a time: the first name whose entries hold works decides.
+        my @ids = grep { !$tried{$_}++ } _composerIdsNamed([ $name ]);
         my $w = $run->(@ids);
         if (@$w) {
             _dbg("classical: library works by name '$name' (artist_id " . join('+', @ids) . ')');

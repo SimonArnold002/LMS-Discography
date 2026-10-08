@@ -279,7 +279,7 @@ my @RG4 = ({ mbid => $MT,  title => $MTT, type => 'Album', secondary => ['Live']
              secondary => [], date => '1976' });
 sub plc {
     my (%o) = @_;
-    return $B->can('_placements')->(mbid => $ART, artist => 'McCoy Tyner', rgs => [ map { +{ %$_ } } @RG4 ],
+    return $B->can('_placements')->(mbid => $ART, artist => 'McCoy Tyner', rgs => $o{rgs} || [ map { +{ %$_ } } @RG4 ],
         local => $o{local} || [ map { +{ %$_ } } @{ $LOCAL } ], relMap => $o{relMap} || {},
         editions => {}, ($o{need} ? (need => $o{need}) : ()), ($o{cands} ? (cands => $o{cands}) : ()));
 }
@@ -367,7 +367,24 @@ sub reset4 {
         plc(); plc();
         ok($n == 1, '4: the claims are worked out ONCE for the same inputs (the draw, then its release page)');
         plc(relMap => { 'rel-new' => $MT });
-        ok($n == 2, '4: ... and again when the release map changes (a later visit, after the check)');
+        ok($n == 1, '4: ... a release-map entry no owned album carries leaves them be (a claim only looks up owned ids)');
+
+        # THE KEY IS THE CONTENT, NOT THE COUNTS (review 2026-10-08): the
+        # completed list swapped in at the same size, now with an alias that
+        # claims the album, must not reuse the claims made without it.
+        my @al = map { +{ %$_ } } @RG4;
+        $al[2]{aliases} = [ 'McCoy Tyner Plays John Coltrane' ];
+        my $p2 = plc(rgs => \@al);
+        ok($n == 2, '4: ... and again when a group gains an alias at the same group count');
+        ok($p2->{claimed}{91}, '4: ... and the answer is the new one: the alias claims the album');
+        my $p3 = plc();
+        ok($n == 2 && !$p3->{claimed}{91}, '4: control: back to the list without the alias, its own kept claims answer: nothing claimed');
+
+        $LOCAL = [ { %$own, _albumid => 91, _mbid => 'rel-own' } ];
+        plc(relMap => { 'rel-own' => 'ffffffff-0000-4000-8000-0000000000ff' });
+        my $p4 = plc(relMap => { 'rel-own' => $ELL });
+        ok($n == 4, '4: ... and again when the release map answers differently for an owned id (same map size)');
+        ok($p4->{claimed}{91}, '4: ... and the answer is the new one: the id now names a group on the page');
     }
 
     reset4();
