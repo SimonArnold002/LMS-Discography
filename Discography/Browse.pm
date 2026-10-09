@@ -29,6 +29,7 @@ use Digest::MD5 ();
 use Plugins::Discography::API;
 use Plugins::Discography::Sources;
 use Plugins::Discography::Covers;
+use Plugins::Discography::Discogs;
 use Plugins::Discography::Classical;
 
 # The FUNCTION form (0.56.16): LMS's logger() takes the category as its first
@@ -39,7 +40,7 @@ my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.66';
+use constant CACHE_VERSION => '0.56.70';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 use constant REVIEW_FOUND_TTL => 30 * 86400;
@@ -109,6 +110,20 @@ use constant POOL_WAIT_MAX => 20;
 # 2026-10-02: a cold pool lands about 1.7 s after the page would have drawn
 # (Calum Scott, James Arthur); TIDAL's own watchdog is SVC_TIMEOUT, 20 s.
 use constant POOL_WAIT_SHOWN => 6;
+
+# Seconds an artist page waits for the first page of the artist's Discogs list
+# (2026-10-09; Simon: "I said dicogs first CAA nex", and the first visit's gaps:
+# a tile drawn before the list is here goes through the cover route, and past
+# the two requests it holds Material shows an empty tile until it is drawn
+# again). Asked as the page starts, beside MusicBrainz, the biography and the
+# pool, so it normally costs nothing: page 1 is 0.2-1 s for most artists,
+# 3-5 s for the biggest (Discogs answers a big artist's every page slowly).
+# Review 2026-10-09: only a FRESH entry waits, and at most this long from when
+# the artist's read STARTED (Discogs::readSince), however often the page is
+# built; a rebuild for a tap (a walk, a strip's More, a toggle) draws at once.
+# A read that failed is not asked again, or waited for, for two minutes
+# (Discogs FAIL_TTL), so a slow or failing Discogs costs a tap nothing.
+use constant DG_PAGE_WAIT => 5;
 
 # What a page NEVER lists (0.56.45; Simon, 2026-10-03: "only interested in the
 # true canonical catalogs of albums/singles not every recording made", "remixes
@@ -1670,10 +1685,10 @@ sub _discographyView {
             # first render — a bio popping in on a REBUILD would shift every
             # item_id below it (walk-stability).
             my ($bio, $bioDone, $rgs, $rgsErr, $local, $offDone, $rendered,
-                $poolDone, $extDone);
+                $poolDone, $extDone, $dgDone);
             my $render = sub {
                 return if $rendered || !$bioDone || !$offDone || !$poolDone
-                       || !$extDone || (!defined $rgs && !$rgsErr);
+                       || !$extDone || !$dgDone || (!defined $rgs && !$rgsErr);
                 $rendered = 1;
                 if ($rgsErr) {
                     $callback->({ items => [{
@@ -1705,15 +1720,16 @@ sub _discographyView {
             # A SHARED NAME TAKES THE EXACT ROUTE (0.56.22), not no biography:
             # MusicBrainz's Wikidata link for THIS act, never the name. Muzz
             # (the NYC trio) had none on 0.56.21; see _fetchExactBio.
+            #
+            # THE BIOGRAPHY LADDER (2026-10-08, _bioStart): the user's file,
+            # Qobuz (the pool's artist, then MusicBrainz's link), Deezer, then
+            # MAI as above. It is told the release groups and the pool's
+            # settling below; BIO_WAIT bounds it.
+            my $bioL;
             if ($prefs->get('show_bio')) {
-                Plugins::Discography::API->sharesNameWithProminentAsync(
-                    $opts->{artist}, $mbid, sub {
-                        my ($shared) = @_;
-                        my $fetch = $shared ? \&_fetchExactBio : \&_fetchArtistBio;
-                        $fetch->($client, $artist, $mbid, sub {
-                            $bio = shift; $bioDone = 1; $render->();
-                        });
-                    });
+                $bioL = _bioStart($client,
+                    { artist => $artist, artist_id => $opts->{artist_id}, mbid => $mbid },
+                    sub { $bio = shift; $bioDone = 1; $render->() });
             }
             else {
                 # Bio off (grid-friendly view): no text rows from us.
@@ -1733,6 +1749,53 @@ sub _discographyView {
             # the page any longer than it could before.
             _warmArtistExtras($client, $mbid, $artist,
                               sub { $extDone = 1; $render->() });
+
+            # DISCOGS BEFORE THE DRAW (DG_PAGE_WAIT says why): the artist's
+            # Discogs list is asked now, beside the reads above (its artist id
+            # comes from the artist read getReleaseGroups makes, joined, not a
+            # second request), and the page waits for its first page, newest
+            # first, so the tiles on a first visit carry their Discogs covers.
+            # The rest of the list lands after the draw. Bounded: a slow Discogs
+            # draws the page at the limit, the read going on for the covers.
+            # Only a fresh entry waits, DG_PAGE_WAIT from the read's start
+            # (review 2026-10-09): a rebuild for a tap draws at once, and so
+            # does a fresh entry once the read has used its wait.
+            {
+                my $dgTimer;
+                my $dgSettle = sub {
+                    return if $dgDone;
+                    $dgDone = 1;
+                    eval { Slim::Utils::Timers::killSpecific($dgTimer); 1 } if $dgTimer;
+                    $render->();
+                };
+                if ($opts->{fresh}) {
+                    eval { Plugins::Discography::Discogs->warm($mbid, $dgSettle, { first => 1 }); 1 }
+                        or $dgDone = 1;
+                    unless ($dgDone) {
+                        my $since = eval { Plugins::Discography::Discogs->readSince($mbid) } // time();
+                        my $at = $since + DG_PAGE_WAIT;
+                        if ($at <= time()) {
+                            _dbg('discogs: first page still out, its wait used - drawing now');
+                            $dgSettle->();
+                        }
+                        else {
+                            $dgTimer = eval {
+                                Slim::Utils::Timers::setTimer(undef, $at, sub {
+                                    return if $dgDone;
+                                    _dbg('discogs: first page not in after ' . DG_PAGE_WAIT . 's - drawing anyway');
+                                    $dgSettle->();
+                                });
+                            };
+                        }
+                    }
+                }
+                else {
+                    # A rebuild for a tap: drawn at once; the read still asked
+                    # for the covers (joined when one is out).
+                    eval { Plugins::Discography::Discogs->warm($mbid); 1 };
+                    $dgDone = 1;
+                }
+            }
 
             Plugins::Discography::API->getReleaseGroups(
                 mbid    => $mbid,
@@ -1790,6 +1853,12 @@ sub _discographyView {
                         . " (at most ${waitMax}s)")
                         if $await;
 
+                    # The biography ladder needs the page's releases (Deezer's
+                    # search is checked against them) and, once it has settled,
+                    # the pool (Qobuz's artist and its bio ride in it).
+                    my $spineT = _spineTitles($rgs);
+                    $bioL->{spine}->($spineT) if $bioL;
+
                     if ($await) {
                         # SAFETY NET: getCandidates fans out to several service
                         # plugins, and one that never calls back would leave the
@@ -1799,6 +1868,7 @@ sub _discographyView {
                         my $finish = sub {
                             return if $settled++;
                             $poolDone = 1;
+                            $bioL->{pool}->() if $bioL;
                             $render->();
                         };
                         Slim::Utils::Timers::setTimer(undef, time() + $waitMax,
@@ -1808,9 +1878,15 @@ sub _discographyView {
                                     . $waitMax . 's - rendering anyway');
                                 $finish->();
                             });
-                        $warm->(_spineTitles($rgs), $finish);
+                        $warm->($spineT, $finish);
                     }
-                    else { $warm->(_spineTitles($rgs)) }
+                    else {
+                        # A pool already cached: Qobuz's answer is there now (a
+                        # service still fetching in the background counts as
+                        # "could not tell", and the pick is kept a day).
+                        $warm->($spineT);
+                        $bioL->{pool}->() if $bioL;
+                    }
 
                     # Library albums, fetched ONCE here (sync DB) so the chain
                     # knows which owned releases the bootleg check leaves
@@ -1918,8 +1994,9 @@ sub _discographyView {
                     unless ($wait > 0) {           # 0 = never wait (opt-out)
                         # Opt-out means render NOW, so the extras flag is
                         # settled here too — it must never reintroduce a wait
-                        # the user has explicitly turned off.
-                        $offDone = 1; $extDone = 1; $render->();
+                        # the user has explicitly turned off. Discogs's first
+                        # page likewise (its read goes on for the covers).
+                        $offDone = 1; $extDone = 1; $dgDone = 1; $render->();
                         Plugins::Discography::API->warmBandMembers($mbid, sub {
                             $startBootleg->(undef);
                         });
@@ -1961,8 +2038,13 @@ sub _discographyView {
                 # the error row. There is nothing to await anyway: with no
                 # release groups there is no spine, so the streaming warm this
                 # flag exists to wait for is never started.
+                # The biography too: the error row shows none, and the ladder
+                # would otherwise hold it for BIO_WAIT. Told what it will not
+                # get, it still settles (and keeps its pick) in the background.
                 onError => sub {
-                    $rgsErr = 1; $offDone = 1; $poolDone = 1; $extDone = 1;
+                    $rgsErr = 1; $offDone = 1; $poolDone = 1; $extDone = 1; $bioDone = 1;
+                    $dgDone = 1;
+                    if ($bioL) { $bioL->{spine}->({}); $bioL->{pool}->() }
                     $render->();
                 },
             );
@@ -2183,6 +2265,13 @@ sub _fetchArtistBio {
                 next unless ref $it eq 'HASH';
                 my $t = $it->{name};
                 if (_maiNotFound($client, $t)) { _dbg("bio '$artist': MAI not-found answer"); next }
+                # A Last.fm page about SEVERAL acts of the name ("There are at
+                # least five bands with the name Dark Star") is no biography of
+                # the act on the page (the biography ladder, 2026-10-08;
+                # Prose::isMixedArtistPage has the measured cases).
+                if (my $p = _prose()) {
+                    if ($p->isMixedArtistPage($t)) { _dbg("bio '$artist': a page about several acts - none"); last }
+                }
                 if (defined(my $c = _cleanProse($t))) { $text = $c; last }
             }
             _dbg("bio '$artist': " . (defined $text ? 'len=' . length $text : 'empty'));
@@ -2286,6 +2375,293 @@ sub _fetchExactBio {
         $log->warn("MAI getArtistBioId threw: $@");
         $answer->(undef, BIO_EMPTY_TTL);
     }
+}
+
+# ---------------------------------------------------------------------------
+# THE BIOGRAPHY LADDER (2026-10-08; Simon: "If a user has Qobuz then first look
+# to get these from Qobuz, if it has none then ... the Deezer API ..., if this
+# has none fall back to how we currently pull them", and "some bios are for
+# multiple acts named the same ideally we pull whats correct"). First source that
+# has a biography wins:
+#
+#   local  the user's own bio file (MAI's LocalFile, MAI's first step today);
+#          on a shared name only by the library id, never by name
+#   qpool  QOBUZ: the artist the page's Qobuz pool settled on - the entity whose
+#          albums the page plays - with the bio from the reply the pool already
+#          read (Sources::_searchQobuz, peekPoolMeta), if it passes
+#          _serviceArtistOk
+#   qlink  QOBUZ: the Qobuz ids MusicBrainz links (url-rels), only when the pool's
+#          artist failed the check or has no bio, never re-asking its id
+#   dz     DEEZER, anonymous, no Deezer plugin: the ids MusicBrainz links, else
+#          the artist Deezer's own search finds that passes the same check
+#          (Prose::deezerFindArtist; the id kept per mbid)
+#   mai    MAI, as before: the exact route for a shared name, else the name
+#          route, where a page about several acts of the name counts as none
+#
+# The tiers run side by side; a tier's text is used as soon as every tier above
+# it has answered. BIO_WAIT bounds the whole ladder (the artist page used to wait
+# on MAI with no bound). The pick is kept under the mbid (dsc:bio:3:), a month
+# when every tier above it answered for sure, a day when one could not tell (a
+# timeout, the pool not in yet), so the preferred source is asked again soon.
+# A Qobuz or Deezer text ends with a line naming its source.
+# ---------------------------------------------------------------------------
+use constant BIO_WAIT      => 8;          # seconds the ladder may hold the page
+use constant DZID_FOUND_TTL => 30 * 86400; # a Deezer id the search found
+use constant DZID_NONE_TTL  =>  1 * 86400; # the search found none
+my @BIO_TIERS = qw(local qpool qlink dz mai);
+
+# The ladder's service clients, loaded at first use (SingleFlight's pattern in
+# Sources: a top-level `use` of a new sibling would die at BEGIN in the suites).
+my $proseOk;
+sub _prose {
+    $proseOk //= eval { require Plugins::Discography::Prose; 1 }
+        ? 'Plugins::Discography::Prose'
+        : do { $log->warn("biography/review service clients unavailable: $@"); '' };
+    return $proseOk || undef;
+}
+
+# IS THIS SERVICE ARTIST THE ACT ON THE PAGE? One check for the Qobuz pool's
+# artist and the artist Deezer's search finds. $cand = { name, score, spine }
+# (score: the page's releases its own albums matched, Sources::_spineScore;
+# spine: how many releases the page has). $names: MusicBrainz's names for the
+# act, normalised (the page name, the canonical name, the aliases).
+#   * its name must be one of them. That keeps Robert Plant's solo entity off
+#     the Robert Plant & Alison Krauss page (Qobuz files the duo's records under
+#     him, so his albums match 7 of its releases) and "Maxim Shostakovich" off
+#     "Shostakovich" (_pickArtist's token-subset fallback); 王菲 / Faye Wong pass
+#     by the alias;
+#   * its albums must match the page as the pools' resolver demands of a pick:
+#     SPINE_STRONG, or 1 for a page of one release; a page of none proves
+#     nothing. That keeps a last-resort weak pick off (0.47.2's Rossini rapper,
+#     1 title of a long spine).
+sub _serviceArtistOk {
+    my ($cand, $names) = @_;
+    return 0 unless ref $cand eq 'HASH';
+    my $n = $cand->{spine} // 0;
+    return 0 unless $n > 0;
+    my $strong = Plugins::Discography::Sources::SPINE_STRONG();
+    my $need = $n >= $strong ? $strong : 1;
+    return 0 unless ($cand->{score} // 0) >= $need;
+    my $cn = Plugins::Discography::Sources::_norm($cand->{name} // '');
+    return 0 if $cn eq '';
+    return (grep { $_ eq $cn } @{ $names || [] }) ? 1 : 0;
+}
+
+# MusicBrainz's names for the act, normalised: the page name first.
+sub _bioNames {
+    my ($mbid, $artist) = @_;
+    my $self = Plugins::Discography::Sources::_norm($artist // '');
+    return [ grep { length } $self, @{ _otherNames($mbid, $artist) } ];
+}
+
+# "(Source: ...)" as its own last paragraph.
+sub _withSource {
+    my ($client, $text, $what) = @_;
+    return $text unless defined $text && length $text && defined $what && length $what;
+    return $text . "\n\n" . cstring($client, 'PLUGIN_DISCOGRAPHY_SOURCE', $what);
+}
+
+# Deezer names the bio's own writer: "Music Story" (licensed), or "Deezer for
+# Creators" (written by the artist).
+sub _deezerSource {
+    my ($s) = @_;
+    $s = '' unless defined $s && !ref $s;
+    $s =~ s/^\s+|\s+$//g;
+    return 'Deezer' unless length $s;
+    return $s =~ /deezer/i ? $s : "$s via Deezer";
+}
+
+# _bioStart($client, { artist, artist_id, mbid }, $done) -> $ladder
+# $done->($text|undef) fires exactly once. The caller hands over what arrives
+# later: $ladder->{spine}->(\%titles) once the page's release groups are known
+# ({} when there are none), and $ladder->{pool}->() once the streaming pool has
+# settled or will not be waited for (Qobuz's answer is read from the pool cache
+# then). Both are safe to call more than once and after the pick.
+sub _bioStart {
+    my ($client, $args, $done) = @_;
+    my $artist = $args->{artist} // '';
+    my $mbid   = lc($args->{mbid} // '');
+    my $key    = Plugins::Discography::API::_bioPickKey($mbid);
+
+    my %noop = (spine => sub {}, pool => sub {});
+    if ($mbid && defined(my $c = _cacheGetText($key))) {
+        $done->(length $c ? $c : undef);
+        return \%noop;
+    }
+    unless ($mbid && length $artist) { $done->(undef); return \%noop }
+
+    my %st  = map { $_ => 'pending' } @BIO_TIERS;   # pending | text | none | unknown
+    my %txt;
+    my ($decided, $timer, $spine, $links, $linksSet, $poolSet, $poolMeta);
+    my $prose  = _prose();
+    my $qobuz  = (grep { $_->{name} eq 'Qobuz' }
+                  Plugins::Discography::Sources->orderedAdapters()) ? 1 : 0;
+
+    my $finish = sub {
+        my ($tier) = @_;
+        return if $decided++;
+        Slim::Utils::Timers::killSpecific($timer) if $timer;
+        my $text = defined $tier ? $txt{$tier} : undef;
+        my @above;
+        for my $t (@BIO_TIERS) { last if defined $tier && $t eq $tier; push @above, $t }
+        my $unsure = grep { $st{$_} eq 'unknown' || $st{$_} eq 'pending' } @above;
+        _cacheSetText($key, $text, (defined $text && !$unsure) ? BIO_FOUND_TTL : BIO_EMPTY_TTL);
+        _dbg("bio ladder '$artist' $mbid: " . (defined $tier ? "from $tier" : 'none') . ' ('
+            . join(', ', map { "$_=$st{$_}" } @BIO_TIERS) . ')'
+            . ($unsure ? ' - kept a day, a source above could not tell' : ''));
+        $done->($text);
+    };
+    my $try = sub {
+        return if $decided;
+        for my $t (@BIO_TIERS) {
+            return if $st{$t} eq 'pending';
+            return $finish->($t) if $st{$t} eq 'text';
+        }
+        $finish->(undef);
+    };
+    # $r: { text } | { none } | undef (could not tell); $src names the source.
+    my $land = sub {
+        my ($tier, $r, $src) = @_;
+        return if $decided || $st{$tier} ne 'pending';
+        my $t = ($r && defined $r->{text}) ? _cleanProse($r->{text}) : undef;
+        if (defined $t && length $t) { $st{$tier} = 'text'; $txt{$tier} = _withSource($client, $t, $src) }
+        else                         { $st{$tier} = $r ? 'none' : 'unknown' }
+        $try->();
+    };
+
+    # THE DEADLINE WAITS FOR THE POOL when the page does. The artist page draws
+    # only once its pool has settled (a cold one is awaited up to POOL_WAIT_MAX,
+    # 20 s), so deciding before the pool lands saves the page nothing and only
+    # loses Qobuz's answer. So once BIO_WAIT has passed the ladder decides as
+    # soon as the pool is in. Every caller tells the pool: the artist page once
+    # its pool has settled (its error path too), the works page at once.
+    my $expired;
+    my $cut = sub {
+        return if $decided;
+        _dbg("bio ladder '$artist': ${\ BIO_WAIT}s - deciding with what has answered");
+        $st{$_} = 'unknown' for grep { $st{$_} eq 'pending' } @BIO_TIERS;
+        $try->();
+    };
+    $timer = Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + BIO_WAIT, sub {
+        return if $decided;
+        $expired = 1;
+        return _dbg("bio ladder '$artist': ${\ BIO_WAIT}s - waiting for the pool, as the page is")
+            unless $poolSet;
+        $cut->();
+    });
+
+    # QOBUZ BY LINK: once the pool's answer and the links are both known.
+    my $qlinkGo = sub {
+        return unless $poolSet && $linksSet && $st{qlink} eq 'pending';
+        return $land->('qlink', { none => 1 }) if !$qobuz || !$prose || $st{qpool} eq 'text';
+        return $land->('qlink', undef) unless $links;      # the read failed
+        my @ids = @{ $links->{qobuz} || [] };
+        if ($poolMeta && grep { $_ eq ($poolMeta->{id} // '') } @ids) {
+            # MusicBrainz names the very entity the pool read: its reply is in hand.
+            return $land->('qlink', { text => $poolMeta->{bio} }, 'Qobuz') if $poolMeta->{bio};
+            @ids = grep { $_ ne $poolMeta->{id} } @ids;
+        }
+        return $land->('qlink', { none => 1 }) unless @ids;
+        $prose->qobuzArtistBio($client, \@ids, sub { $land->('qlink', $_[0], 'Qobuz') });
+    };
+
+    # DEEZER: the linked ids, else the id the search found (kept), else search.
+    my $dzGo = sub {
+        return unless $linksSet && $spine && $st{dz} eq 'pending';
+        return $land->('dz', { none => 1 }) unless $prose;
+        return $land->('dz', undef) unless $links;         # the read failed
+        my $dzLand = sub { my $r = shift; $land->('dz', $r, $r ? _deezerSource($r->{source}) : undef) };
+        if (my @ids = @{ $links->{deezer} || [] }) { return $prose->deezerBioFor(\@ids, $dzLand) }
+        my $idKey = Plugins::Discography::API::_dzIdKey($mbid);
+        my $kept = $cache->get($idKey);
+        if (defined $kept) {
+            return length $kept ? $prose->deezerBio($kept, $dzLand) : $land->('dz', { none => 1 });
+        }
+        return $land->('dz', undef) unless %$spine;         # nothing to check a hit against
+        my $query = Plugins::Discography::API->peekArtistName($mbid) // $artist;
+        $prose->deezerFindArtist(_bioNames($mbid, $artist), $spine, $query, sub {
+            my $r = shift;
+            if ($r && $r->{id}) {
+                eval { $cache->set($idKey, "$r->{id}", DZID_FOUND_TTL); 1 };
+                _dbg("bio ladder '$artist': Deezer artist $r->{id} found by search ($r->{score} of $r->{spine})");
+                return $prose->deezerBio($r->{id}, $dzLand);
+            }
+            eval { $cache->set($idKey, '', DZID_NONE_TTL); 1 } if $r;
+            $land->('dz', $r ? { none => 1 } : undef);
+        });
+    };
+
+    Plugins::Discography::API->warmServiceLinks($mbid, sub {
+        $links = shift; $linksSet = 1;
+        $qlinkGo->(); $dzGo->();
+    });
+
+    # The user's file, then MAI, once the same-name question is answered.
+    Plugins::Discography::API->sharesNameWithProminentAsync($artist, $mbid, sub {
+        my ($shared) = @_;
+        return if $decided;
+        my $lf;
+        eval {
+            $lf = Plugins::MusicArtistInfo::LocalFile->can('getBiography')
+                if Slim::Utils::PluginManager->isEnabled('Plugins::MusicArtistInfo::Plugin');
+            1;
+        };
+        my $items;
+        if ($lf && ($args->{artist_id} || !$shared)) {
+            $items = eval { $lf->('Plugins::MusicArtistInfo::LocalFile', $client, {},
+                { $args->{artist_id} ? (artist_id => $args->{artist_id}) : (artist => $artist) }) };
+        }
+        my ($t) = grep { defined } map { ref $_ eq 'HASH' ? $_->{name} : undef }
+                  @{ ref $items eq 'ARRAY' ? $items : [] };
+        $land->('local', defined $t ? { text => $t } : { none => 1 });
+        return if $decided;
+        my $fetch = $shared ? \&_fetchExactBio : \&_fetchArtistBio;
+        $fetch->($client, $artist, $mbid, sub {
+            my $t = shift;
+            # MAI's text is already cleaned and names its own source.
+            return if $decided || $st{mai} ne 'pending';
+            if (defined $t && length $t) { $st{mai} = 'text'; $txt{mai} = $t }
+            else                         { $st{mai} = 'none' }
+            $try->();
+        });
+    });
+
+    return {
+        spine => sub {
+            return if $spine;
+            $spine = ref $_[0] eq 'HASH' ? $_[0] : {};
+            $dzGo->();
+        },
+        pool => sub {
+            return if $poolSet++;
+            if (!$qobuz || !$prose) { $land->('qpool', { none => 1 }) }
+            else {
+                my $p = Plugins::Discography::Sources->peekPoolMeta('Qobuz', $artist, $mbid);
+                # Not in yet: could not tell. A page that builds no pool (the
+                # works page, `nopool`) has a sure answer instead: no pool artist.
+                if (!$p) { $land->('qpool', $args->{nopool} ? { none => 1 } : undef) }
+                elsif ($p->{unresolved} || !$p->{meta}) { $land->('qpool', { none => 1 }) }
+                elsif (_serviceArtistOk($p->{meta}, _bioNames($mbid, $artist))) {
+                    $poolMeta = $p->{meta};
+                    _dbg("bio ladder '$artist': Qobuz pool artist '" . ($poolMeta->{name} // '?')
+                        . "' ($poolMeta->{id}) passes ($poolMeta->{score} of $poolMeta->{spine})"
+                        . ($poolMeta->{bio} ? '' : ', no bio'));
+                    $land->('qpool', $poolMeta->{bio} ? { text => $poolMeta->{bio} } : { none => 1 }, 'Qobuz');
+                }
+                else {
+                    my $m = $p->{meta};
+                    # Kept for the link tier: MusicBrainz may name this same entity.
+                    $poolMeta = $m;
+                    _dbg("bio ladder '$artist': Qobuz pool artist '" . ($m->{name} // '?')
+                        . "' ($m->{id}) is not this act (" . ($m->{score} // 0) . " of " . ($m->{spine} // 0) . ')');
+                    $land->('qpool', { none => 1 });
+                }
+            }
+            $qlinkGo->();
+            # BIO_WAIT already passed while the page waited for its pool.
+            $cut->() if $expired;
+        },
+    };
 }
 
 # ---------------------------------------------------------------------------
@@ -3047,6 +3423,12 @@ sub _buildList {
     # (0.56.44; Simon: "a visit to another artist must then pause that and move
     # to the opened page").
     Plugins::Discography::Covers::newPage();
+    # The artist's Discogs entries, for the tiles with no cover of their own
+    # (Discogs.pm): an artist page asked for them as it started and waited for
+    # their first page (DG_PAGE_WAIT); asked here too for any other way in. A
+    # tile drawn before its entry comes goes through the cover route, which
+    # asks the archive only once Discogs has answered without it.
+    eval { Plugins::Discography::Discogs->warm($mbid); 1 };
     for my $g (_groupOrder($useH)) {
         my ($key, $token, $iconName) = @$g;
         my $rels = $bucket{$key} or next;
@@ -3750,11 +4132,17 @@ sub _worksView {
         $extDone = 1;    # 0 = never wait for the extras, as on the artist page
     }
 
+    # The same biography ladder as the album page (_bioStart), so a composer's
+    # two pages show one text. No pool here, but the album page's, if one was
+    # built, carries its own evidence; the releases are the album page's cached
+    # list, if any (none: Deezer's search has nothing to check a hit against, and
+    # the links alone are used).
     if ($prefs->get('show_bio')) {
-        Plugins::Discography::API->sharesNameWithProminentAsync($artist, $mbid, sub {
-            my $fetch = $_[0] ? \&_fetchExactBio : \&_fetchArtistBio;
-            $fetch->($client, $artist, $mbid, sub { $bio = shift; $bioDone = 1; $render->() });
-        });
+        my $bioL = _bioStart($client,
+            { artist => $artist, artist_id => $opts->{artist_id}, mbid => $mbid, nopool => 1 },
+            sub { $bio = shift; $bioDone = 1; $render->() });
+        $bioL->{spine}->(_spineTitles(Plugins::Discography::API->peekReleaseGroups($mbid)));
+        $bioL->{pool}->();
     }
     else {
         $bioDone = 1;
@@ -5336,6 +5724,29 @@ sub _withMbCandidates {
             return $layout->();
         }
 
+        # THE ACT THE NAME OPENS LEADS WHEN NOTHING ELSE WAS FOUND (2026-10-09;
+        # Simon, with no streaming service: "searching for Buckethead did not
+        # bring up top match like it normally does it did with Qobuz active").
+        # Two acts of the name and no row at all (no service, nothing owned)
+        # drew "No artists found" with both acts under Artists. Now the act a
+        # tap on the name opens is the Top Result, as the one act is (0.56.37):
+        # the name resolver's cached answer when it is among them, else
+        # MusicBrainz's first (getArtistCandidates' score order, which is what
+        # the resolver picks). Not when the typed name opens another act (C1).
+        # The others stay under Artists with the person icon; the lead gets its
+        # photo by name only when the resolver's answer names it.
+        unless (@{ $merged || [] }) {
+            my $typed = Plugins::Discography::API->peekArtistMbid($q);
+            my ($pick) = defined $typed ? grep { lc($_->{mbid} // '') eq lc $typed } @show
+                                        : ($show[0]);
+            if ($pick) {
+                $lead = _mbCandidateRow($client, $pick, $features, defined $typed ? 1 : 0);
+                @show = grep { $_ != $pick } @show;
+                _dbg("artist search '$q': nothing else found - $pick->{mbid}, the act the name"
+                    . ' opens, listed as the top result');
+            }
+        }
+
         _dbg("artist search '$q': " . scalar(@$cands)
             . ' MB artists share this name — listing ' . scalar(@show)
             . ' other' . ($covered ? ' (top one already a result row)' : ''));
@@ -5760,6 +6171,15 @@ sub _extid {
 # is opened; a tile behind "Show more" is wanted when that page is drawn
 # (Show more rebuilds the list). Covers queues them behind the tiles a device
 # is already asking for, and keeps them wanted for 05:00 (0.56.44).
+# A remote image through the server's image proxy, as MAI hands its Discogs
+# thumbnails to Material (Slim::Web::ImageProxy::proxiedImage); the url as it is
+# when the proxy is not there.
+sub _proxied {
+    my ($url) = @_;
+    my $p = eval { require Slim::Web::ImageProxy; Slim::Web::ImageProxy::proxiedImage($url) };
+    return defined $p && length $p ? $p : $url;
+}
+
 sub _wantCovers {
     my ($tiles) = @_;
     Plugins::Discography::Covers::want($_->{_caaWant})
@@ -5820,12 +6240,26 @@ sub _releaseItem {
     # for a tile still shown, while streaming is unresolved. No flags
     # (ListenBrainz never answered for this artist) = maybe. Nothing here reads
     # a cache: whether the proxy holds the cover is the proxy's first question.
+    #
+    # DISCOGS FIRST (2026-10-09, Discogs.pm; Simon: "it needs to use discogs
+    # first not after CAA"): the thumbnail of the artist's own Discogs entry for
+    # this release, when the artist's list is here already, through the server's
+    # image proxy as MAI's Discography menu shows them. Before the archive's
+    # "no cover" flag too: a release the archive has no cover for can have one
+    # on Discogs. Otherwise our route, told the artist so it asks Discogs first.
     my $caaWant;
     unless (defined $image) {
-        my $id   = lc($rg->{mbid} // '');
-        my $tile = _noCover($coverFlags, $id) ? undef : Plugins::Discography::Covers::tileImage($id);
-        if (defined $tile) { $image = $tile; $caaWant = $id }
-        else               { $image = _typeIcon($rg) }
+        my $id = lc($rg->{mbid} // '');
+        my $dg = eval { Plugins::Discography::Discogs->thumbFor($opts->{mbid}, $id) };
+        if (defined $dg) {
+            $image = _proxied($dg);
+        }
+        else {
+            my $tile = _noCover($coverFlags, $id) ? undef
+                     : Plugins::Discography::Covers::tileImage($id, $opts->{mbid});
+            if (defined $tile) { $image = $tile; $caaWant = $id }
+            else               { $image = _typeIcon($rg) }
+        }
     }
 
     # Service names stay in line2 (Simon, 2026-09-24): the badge (_extid) shows
@@ -6141,43 +6575,107 @@ sub _maiNotFound {
     return index($plain, $nf) == 0 ? 1 : 0;
 }
 
+# THE REVIEW LADDER (2026-10-08, beside the biography's; Simon: Qobuz first).
+# First source that has a review wins:
+#   local   the user's own review file (MAI's LocalFile, MAI's first step
+#           today), for an owned copy of this release
+#   qdesc   QOBUZ: a matched Qobuz copy's description already in the pool
+#           (Sources::_decorate `_desc`), no request
+#   qalbum  QOBUZ: the description album/get carries, for up to 3 matched copies
+#           (the Qobuz plugin caches it), Prose::qobuzAlbumDescription
+#   mai     MAI's album review, as before, its not-found answer skipped
+# Deezer has none (measured: pageAlbum's COMMENTS are users' comments). Run side
+# by side, decided as the biography is (_bioStart), bounded by BIO_WAIT; kept a
+# month, or a day when a source above the pick could not tell.
 sub _fetchAlbumReview {
     my ($client, $artist, $album, $rgMbid, $sections, $cb) = @_;
 
-    # v2 (2026-09-24): the cached text is `_cleanBio` output (setext headings,
-    # bullets) — v1 held the old flattened `_stripHtml` shape.
-    my $key = 'dsc:rev:2:' . $rgMbid;
+    # v3 (2026-10-08): the review ladder's pick (v2: MAI first, Qobuz after).
+    my $key = 'dsc:rev:3:' . $rgMbid;
     if (defined(my $c = _cacheGetText($key))) {
         $cb->(length $c ? $c : undef);   # '' = confirmed none
         return;
     }
 
-    my $qobuzFallback = sub {
-        my $desc;
-        for my $sec (@{ $sections || [] }) {
-            ($desc) = grep { defined && length } map { $_->{_desc} } @{ $sec->{items} };
-            last if $desc;
-        }
-        $desc = _cleanProse($desc);
-        _cacheSetText($key, $desc, (defined $desc && length $desc) ? REVIEW_FOUND_TTL : REVIEW_EMPTY_TTL);
-        $cb->( (defined $desc && length $desc) ? $desc : undef );
+    my @tiers = qw(local qdesc qalbum mai);
+    my %st = map { $_ => 'pending' } @tiers;
+    my (%txt, $decided, $timer);
+    my $finish = sub {
+        my ($tier) = @_;
+        return if $decided++;
+        Slim::Utils::Timers::killSpecific($timer) if $timer;
+        my $text = defined $tier ? $txt{$tier} : undef;
+        my @above;
+        for my $t (@tiers) { last if defined $tier && $t eq $tier; push @above, $t }
+        my $unsure = grep { $st{$_} eq 'unknown' || $st{$_} eq 'pending' } @above;
+        _cacheSetText($key, $text, (defined $text && !$unsure) ? REVIEW_FOUND_TTL : REVIEW_EMPTY_TTL);
+        _dbg("review ladder '$album': " . (defined $tier ? "from $tier" : 'none') . ' ('
+            . join(', ', map { "$_=$st{$_}" } @tiers) . ')');
+        $cb->($text);
     };
+    my $try = sub {
+        return if $decided;
+        for my $t (@tiers) {
+            return if $st{$t} eq 'pending';
+            return $finish->($t) if $st{$t} eq 'text';
+        }
+        $finish->(undef);
+    };
+    # $r: { text } | { none } | undef; $src names the source line, if any.
+    my $land = sub {
+        my ($tier, $r, $src, $clean) = @_;
+        return if $decided || $st{$tier} ne 'pending';
+        my $t = ($r && defined $r->{text}) ? ($clean ? $r->{text} : _cleanProse($r->{text})) : undef;
+        if (defined $t && length $t) { $st{$tier} = 'text'; $txt{$tier} = _withSource($client, $t, $src) }
+        else                         { $st{$tier} = $r ? 'none' : 'unknown' }
+        $try->();
+    };
+    $timer = Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + BIO_WAIT, sub {
+        return if $decided;
+        $st{$_} = 'unknown' for grep { $st{$_} eq 'pending' } @tiers;
+        $try->();
+    });
 
-    # MAI's albumreview as a direct function (LBF's bio pattern): guarded via
-    # can() — a signature/shape change in MAI degrades to the Qobuz fallback,
-    # never an error. Callback items carry the review text in `name`.
-    my $reviewFn;
+    my @items = map { @{ ref $_ eq 'HASH' && ref $_->{items} eq 'ARRAY' ? $_->{items} : [] } }
+                @{ $sections || [] };
+    my @qobuz = grep { ref $_ eq 'HASH' && ($_->{_svc} // '') eq 'Qobuz' } @items;
+    my ($localId) = map { $_->{_albumid} }
+                    grep { ref $_ eq 'HASH' && ($_->{_svc} // '') eq 'Local' && $_->{_albumid} && !$_->{_track} } @items;
+
+    # The MAI functions, guarded via can(): a signature or shape change in MAI
+    # degrades to the other sources, never an error.
+    my ($lf, $reviewFn);
     eval {
-        $reviewFn = Plugins::MusicArtistInfo::AlbumInfo->can('getAlbumReview')
-            if Slim::Utils::PluginManager->isEnabled('Plugins::MusicArtistInfo::Plugin');
+        if (Slim::Utils::PluginManager->isEnabled('Plugins::MusicArtistInfo::Plugin')) {
+            $lf       = Plugins::MusicArtistInfo::LocalFile->can('getAlbumReview');
+            $reviewFn = Plugins::MusicArtistInfo::AlbumInfo->can('getAlbumReview');
+        }
         1;
     };
-    unless ($reviewFn && length($artist // '') && length($album // '')) {
-        _dbg("review '$album': MAI " . ($reviewFn ? 'skipped (missing artist/album)' : 'unavailable') . " -> Qobuz fallback");
-        $qobuzFallback->();
-        return;
-    }
 
+    # The user's own file: by the owned copy, or by name in MAI's review folder.
+    my $lt;
+    if ($lf && length($artist // '') && length($album // '')) {
+        my $items = eval { $lf->('Plugins::MusicArtistInfo::LocalFile', $client, {},
+            { ($localId ? (album_id => $localId) : ()), album => $album, artist => $artist }) };
+        ($lt) = grep { defined } map { ref $_ eq 'HASH' ? $_->{name} : undef }
+                @{ ref $items eq 'ARRAY' ? $items : [] };
+    }
+    $land->('local', defined $lt ? { text => $lt } : { none => 1 });
+
+    # Qobuz: a description already in the pool, else album/get for the copies;
+    # not asked once a tier above has decided (the user's own file).
+    my ($desc) = grep { defined && !ref && /\S/ } map { $_->{_desc} } @qobuz;
+    $land->('qdesc', defined $desc ? { text => $desc } : { none => 1 }, 'Qobuz');
+    my @qids = grep { defined && length } map { $_->{_albumid} } @qobuz;
+    if (!$decided && !defined $desc && @qids && (my $p = _prose())) {
+        $p->qobuzAlbumDescription($client, \@qids, sub { $land->('qalbum', $_[0], 'Qobuz') });
+    }
+    else { $land->('qalbum', { none => 1 }) }
+
+    # MAI's album review.
+    return $land->('mai', { none => 1 })
+        unless $reviewFn && length($artist // '') && length($album // '') && !$decided;
     my $ok = eval {
         $reviewFn->($client, sub {
             my $items = shift || [];
@@ -6188,21 +6686,15 @@ sub _fetchAlbumReview {
                 if (_maiNotFound($client, $t)) { _dbg("review '$album': MAI not-found answer"); next }
                 if (defined(my $c = _cleanProse($t))) { $text = $c; last }
             }
-            if (defined $text && length $text) {
-                _dbg("review '$album': MAI len=" . length $text);
-                _cacheSetText($key, $text, REVIEW_FOUND_TTL);
-                $cb->($text);
-            }
-            else {
-                _dbg("review '$album': MAI empty -> Qobuz fallback");
-                $qobuzFallback->();
-            }
+            _dbg("review '$album': MAI " . (defined $text ? 'len=' . length $text : 'none'));
+            # MAI's text is already cleaned and names its own source.
+            $land->('mai', defined $text ? { text => $text } : { none => 1 }, undef, 1);
         }, {}, { artist => $artist, album => $album });
         1;
     };
     unless ($ok) {
         $log->warn("MAI albumreview threw: $@");
-        $qobuzFallback->();
+        $land->('mai', undef);
     }
 }
 

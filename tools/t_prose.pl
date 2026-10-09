@@ -52,6 +52,10 @@ BEGIN {
             ? "I'm sorry, didn't find any relevant information." : $_[1] };
     *{'Slim::Utils::Strings::stringExists'} = sub { !$main::NO_MAI_STRINGS };
     *{'Slim::Utils::PluginManager::isEnabled'} = sub { 1 };
+    # The review ladder (2026-10-08) arms a BIO_WAIT deadline; nothing here
+    # waits that long, so it never needs to fire.
+    *{'Slim::Utils::Timers::setTimer'}     = sub { 'timer' };
+    *{'Slim::Utils::Timers::killSpecific'} = sub { 1 };
     *{'Plugins::Discography::Plugin::dbg'} = sub { };
     # Browse.pm builds a table with it at load time (as t_detailshared.pl).
     *{'Plugins::Discography::Sources::_norm'} = sub {
@@ -281,21 +285,53 @@ sub bodies { map { $_->{text} } grep { !$_->{heading} } @_ }
     my $rev;
     f('_fetchAlbumReview', undef, 'Lambchop', 'Nixon', 'rg-nixon', [], sub { $rev = shift });
     ok(scalar(defined $rev && $rev =~ /\nComposition\n-{10}\n/), '7: review fetch returns cleaned text');
-    ok(scalar(exists $CACHE{'dsc:rev:2:rg-nixon'}), '7: review cached under dsc:rev:2');
+    ok(scalar(exists $CACHE{'dsc:rev:3:rg-nixon'}), '7: review cached under dsc:rev:3 (the review ladder)');
+
+    # THE REVIEW LADDER (2026-10-08): a Qobuz description comes FIRST now, with
+    # a line naming it; MAI's text is the fallback (it used to be the reverse).
+    %CACHE = (); @MAI_CALLS = ();
+    $MAI_REVIEW = $NIXON;
+    my $sections = [ { items => [ { _svc => 'Qobuz', _desc => '<p>Qobuz says <b>hello</b> &amp; welcome.</p>' } ] } ];
+    my $fb;
+    f('_fetchAlbumReview', undef, 'Lambchop', 'Nixon', 'rg-x', $sections, sub { $fb = shift });
+    ok(scalar(defined $fb && $fb =~ /\AQobuz says hello & welcome\.\n\nPLUGIN_DISCOGRAPHY_SOURCE\z/),
+       '7: a Qobuz description wins over MAI, cleaned the same way, with its source line');
 
     %CACHE = ();
     $MAI_REVIEW = '<h4>More online sources</h4><ul><li><a href="a">Tidal</a></li></ul>';
-    my $sections = [ { items => [ { _desc => '<p>Qobuz says <b>hello</b> &amp; welcome.</p>' } ] } ];
-    my $fb;
-    f('_fetchAlbumReview', undef, 'Lambchop', 'Nixon', 'rg-x', $sections, sub { $fb = shift });
-    ok(scalar(defined $fb && $fb eq 'Qobuz says hello & welcome.'),
-       '7: a links-only MAI review falls back to the Qobuz description, cleaned the same way');
+    my $fb2;
+    f('_fetchAlbumReview', undef, 'Lambchop', 'Nixon', 'rg-x2', $sections, sub { $fb2 = shift });
+    ok(scalar(defined $fb2 && $fb2 =~ /\AQobuz says hello/),
+       '7: ... and with a links-only MAI review, still the Qobuz description');
 
     %CACHE = ();
     my $none = 'unset';
     f('_fetchAlbumReview', undef, 'Lambchop', 'Nixon', 'rg-y', [], sub { $none = shift });
-    ok(scalar(!defined $none && defined $CACHE{'dsc:rev:2:rg-y'} && $CACHE{'dsc:rev:2:rg-y'} eq ''),
+    ok(scalar(!defined $none && defined $CACHE{'dsc:rev:3:rg-y'} && $CACHE{'dsc:rev:3:rg-y'} eq ''),
        '7: nothing anywhere = undef, cached as confirmed-none');
+
+    # The user's own review file decides: nothing below it is asked
+    # (review 2026-10-09, finding 5: Qobuz's album/get was still sent).
+    require Plugins::Discography::Prose;
+    my @qd;
+    {
+        no strict 'refs'; no warnings qw(redefine once);
+        local *{'Plugins::Discography::Prose::qobuzAlbumDescription'} = sub { push @qd, $_[2]; $_[3]->({ none => 1 }) };
+        my $own;
+        local *{'Plugins::MusicArtistInfo::LocalFile::getAlbumReview'} = sub { $own };
+        my $copies = [ { items => [ { _svc => 'Qobuz', _albumid => 'q1' }, { _svc => 'Local', _albumid => 7 } ] } ];
+
+        %CACHE = (); @MAI_CALLS = (); $own = [ { name => '<p>My own notes on Nixon.</p>' } ];
+        my $mine;
+        f('_fetchAlbumReview', undef, 'Lambchop', 'Nixon', 'rg-own', $copies, sub { $mine = shift });
+        ok(scalar(defined $mine && $mine =~ /\AMy own notes on Nixon\./), "7: the user's own review file wins");
+        ok(scalar(!@qd && !grep { $_->[0] eq 'review' } @MAI_CALLS),
+           "7: ... and Qobuz's album/get and MAI are not asked once it has");
+
+        %CACHE = (); @MAI_CALLS = (); @qd = (); $own = [];
+        f('_fetchAlbumReview', undef, 'Lambchop', 'Nixon', 'rg-own2', $copies, sub { });
+        ok(scalar(@qd == 1 && join(',', @{ $qd[0] }) eq 'q1'), "7: (control) no file of their own -> Qobuz's album/get asked for the copy");
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -349,16 +385,16 @@ sub bodies { map { $_->{text} } grep { !$_->{heading} } @_ }
 
     %CACHE = (); @MAI_CALLS = ();
     $MAI_REVIEW = $nf;
-    my $sections = [ { items => [ { _desc => '<p>Kraftwerk go pocket calculator.</p>' } ] } ];
+    my $sections = [ { items => [ { _svc => 'Qobuz', _desc => '<p>Kraftwerk go pocket calculator.</p>' } ] } ];
     my $got;
     f('_fetchAlbumReview', undef, 'Kraftwerk', 'Computer World', 'rg-cw', $sections, sub { $got = shift });
-    ok(scalar(defined $got && $got eq 'Kraftwerk go pocket calculator.'),
+    ok(scalar(defined $got && $got =~ /\AKraftwerk go pocket calculator\.\n\n/),
        '10: MAI not-found -> the Qobuz description is used');
 
     %CACHE = ();
     my $none = 'unset';
     f('_fetchAlbumReview', undef, 'Kraftwerk', 'Computer World', 'rg-cw2', [], sub { $none = shift });
-    ok(scalar(!defined $none && ($CACHE{'dsc:rev:2:rg-cw2'} // 'x') eq ''),
+    ok(scalar(!defined $none && ($CACHE{'dsc:rev:3:rg-cw2'} // 'x') eq ''),
        '10: MAI not-found and no Qobuz text -> no review section, cached as confirmed-none');
 
     %CACHE = ();

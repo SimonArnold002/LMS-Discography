@@ -16,6 +16,10 @@
 # Covers::tileImage, against a fake kv store (Covers' failure row) and a fake
 # proxy cache that must never be read while a tile is built.
 #
+# Since 2026-10-09 (section 7) a tile asks Discogs first: the thumbnail of the
+# artist's own Discogs entry when its list is cached, else the route as above,
+# told the artist so the route asks Discogs before the archive.
+#
 # Standalone, no LMS install needed:  perl tools/t_tilecover.pl
 #
 use strict;
@@ -193,6 +197,51 @@ for my $c ([ rg(), 'release-album' ], [ rg(type => 'EP'), 'release-ep' ],
               && scalar(($bl // '') =~ /_releaseItem\(\$client, \$opts, \$_->\[0\], \$_->\[1\], \$coverFlags\)/)),
        '6: _buildList reads the flags once before the release loop, starts a new cover page, hands the flags to every tile');
     ok(scalar($br !~ /_caaHeld|CAA_HELD_SPECS/), '6: no tile reads the proxy cache any more (_caaHeld is gone)');
+}
+
+# 7. Discogs first (2026-10-09, Discogs.pm; Simon: "it needs to use discogs first
+#    not after CAA"), through the REAL Discogs.pm: the thumbnail of the artist's
+#    own Discogs entry when its list is cached, before the archive's no-cover
+#    flag; otherwise the route, told the artist so it asks Discogs first.
+{
+    no warnings qw(redefine once);
+    my $ART = '8247a3f2-3a8e-4256-b322-6c57b03a4e36';
+    my $DGK = "dsc:dg:v2:$ART";
+    my $THUMB = 'https://i.discogs.com/5.jpg';
+    local *Plugins::Discography::API::peekReleaseGroups = sub {
+        [ { mbid => $MB, title => 'T', date => '2023-01-01', discogs => 'master:5' } ] };
+    local *Slim::Web::ImageProxy::proxiedImage = sub { "/imageproxy/PROXIED[$_[0]]/image.png" };
+    my $dgFresh = sub { fresh(); Plugins::Discography::Discogs::_resetForSuite() };
+    my $list = [ { kind => 'master', id => 5, title => 'T', year => 2023, thumb => $THUMB } ];
+
+    $dgFresh->();
+    $STORE{$DGK} = $list;
+    my $t = $tile->(undef, { mbid => $ART }, rg(), []);
+    ok(scalar(($t->{image} // '') eq "/imageproxy/PROXIED[$THUMB]/image.png" && !exists $t->{_caaWant}),
+       "7: the artist's Discogs list cached -> the thumbnail through the image proxy, nothing wanted from the archive");
+    $dgFresh->();
+    $STORE{$DGK} = $list;
+    $t = $tile->(undef, { mbid => $ART }, rg(), [], { lc $MB => 0 });
+    ok(scalar(($t->{image} // '') eq "/imageproxy/PROXIED[$THUMB]/image.png"),
+       '7: ... before the archive\'s "no cover" flag (the archive lacking one says nothing of Discogs)');
+    $dgFresh->();
+    $STORE{$DGK} = $list;
+    $t = $tile->(undef, { mbid => $ART }, rg(), [ sec('Local', { _svc => 'Local', _albumid => 1, _cover => '/music/9/cover', play => 'db:album.id=1' }) ]);
+    ok(scalar(($t->{image} // '') eq '/music/9/cover'), '7: a source cover still wins (owned and streaming copies keep their own)');
+
+    $dgFresh->();
+    $STORE{$DGK} = [];                               # read: nothing for this release
+    $t = $tile->(undef, { mbid => $ART }, rg(), []);
+    ok(scalar(($t->{image} // '') eq $ROUTE && ($t->{_caaWant} // '') eq $MB), '7: no Discogs thumbnail -> the route, as before');
+    $STORE{$DGK} = $list;                            # the list comes before the device asks
+    Plugins::Discography::Discogs::_resetForSuite();
+    my $r = Plugins::Discography::Covers::tileHandler("dsc/caa/$MB", '300x300_f.jpg', sub {});
+    ok(scalar(($r // '') eq $THUMB), '7: ... and the route was told the artist: its handler answers with the thumbnail');
+
+    $dgFresh->();
+    $STORE{$DGK} = $list;
+    $t = $tile->(undef, {}, rg(), []);
+    ok(scalar(($t->{image} // '') eq $ROUTE), '7: (control) no artist mbid on the page -> no Discogs look-up, the route');
 }
 
 print "\n$pass passed, $fail failed\n";

@@ -56,7 +56,7 @@ my $prefs = preferences('plugin.discography');
 # first module to call DB->store() sets it and later calls are ignored.
 # tools/syntax_check.sh asserts all three agree and match install.xml.
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.66';
+use constant CACHE_VERSION => '0.56.70';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 # The families DB.pm keeps across builds, by their CURRENT key prefix, so rows
 # written under an older key version are retired at open. Taken from the key
@@ -826,7 +826,8 @@ use constant ARTIST_RG_LIST_MAX => 25;
 
 # Bump when the cached release-group shape or filtering changes — versioned key
 # invalidates every stale entry at once (the fleet's bump-every-layer rule).
-use constant RG_CACHE_V => 'v2';   # v2 adds `aliases` to each entry
+use constant RG_CACHE_V => 'v3';   # v2 adds `aliases` to each entry
+                                    # v3 adds `discogs` (the group's Discogs master)
 
 # UA per MB etiquette: identify the app + a contact URL. Version read from the
 # plugin manifest so it can't drift.
@@ -2786,6 +2787,7 @@ sub completeArtist {
                 };
                 return $done->("cache set failed: $@") unless $ok;
                 $cache->remove($_) for _rgFastKey($mbid), _cmDiscoKey($mbid);
+                _discogsLinksChanged($mbid);
                 _dbg("completed $mbid from MusicBrainz: " . scalar(@merged) . ' groups ('
                      . scalar(@$mb) . " of $total browsed, " . scalar(@kept) . ' kept past the cap), '
                      . scalar(keys %{ $res->{o} }) . ' verdicts, for the next visit');
@@ -2809,6 +2811,7 @@ sub promoteCompleted {
     eval { $cache->set(_rgKey($mbid), $next, RG_TTL); 1 } or return 0;
     # MusicBrainz's list now: no first list is left to complete.
     $cache->remove($_) for _rgNextKey($mbid), _rgFastKey($mbid), _cmDiscoKey($mbid);
+    _discogsLinksChanged($mbid);
     _dbg("release groups for $mbid: MusicBrainz's completed list (" . scalar(@$next)
          . ') replaces the first one');
     return 1;
@@ -4375,6 +4378,35 @@ sub peekReleaseGroups {
     return ref $c eq 'ARRAY' ? $c : undef;
 }
 
+# Cache-only: { group mbid => 'master:<id>' | 'release:<id>' } from MusicBrainz's
+# completed list while it waits for the next fresh entry (promoteCompleted), or
+# undef when there is none. For the covers only (Discogs::_map): a first visit's
+# list comes from ListenBrainz and the community API, which carry no Discogs
+# links, and MusicBrainz's arrive with its completed list 8-23 s in (measured
+# 2026-10-09: Herbie Hancock's first visit matched 9 of 23 tiles to Discogs, the
+# next 16). The page's own list does not change under the client.
+sub peekNextDiscogsLinks {
+    my ($class, $mbid) = @_;
+    return undef unless $mbid;
+    my $n = $cache->get(_rgNextKey($mbid));
+    return undef unless ref $n eq 'ARRAY';
+    my %l;
+    for my $g (@$n) {
+        next unless ref $g eq 'HASH' && $g->{discogs} && $g->{mbid};
+        $l{ lc $g->{mbid} } = $g->{discogs};
+    }
+    return \%l;
+}
+
+# The artist's Discogs links changed (a completed list landed or was promoted):
+# Discogs.pm rebuilds its match and wakes the cover queue.
+sub _discogsLinksChanged {
+    my ($mbid) = @_;
+    my $d = 'Plugins::Discography::Discogs';
+    eval { $d->linksChanged($mbid) if $d->can('linksChanged'); 1 };
+    return;
+}
+
 sub getReleaseGroups {
     my ($class, %a) = @_;
     my $mbid    = $a{mbid} or do { ($a{onError} || sub {})->('no mbid'); return };
@@ -4569,9 +4601,14 @@ sub _browseGroups {
         # release group `3rd` (alias "Third"). Measured cost: NO extra requests
         # (same call, one more parameter) and +20% payload on a 100-RG page
         # (28.4KB -> 34.2KB); only ~5% of release groups carry an alias at all.
+        # +url-rels (2026-10-09): each group's Discogs master, so a tile with
+        # no cover of its own takes the Discogs thumbnail by ID, not by title
+        # (Discogs.pm; Simon: Discogs first, then the archive). Measured on
+        # Bill Evans's first 100 groups: a `discogs.com/master/<id>` link on
+        # 61, never two on one group; no extra request, the page 30 KB -> 107 KB.
         my $url = _mbBase() . 'release-group?artist=' . $mbid
                 . '&limit=' . RG_PAGE_SIZE . '&offset=' . $offset
-                . '&inc=aliases&fmt=json';
+                . '&inc=aliases+url-rels&fmt=json';
 
         $log->info("fetching release groups: $url");
 
@@ -4641,6 +4678,7 @@ sub _rgEntry {
             push @aka, $n unless $seenAka{$n}++;
         }
     }
+    my $dg = _discogsOf($rg->{relations});
     return {
         mbid      => lc $rg->{id},
         title     => $rg->{title},
@@ -4649,7 +4687,22 @@ sub _rgEntry {
         secondary => ref $rg->{'secondary-types'} eq 'ARRAY'
                        ? $rg->{'secondary-types'} : [],
         (@aka ? (aliases => \@aka) : ()),
+        (defined $dg ? (discogs => $dg) : ()),
     };
+}
+
+# A group's Discogs entry from its url-rels: 'master:<id>' (or 'release:<id>'),
+# the first one; undef without. Only the browse asks for url-rels; the artist
+# read's group list carries none, so its groups match by title (Discogs.pm).
+sub _discogsOf {
+    my ($rels) = @_;
+    for my $rel (@{ ref $rels eq 'ARRAY' ? $rels : [] }) {
+        next unless ref $rel eq 'HASH' && ref $rel->{url} eq 'HASH';
+        my ($kind, $id) = ($rel->{url}{resource} // '')
+            =~ m{^https?://(?:www\.)?discogs\.com/(?:[a-z]{2}/)?(master|release)/(\d+)(?:[/?#-]|$)}i;
+        return lc($kind) . ":$id" if $kind;
+    }
+    return undef;
 }
 
 # An alias that is ANOTHER group's canonical title already has an owner, so
@@ -4694,6 +4747,12 @@ sub clearArtistMbid {
 # never its name (0.56.22, Browse::_fetchExactBio). Lives here so Refresh below
 # and the page use one spelling.
 sub _bioMbidKey { return 'dsc:biomb:1:' . lc($_[0] // '') }
+
+# The biography ladder's chosen text (Browse::_bioStart), and the Deezer artist
+# id its search found for an artist MusicBrainz links no Deezer page for. Both by
+# mbid, here for the same reason as the key above.
+sub _bioPickKey { return 'dsc:bio:3:'  . lc($_[0] // '') }
+sub _dzIdKey    { return 'dsc:dzid:1:' . lc($_[0] // '') }
 
 # Clear ALL of an artist's cached MusicBrainz data in one shot: resolution (mbid,
 # incl. the '' miss sentinel), release-group list, bootleg map, band members,
@@ -4775,6 +4834,10 @@ sub clearArtistCache {
         $cache->remove(_bandsKey($mbid));    push @cleared, 'bands';
         $cache->remove(_eponymKey(lc $mbid)); push @cleared, 'eponym';
         $cache->remove(_bioMbidKey($mbid));  push @cleared, 'bio-mbid';
+        # The biography ladder's pick, the service links it reads, and the
+        # Deezer artist its search found (Browse::_bioStart).
+        $cache->remove($_) for _bioPickKey($mbid), _svcLinksKey($mbid), _dzIdKey($mbid);
+        push @cleared, 'bio-ladder';
         $cache->remove(_collabsKey($mbid));
         $cache->remove(_collabCandKey($mbid)); push @cleared, 'collabs';
         $cache->remove(_rgCountKey($mbid));  push @cleared, 'rgcount';
@@ -5173,6 +5236,65 @@ sub peekEponymous {
     return $cache->get(_eponymKey(lc $artistMbid));
 }
 
+# THE ARTIST'S QOBUZ AND DEEZER PAGES, from MusicBrainz's url-rels (the
+# biography ladder, Browse::_bioStart). Read by the same artist read as the bands
+# (_readArtist), so no request of its own. Measured on 60 library artists
+# (mirror, 2026-10-08): a Deezer link for 52, a Qobuz link for 35; the second act
+# of a shared name has its own (Sonic Boom: Andrew Huang's group 226566565, Pete
+# Kember 402809). The forms seen: deezer.com/artist/<id>,
+# open.qobuz.com/artist/<id>, qobuz.com/<locale>/interpreter/<slug>/<id>. A Qobuz
+# link with no number (`.../interpreter/<slug>/download-streaming-albums`) names
+# no artist id and is skipped. And the artist's Discogs page (2026-10-09, the
+# covers of tiles with no cover of their own, Discogs.pm): discogs.com/artist/<id>,
+# Bill Evans 252310.
+sub _svcLinksKey { 'dsc:svclinks:v1:' . $_[0] }
+
+sub _svcLinks {
+    my ($rels) = @_;
+    my (%seen, %out);
+    $out{$_} = [] for qw(qobuz deezer discogs);
+    for my $rel (@{ ref $rels eq 'ARRAY' ? $rels : [] }) {
+        next unless ref $rel eq 'HASH' && ref $rel->{url} eq 'HASH';
+        my $u = $rel->{url}{resource} // '';
+        my ($svc, $id);
+        if ($u =~ m{^https?://(?:www\.)?deezer\.com/(?:[a-z]{2}(?:-[a-z]{2})?/)?artist/(\d+)(?:[/?#]|$)}i) {
+            ($svc, $id) = ('deezer', $1);
+        }
+        elsif ($u =~ m{^https?://(?:www\.|open\.|play\.)?qobuz\.com/(?:[a-z]{2}-[a-z]{2}/)?(?:artist/(\d+)|interpreter/[^/]+/(\d+))(?:[/?#]|$)}i) {
+            ($svc, $id) = ('qobuz', $1 // $2);
+        }
+        elsif ($u =~ m{^https?://(?:www\.)?discogs\.com/(?:[a-z]{2}/)?artist/(\d+)(?:[/?#-]|$)}i) {
+            ($svc, $id) = ('discogs', $1);
+        }
+        next unless $svc && !$seen{"$svc:$id"}++;
+        push @{ $out{$svc} }, $id;
+    }
+    # Lowest id first: a service's oldest entity for an act is its main one more
+    # often than not (Radiohead's Deezer 399 over 323887691).
+    $out{$_} = [ sort { $a <=> $b } @{ $out{$_} } ] for keys %out;
+    return \%out;
+}
+
+# Cache-only, sync: { qobuz => [ids], deezer => [ids], discogs => [ids] }, or
+# undef until the artist has been read (a list cached before 2026-10-09 has no
+# `discogs`: read as none).
+sub peekServiceLinks {
+    my ($class, $artistMbid) = @_;
+    return undef unless $artistMbid;
+    return $cache->get(_svcLinksKey(lc $artistMbid));
+}
+
+# The links, read if need be: $cb->($links) once, $links undef when the read
+# failed (nothing cached, the next visit asks again).
+sub warmServiceLinks {
+    my ($class, $artistMbid, $cb) = @_;
+    $cb ||= sub {};
+    return $cb->(undef) unless $artistMbid;
+    if (defined(my $l = $class->peekServiceLinks($artistMbid))) { return $cb->($l) }
+    _readArtist(lc $artistMbid, sub { $cb->($class->peekServiceLinks($artistMbid)) });
+    return;
+}
+
 # COLLABORATIONS (Simon, 2026-09-19). The SAME artist-rels response carries
 # MusicBrainz "collaboration" links — Holly Golightly -> "Holly Golightly and The
 # Brokeoffs", where she is recorded as a collaborator, not a band member. Most
@@ -5381,7 +5503,7 @@ sub _readArtist {
         }
     };
 
-    my $job = _netGet(_mbBase() . "artist/$mbid?inc=aliases+artist-rels+release-groups&fmt=json",
+    my $job = _netGet(_mbBase() . "artist/$mbid?inc=aliases+artist-rels+release-groups+url-rels&fmt=json",
         sub {
             my $d = eval { from_json(shift->content) };
             if ($@ || ref $d ne 'HASH') {
@@ -5479,6 +5601,16 @@ sub _readArtist {
                  . ' candidate(s) to vet'
                  . (@cands ? ': ' . join(', ', map { $_->{name} } @cands) : ''));
 
+            # THE ARTIST'S OWN SERVICE PAGES (url-rels, the biography ladder:
+            # Browse::_bioStart). MusicBrainz links an artist to its Qobuz and
+            # Deezer artist pages; the link is the artist's identity there, even
+            # for an act that shares its name. Same lifetime as the bands.
+            my $links = _svcLinks($rels);
+            eval { $cache->set(_svcLinksKey(lc $mbid), $links, BANDS_TTL); 1 }
+                or $log->warn("service-links cache set failed: $@");
+            _dbg("service links $mbid: qobuz " . (join(',', @{ $links->{qobuz} }) || '-')
+                 . ', deezer ' . (join(',', @{ $links->{deezer} }) || '-'));
+
             # THE SPINE, when the list is whole (see the header). Built and
             # pruned as the browse builds it, in the browse's order.
             my $spine;
@@ -5523,8 +5655,11 @@ sub warmBandMembers {
     # The eponymous member too: it is written by the same read, and a band list
     # cached without it would keep the leader from ever being read (the v2 note
     # at _bandsKey).
+    # And the service links (url-rels), written by the same read since the
+    # biography ladder: a band list cached without them would keep them unread.
     return $cb->() if defined $cache->get(_bandsKey($artistMbid))
                    && defined $cache->get(_eponymKey(lc $artistMbid))
+                   && defined $cache->get(_svcLinksKey(lc $artistMbid))
                    && (defined $cache->get(_collabsKey($artistMbid))
                        || defined $cache->get(_collabCandKey($artistMbid)));
     _readArtist($artistMbid, sub { $cb->() });

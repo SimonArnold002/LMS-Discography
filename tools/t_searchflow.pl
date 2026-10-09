@@ -487,12 +487,13 @@ section('8', sub {
     ok(scalar($labels->($rows) eq 'H:TOP_RESULT|Madness'),
        '8: one result -> Top Result, no Artists heading');
 
-    # Nothing on the services or in the library: the line stays, the
-    # MusicBrainz acts go under Artists, no Top Result.
+    # Nothing on the services or in the library: the act the name opens is the
+    # Top Result, the other under Artists (2026-10-09, Simon: Buckethead with no
+    # streaming service; before, "No artists found" and both under Artists).
     $CANDS = [ map { { mbid => id($_), name => 'Madness', disambiguation => "act $_" } } 81 .. 82 ];
     $rows = $run->('Madness', []);
-    ok(scalar($labels->($rows) eq 'PLUGIN_DISCOGRAPHY_SEARCH_NONE|H:ARTISTS_HDR|MB:81|MB:82'),
-       '8: nothing found -> "No artists found", then the MusicBrainz acts under Artists');
+    ok(scalar($labels->($rows) eq 'H:TOP_RESULT|MB:81|H:ARTISTS_HDR|MB:82'),
+       "8: nothing found -> MusicBrainz's first act the Top Result, the other under Artists, no \"No artists found\"");
 
     # An unowned row named as typed already reaches MB's top act: dropped from
     # the same-name acts (0.43.2's rule, unchanged).
@@ -757,8 +758,36 @@ section('10', sub {
        '10: control: no MusicBrainz act -> the page as before, nothing looked up or asked');
     $CANDS = [ map { { mbid => id($_), name => 'Madness', disambiguation => "act $_" } } 81 .. 82 ];
     %COUNT = map { (id($_) => 5) } 81 .. 82;
+    ok(scalar($run->('Madness', []) eq 'H:TOP_RESULT|MB:81|H:ARTISTS_HDR|MB:82'),
+       '10: two acts and nothing found -> the first the Top Result (2026-10-09), the other under Artists');
+    %RESOLVED = ('madness' => id(82));
+    ok(scalar($run->('Madness', []) eq 'H:TOP_RESULT|MB:82|H:ARTISTS_HDR|MB:81'),
+       "10: ... the name resolver's answer leads when it is one of them");
+    %RESOLVED = ('madness' => id(99));
     ok(scalar($run->('Madness', []) eq 'PLUGIN_DISCOGRAPHY_SEARCH_NONE|H:ARTISTS_HDR|MB:81|MB:82'),
-       '10: control: two acts and nothing found -> "No artists found" then the acts, as before');
+       '10: ... the typed name opens another act (C1) -> no Top Result, the acts under Artists as before');
+    %RESOLVED = ();
+    ok(scalar($run->('Madness', [ { name => 'Madness', sources => ['Qobuz'], _seq => 0 } ])
+              eq 'H:TOP_RESULT|Madness|H:ARTISTS_HDR|MB:82'),
+       '10: (control) a row found -> it leads as before, the act it reaches not listed again');
+    {
+        # The lead's photo: by name only when the resolver's answer names it.
+        local *{'Plugins::Discography::Sources::orderedAdapters'} = sub { ({ name => 'Qobuz' }) };
+        my $leadImg = sub {
+            my $o;
+            $realWith->('client', sub { $o = $_[0] }, '', 'Madness', []);
+            my ($r) = grep { ((($_->{passthrough} || [])->[0] || {})->{c_mbid} // '') eq $_[0] }
+                      @{ ($o || {})->{items} || [] };
+            return $r ? ($r->{image} // '') : 'NO ROW';
+        };
+        %RESOLVED = ('madness' => id(82));
+        ok(scalar($leadImg->(id(82)) =~ m{^imageproxy/dsc/artist/Madness/}),
+           "10: ... a lead the resolver names gets the name's photo");
+        %RESOLVED = ();
+        my $img = $leadImg->(id(81));
+        ok(scalar($img ne 'NO ROW' && $img !~ m{^imageproxy/dsc/artist/}),
+           '10: ... a lead taken as MusicBrainz\'s first keeps the person icon (never a guessed photo)');
+    }
     ($CANDS, %RESOLVED, %COUNT) = (undef);
 });
 
@@ -850,8 +879,8 @@ section('11', sub {
     %COUNT = ();
     $CANDS = [ map { { mbid => id($_), name => 'Madness', disambiguation => "act $_" } } 81 .. 82 ];
     %COUNT = map { (id($_) => 5) } 81 .. 82;
-    ok(scalar($run->('Madness', []) eq 'PLUGIN_DISCOGRAPHY_SEARCH_NONE|H:ARTISTS_HDR|MB:81|MB:82' && !@FUZZY_ASKED),
-       '11: two acts of the name and no rows -> the acts as before, not asked');
+    ok(scalar($run->('Madness', []) eq 'H:TOP_RESULT|MB:81|H:ARTISTS_HDR|MB:82' && !@FUZZY_ASKED),
+       '11: two acts of the name and no rows -> the first the Top Result, the other under Artists, not asked');
     ($CANDS, $FUZZY, %RESOLVED, %COUNT) = (undef, undef);
 });
 

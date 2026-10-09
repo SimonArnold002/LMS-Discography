@@ -35,7 +35,7 @@ my $prefs = preferences('plugin.discography');
 # The plugin's own store (DB.pm), version-scoped -- see the note in API.pm.
 # MUST match API.pm exactly (asserted by tools/syntax_check.sh).
 use Plugins::Discography::DB;
-use constant CACHE_VERSION => '0.56.66';
+use constant CACHE_VERSION => '0.56.70';
 my $cache = Plugins::Discography::DB->store(CACHE_VERSION);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) }
@@ -1180,10 +1180,11 @@ sub _reattach {
 }
 
 sub _cacheCands {
-    my ($key, $items, $ttl, $unresolved) = @_;
+    my ($key, $items, $ttl, $unresolved, $meta) = @_;
     my @store = map { my %x = %$_; delete $x{url}; \%x } @{ $items || [] };
     eval { $cache->set($key, { items => \@store,
-                               ($unresolved ? (unresolved => 1) : ()) }, $ttl); 1 }
+                               ($unresolved ? (unresolved => 1) : ()),
+                               (ref $meta eq 'HASH' ? (meta => $meta) : ()) }, $ttl); 1 }
         or $log->warn("candidate cache set failed: $@");
 }
 
@@ -1323,14 +1324,16 @@ sub getCandidates {
 
         my $settled = 0;
         my $timer;
+        # $meta (Qobuz only): the artist the lookup settled on, kept with the
+        # pool for the biography ladder (_searchQobuz, peekPoolMeta).
         my $settle = sub {
-            my ($items) = @_;
+            my ($items, $meta) = @_;
             if ($settled) {
                 # The watchdog already gave up on this service, but the fetch
                 # landed anyway. Keep the result: pinning the error TTL over a
                 # pool we actually hold would repeat the same slow fetch on
                 # every open. Only the $cb is spoken for — it already fired.
-                _cacheCands($key, $items, CAND_FOUND_TTL)
+                _cacheCands($key, $items, CAND_FOUND_TTL, 0, $meta)
                     if defined $items && @$items;
                 return;
             }
@@ -1350,7 +1353,7 @@ sub getCandidates {
                 $answer = [];
             }
             else {
-                _cacheCands($key, $items, @$items ? CAND_FOUND_TTL : CAND_EMPTY_TTL);
+                _cacheCands($key, $items, @$items ? CAND_FOUND_TTL : CAND_EMPTY_TTL, 0, $meta);
                 $answer = $items;
             }
             # Sample the pool head in the log: a healthy count full of the
@@ -2971,6 +2974,22 @@ sub peekPool {
              cold => $seen ? 0 : 1 };
 }
 
+# What one service's cached pool says about the ARTIST it was built from, for
+# the biography ladder (Browse::_bioStart). Cache only, read with the very key
+# peekPool reads (the 0.43.2 read/write-parity rule). Returns undef when the
+# service is not in use or has no pool cached (not asked yet, or the fetch is
+# still out), else { unresolved => 0|1, meta => { id, name, score, spine, bio } }
+# where meta is present only when the lookup settled on an artist (_searchQobuz).
+sub peekPoolMeta {
+    my ($class, $svc, $artist, $mbid) = @_;
+    return undef unless $svc && ((defined $artist && length $artist) || $mbid);
+    return undef unless grep { lc $_->{name} eq lc $svc } orderedAdapters();
+    my $c = $cache->get(_candKey($svc, $artist, $mbid));
+    return undef unless ref $c eq 'HASH';
+    return { unresolved => $c->{unresolved} ? 1 : 0,
+             (ref $c->{meta} eq 'HASH' ? (meta => $c->{meta}) : ()) };
+}
+
 # Cache-only variant for sync paths (list-tile badges): never searches, never
 # needs a client. Returns { sections => [...], resolved => 0|1 } where
 # `resolved` means STREAMING candidates were cached (a resolved no-match may
@@ -3880,10 +3899,20 @@ sub _searchQobuz {
     my $api = Plugins::Qobuz::Plugin::getAPIHandler($client);
     unless ($api) { $collect->(undef); return }
 
+    # THE BIOGRAPHY RIDES IN THE SAME REPLY (the biography ladder, 2026-10-08;
+    # Browse::_bioStart). Qobuz's artist/get carries `biography.content`, the
+    # text the Qobuz plugin's own artist menu shows, and every candidate the
+    # resolver fetches comes through here, so it costs no request. Kept per
+    # artist id for this lookup; only the artist settled on is passed on.
+    my %bio;
     my $fetch = sub {
         my ($id, $done) = @_;
         $api->getArtist(sub {
             my $r = shift;
+            if (ref $r eq 'HASH' && ref $r->{biography} eq 'HASH') {
+                my $t = $r->{biography}{content};
+                $bio{$id} = $t if defined $t && !ref $t && $t =~ /\S/;
+            }
             # The plugin's getArtist stops at 200 albums; the rest are asked
             # for here (_qobuzMoreAlbums), or not at all if it cannot be.
             _qobuzMoreAlbums($api, $id, $r, _albumArray(ref $r eq 'HASH' ? $r->{albums} : undef), sub {
@@ -3924,9 +3953,18 @@ sub _searchQobuz {
                 # far more often than a zero-album artist — settle as error (short
                 # retry), never a 1-day empty pin.
                 return $collect->(undef) unless $albums && @$albums;
+                # THE ARTIST SETTLED ON, for the biography ladder: who it is, how
+                # many of the page's releases its own albums matched, and its
+                # biography. Only this artist: never a joint or passed-over entry
+                # ($extra), and nothing on the leader-only, album-search or
+                # unresolved paths above. Kept with the pool (getCandidates).
+                my $sp = ref $spine eq 'HASH' ? $spine : {};
+                my $meta = { id => $artist->{id}, name => $artist->{name},
+                             score => _spineScore($albums, $sp), spine => scalar(keys %$sp),
+                             (defined $bio{ $artist->{id} // '' } ? (bio => $bio{ $artist->{id} }) : ()) };
                 $collect->(_appendJoint('Qobuz', $query, $artist->{name},
                     _renderQobuzAlbums($client, $albums, $svc, $artist->{name}, $query), $extra,
-                    sub { _renderQobuzAlbums($client, $_[0], $svc, $_[1]) }));
+                    sub { _renderQobuzAlbums($client, $_[0], $svc, $_[1]) }), $meta);
             }, $leaders);
     }, lc($query), 'artists');
 }

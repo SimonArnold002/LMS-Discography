@@ -50,6 +50,37 @@ package Plugins::Discography::Covers;
 # NEVER FOR A COVER THAT DOES NOT EXIST: Browse gives a group ListenBrainz marks
 # as having no archive cover its type icon (API::peekCoverFlags; 24 of 24
 # agreed with the archive, 2026-10-02), as it does a cover given up.
+#
+# AT MOST HOLD_MAX DEVICE REQUESTS HELD (2026-10-09). A browser keeps about six
+# connections to one server, and every request held here is one of them. With
+# no streaming service every unowned tile comes here (the full catalogue, CLAUDE.md
+# `NO STREAMING SERVICE SHOWS THE FULL CATALOGUE`), each held 2-8 s, so Material's
+# own requests queued behind them: an album tap waited 6.9 s to be SENT and opened
+# after 18.3 s, a Play the same (measured, dev log `REPRODUCED with no streaming
+# service`; the server itself answered every 0.2 s ping within 0.33 s). Past
+# HOLD_MAX a request is answered at once with the placeholder (never cached) and
+# its cover still downloads as one on screen (`asked`), so the next draw shows
+# it; the connections left stay free for taps and Play. Simon: "I prefer 1".
+# THE PAGE IN FRONT GETS THE PLACES (review 2026-10-09): a request from the page
+# now in front takes a place held by a page left behind (its connection still
+# tied up: a browser need not cancel it), from the oldest request there still
+# waiting with nothing downloading for it (waiting for Discogs, or for its
+# turn), which gets the placeholder; a download in flight keeps its place, it
+# lands in seconds (_yieldOld). Measured weak sign: Wayne Shorter's grid opened
+# 0.5 s after his page had 4 gaps of 24, grids opened 20 s in 1-2.
+#
+# DISCOGS FIRST (2026-10-09, Discogs.pm; Simon: "it needs to use discogs first
+# not after CAA"). Before a request is held, and again before a download starts,
+# the artist's Discogs thumbnail is looked for (the artist noted by tileImage):
+# found, the proxy is handed its url and fetches it itself (0.05-0.09 s). THE
+# ARCHIVE ONLY ONCE DISCOGS HAS ANSWERED (2026-10-09; Simon: "I said dicogs first
+# CAA nex"): 0.56.67 sent a cover to the archive when the list took longer than
+# 6 s, so a big artist's first visit (Miles Davis: 48 s) got archive covers.
+# Now a cover waits while its artist's list is read, each page that lands may
+# answer it (Discogs::listen wakes the queue), and the archive is asked only
+# when the list is complete without it, or cannot be read (MAI off, no Discogs
+# link, a failure, the read's own watchdog). A device's request still waits at
+# most WAIT_MAX, as for a download.
 
 use strict;
 use warnings;
@@ -106,6 +137,11 @@ use constant WATCHDOG      => 150;
 # proxy's placeholder (never cached) and the download stays queued.
 use constant WAIT_MAX => 90;
 
+# Device requests held at once (the header); the rest answered at once.
+use constant HOLD_MAX => 2;
+# Groups whose artist is noted for the Discogs look-up; past it, forgotten.
+use constant ARTIST_NOTE_MAX => 20000;
+
 # The queue: at most MAX_JOBS (past it the oldest background ones go); a
 # background job not reached within BG_TTL goes too. Either stays wanted for
 # 05:00. At most SCAN_BUDGET jobs looked at in one turn (a run of covers the
@@ -149,8 +185,9 @@ use constant NIGHT_HOUR       => 5;
 use constant NIGHT_JITTER_MAX => 1800;
 
 # A job: { rg, seq, page, rank, at, waiters => [ [ $cb, since ] ], running,
-# onScreen, attempts }. page = the page that wanted it (newPage's count), -1 for
-# the 05:00 run.
+# onScreen, attempts, asked, dgAsked }. page = the page that wanted it (newPage's
+# count), -1 for the 05:00 run. asked = a device asked past HOLD_MAX (answered,
+# still on screen); dgAsked = its artist's Discogs list has been asked for.
 my %jobs;             # group => job, queued or downloading
 my $seq          = 0; # arrival order
 my $page         = 0; # the page in front of the user (newPage)
@@ -165,8 +202,9 @@ my $wants;            # the wanted row, loaded on first use (_wants)
 my $saveArmed    = 0; # one pending write of the wanted row
 my $proxyCache;
 my $store;
+my %artistOf;         # group => artist mbid, for the Discogs look-up (tileImage)
 # Per drain, for the debug line.
-my %pass = (fetched => 0, skipped => 0, failed => 0);
+my %pass = (fetched => 0, skipped => 0, failed => 0, discogs => 0);
 
 sub _dbg { Plugins::Discography::Plugin::dbg(@_) if Plugins::Discography::Plugin->can('dbg') }
 
@@ -185,7 +223,8 @@ sub _reset {
     $seq = $page = $rank = $running = $runningOn = $pumping = $lastBrowseAt = $saveArmed = 0;
     undef $timer; undef $timerAt;
     undef $miss; undef $wants; undef $proxyCache; undef $store; undef $Plugins::Discography::Covers::jitter;
-    %pass = (fetched => 0, skipped => 0, failed => 0);
+    %artistOf = ();
+    %pass = (fetched => 0, skipped => 0, failed => 0, discogs => 0);
     return;
 }
 
@@ -196,30 +235,103 @@ sub _reset {
 # (Browse shows the release-type icon) for a cover given up or one that failed
 # within MISS_SPACING. No cache is read here (the page is being built): whether
 # the proxy already holds the cover is the proxy's own first question.
+# $ambid: the page's artist, noted so the route can ask Discogs first.
 sub tileImage {
-    my $rg = _rg($_[0]) // return undef;
+    my ($id, $ambid) = @_;
+    my $rg = _rg($id) // return undef;
+    if (my $a = _rg($ambid)) {
+        %artistOf = () if keys %artistOf >= ARTIST_NOTE_MAX;
+        $artistOf{$rg} = $a;
+    }
     return undef if _givenUp($rg) || _recentFail($rg);
     return ROUTE . $rg . '/image.jpg';
 }
 
 # The image proxy's handler for our route (Plugin.pm), reached only when its
-# cache does not hold the size asked. Answers a `file:` url at once for a cover
-# downloaded a moment ago; otherwise holds the request (undef: LMS 9.0+ waits
-# for $cb) and puts the cover first in line. '' is the proxy's placeholder,
-# sent with no-cache: not our route, or a cover given up / failed within the
-# hour (a tile drawn before that).
+# cache does not hold the size asked. The artist's Discogs thumbnail when there
+# is one (the proxy fetches it); a `file:` url at once for a cover downloaded a
+# moment ago; otherwise holds the request (undef: LMS 9.0+ waits for $cb) and
+# puts the cover first in line, unless HOLD_MAX are held already: then the
+# placeholder at once and the cover downloaded as one on screen (the header).
+# '' is the proxy's placeholder, sent with no-cache: not our route, past the
+# cap, or a cover given up / failed within the hour (a tile drawn before that).
 sub tileHandler {
     my ($url, $spec, $cb) = @_;
     my ($rg) = ($url // '') =~ m{^dsc/caa/($UUID)$};
-    return '' unless $rg && !_givenUp($rg) && !_recentFail($rg);
+    return '' unless $rg;
+    if (defined(my $dg = _discogsNow($rg))) { return $dg }
+    return '' unless !_givenUp($rg) && !_recentFail($rg);
     if (my $path = _heldFile($rg)) { return _fileUrl($path) // '' }
     return '' unless ref $cb eq 'CODE';
     my $job = _job($rg, $page, 0);
+    if (_held() >= HOLD_MAX && !_yieldOld()) {
+        $job->{asked} //= Time::HiRes::time();
+        _trim();
+        _arm(0);
+        return '';
+    }
     push @{ $job->{waiters} }, [ $cb, Time::HiRes::time() ];
     _trim();
     _arm(0);
     return undef;
 }
+
+# Device requests held right now.
+sub _held {
+    my $n = 0;
+    $n += @{ $_->{waiters} } for values %jobs;
+    return $n;
+}
+
+# A place for a request from the page in front (the header): the oldest request
+# of a page left behind still waiting, with nothing downloading for it, gets
+# the placeholder (never cached: drawn again, it is asked again); its cover
+# stays queued as that page's. 1 when a place was freed.
+sub _yieldOld {
+    my ($oldest, $from);
+    for my $j (values %jobs) {
+        next if $j->{running} || $j->{page} >= $page || !@{ $j->{waiters} };
+        my $w = $j->{waiters}[0];
+        # Oldest request first; a tie by arrival, so the choice never rests on
+        # hash order.
+        ($oldest, $from) = ($w, $j)
+            if !$oldest || $w->[1] < $oldest->[1]
+               || ($w->[1] == $oldest->[1] && $j->{seq} < $from->{seq});
+    }
+    return 0 unless $from;
+    shift @{ $from->{waiters} };
+    _answer($oldest->[0], '');
+    return 1;
+}
+
+# The Discogs thumbnail for a group, from its artist's list when it is here.
+sub _discogsNow {
+    my ($rg) = @_;
+    my $a = $artistOf{$rg} // return undef;
+    my $f = Plugins::Discography::Discogs->can('thumbFor') or return undef;
+    return eval { $f->('Plugins::Discography::Discogs', $a, $rg) };
+}
+
+# The group's artist's Discogs list is still being read and holds nothing for
+# it yet: the job waits (the header's rule). The first look joins that read, or
+# starts it when nobody has (the page normally has), and the queue wakes at
+# every page that lands and when the read ends (_discogsLanded). Never for the
+# 05:00 run.
+sub _discogsHold {
+    my ($job) = @_;
+    return 0 if $job->{page} < 0;
+    my $a = $artistOf{ $job->{rg} } // return 0;
+    my $d = 'Plugins::Discography::Discogs';
+    return 0 unless $d->can('warm');
+    return 0 if defined _discogsNow($job->{rg});      # here now: _launch hands it over
+    unless ($job->{dgAsked}++) {
+        eval { $d->listen(\&_discogsLanded) if $d->can('listen'); 1 };
+        eval { $d->warm($a, \&_discogsLanded); 1 };
+    }
+    return eval { $d->pending($a) } ? 1 : 0;
+}
+
+sub _discogsLanded { _arm(0); return }
 
 # Somebody is looking: every Discography request (Browse::topLevel).
 sub noteBrowse { $lastBrowseAt = Time::HiRes::time(); return }
@@ -315,7 +427,7 @@ sub _tick {
     my $looked = 0;
     while (my $job = _next()) {
         if ($looked++ >= SCAN_BUDGET) { _arm(0); last }
-        if (@{ $job->{waiters} }) {
+        if (defined _onScreenSince($job)) {
             last if $runningOn >= ON_SCREEN_MAX;     # a landing wakes us
         }
         else {
@@ -341,6 +453,7 @@ sub _next {
     my $best;
     for my $j (values %jobs) {
         next if $j->{running};
+        next if _discogsHold($j);
         $best = $j if !$best || _before($j, $best);
     }
     return $best;
@@ -354,13 +467,20 @@ sub _next {
 sub _before {
     my ($x, $y) = @_;
     return $x->{page} > $y->{page} if $x->{page} != $y->{page};
-    my $wx = @{ $x->{waiters} } ? 1 : 0;
-    my $wy = @{ $y->{waiters} } ? 1 : 0;
-    return $wx > $wy if $wx != $wy;
-    return $x->{waiters}[0][1] < $y->{waiters}[0][1]
-        if $wx && $x->{waiters}[0][1] != $y->{waiters}[0][1];
+    my $wx = _onScreenSince($x);
+    my $wy = _onScreenSince($y);
+    return defined $wx ? 1 : 0 if defined $wx != defined $wy;
+    return $wx < $wy if defined $wx && $wx != $wy;
     return $x->{rank} < $y->{rank} if $x->{rank} != $y->{rank};
     return $x->{seq} < $y->{seq};
+}
+
+# When a device first asked for the job's cover (held or `asked`), or undef.
+sub _onScreenSince {
+    my ($j) = @_;
+    my $w = @{ $j->{waiters} } ? $j->{waiters}[0][1] : undef;
+    return $w // $j->{asked} if !defined $j->{asked} || !defined $w;
+    return $w < $j->{asked} ? $w : $j->{asked};
 }
 
 # The queue's two time limits: a device waiting past WAIT_MAX for a download
@@ -408,20 +528,21 @@ sub _job {
 }
 
 # Past MAX_JOBS: the oldest page's last covers go first (the newest want can be
-# the one dropped); never a cover a device waits for or one downloading.
+# the one dropped); never a cover a device waits for or asked for past the cap
+# (on screen), or one downloading.
 sub _trim {
     return if keys %jobs <= MAX_JOBS;
     my @drop = sort { $a->{page} <=> $b->{page} || $b->{rank} <=> $a->{rank} || $b->{seq} <=> $a->{seq} }
-               grep { !$_->{running} && !@{ $_->{waiters} } } values %jobs;
+               grep { !$_->{running} && !defined _onScreenSince($_) } values %jobs;
     delete $jobs{ (shift @drop)->{rg} } while keys %jobs > MAX_JOBS && @drop;
     return;
 }
 
 sub _drained {
     return if %jobs || $running;
-    return unless $pass{fetched} || $pass{skipped} || $pass{failed};
-    _dbg("covers: $pass{fetched} fetched, $pass{failed} failed, $pass{skipped} already held");
-    %pass = (fetched => 0, skipped => 0, failed => 0);
+    return unless $pass{fetched} || $pass{skipped} || $pass{failed} || $pass{discogs};
+    _dbg("covers: $pass{fetched} fetched, $pass{failed} failed, $pass{skipped} already held, $pass{discogs} from Discogs");
+    %pass = (fetched => 0, skipped => 0, failed => 0, discogs => 0);
     return;
 }
 
@@ -430,7 +551,16 @@ sub _drained {
 sub _launch {
     my ($job) = @_;
     my $rg = $job->{rg};
-    unless (@{ $job->{waiters} }) {
+    # Discogs first: the artist's list may have come since this was queued.
+    if (defined(my $dg = _discogsNow($rg))) {
+        _answer($_->[0], $dg) for @{ $job->{waiters} };
+        $job->{waiters} = [];
+        $pass{discogs}++;
+        _wantDone($rg);
+        delete $jobs{$rg};
+        return;
+    }
+    unless (@{ $job->{waiters} } || $job->{asked}) {
         # Downloaded a moment ago: its sizes are being cut (_warm), so not again.
         if (_heldFile($rg)) { delete $jobs{$rg}; return }
         my $lack = _lacking($rg);
@@ -441,7 +571,7 @@ sub _launch {
         }
     }
     $job->{running}  = 1;
-    $job->{onScreen} = @{ $job->{waiters} } ? 1 : 0;
+    $job->{onScreen} = defined _onScreenSince($job) ? 1 : 0;
     $running++;
     $runningOn++ if $job->{onScreen};
     _download($job);

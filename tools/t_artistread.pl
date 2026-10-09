@@ -27,7 +27,7 @@
 # most 25 and with no count. Under 25 the list IS the spine, so the artist page
 # (getReleaseGroups with read => 1) sends no browse. Sections 9-15 pin that.
 # Ladyhawke lists 24; mb_rg_browse_ladyhawke.json is her captured browse
-# (`release-group?artist=<id>&limit=100&offset=0&inc=aliases&fmt=json`, the same
+# (`release-group?artist=<id>&limit=100&offset=0&inc=aliases+url-rels&fmt=json`, the same
 # minute), and the two must build the SAME spine. Eno and Radiohead list 25,
 # MB's cap, so theirs may be cut short and the browse must still run.
 #
@@ -166,7 +166,7 @@ our (%NOLIST, %READFAIL, %FAKEREAD);
 # shape: it pins OUR fallback, not MusicBrainz's data.
 sub response_for {
     my ($url) = @_;
-    if ($url =~ m{/artist/([0-9a-f-]{36})\?inc=aliases\+artist-rels\+release-groups&fmt=json$}) {
+    if ($url =~ m{/artist/([0-9a-f-]{36})\?inc=aliases\+artist-rels\+release-groups\+url-rels&fmt=json$}) {
         my $id = $1;
         return $FAKEREAD{$id} if $FAKEREAD{$id};
         return {} unless $RAW{$id};
@@ -174,7 +174,7 @@ sub response_for {
         delete $d->{'release-groups'} if $NOLIST{$id};
         return $d;
     }
-    if ($url =~ m{/release-group\?artist=([0-9a-f-]{36})&limit=100&offset=0&inc=aliases&fmt=json$}) {
+    if ($url =~ m{/release-group\?artist=([0-9a-f-]{36})&limit=100&offset=0&inc=aliases\+url-rels&fmt=json$}) {
         return JSON::PP::decode_json($BROWSE{$1}) if $BROWSE{$1};
         return { 'release-group-count' => 3, 'release-groups' => [ map {
             { id => sprintf('%08d-0000-4000-8000-%012d', $_, $_), title => "Browsed $_",
@@ -209,8 +209,8 @@ reset_all();
 my $bandCbs = 0;
 $API->warmBandMembers($ENO, sub { $bandCbs++ });
 ok(scalar(@URLS) == 1, '1: a cold band lookup costs exactly one request');
-ok(scalar(($URLS[0] // '') =~ m{/artist/\Q$ENO\E\?inc=aliases\+artist-rels\+release-groups&fmt=json$}),
-   '1: ... for the artist WITH its aliases and groups (inc=aliases+artist-rels+release-groups)');
+ok(scalar(($URLS[0] // '') =~ m{/artist/\Q$ENO\E\?inc=aliases\+artist-rels\+release-groups\+url-rels&fmt=json$}),
+   '1: ... for the artist WITH its aliases and groups (inc=aliases+artist-rels+release-groups+url-rels)');
 ok($bandCbs == 1, '1: ... and calls back exactly once');
 ok($names->($API->peekBands($ENO)) eq $BANDS,
    '1: the bands are the five forward "member of band" links, in MB order');
@@ -321,8 +321,9 @@ ok(scalar(@URLS) == 0 && ref $nA eq 'ARRAY' && !@$nA && $nB == 1,
 $CACHE{"dsc:bands:v2:$ENO"}      = [];
 $CACHE{"dsc:collabcand:v1:$ENO"} = [];
 $CACHE{"dsc:eponym:v1:$ENO"}     = [];   # written by the same read since 2026-10-08 (section 17)
+$CACHE{"dsc:svclinks:v1:$ENO"}   = { qobuz => [], deezer => [] };   # likewise (section 18)
 $API->warmBandMembers($ENO, sub {});
-ok(scalar(@URLS) == 0, '6: bands + candidates (+ eponymous member) cached: the band lookup is a cache hit');
+ok(scalar(@URLS) == 0, '6: bands + candidates (+ eponymous member, service links) cached: the band lookup is a cache hit');
 delete $CACHE{"dsc:collabcand:v1:$ENO"};
 $API->warmBandMembers($ENO, sub {});
 ok(scalar(@URLS) == 1, '6: a band list alone still triggers a read');
@@ -378,7 +379,7 @@ my ($viaRead, $err9) = (undef, 0);
 $API->getReleaseGroups(mbid => $LH, read => 1,
     onDone => sub { $viaRead = shift }, onError => sub { $err9++ });
 ok(scalar(@URLS) == 1, '9: with read, the same artist costs ONE request');
-ok(scalar(($URLS[0] // '') =~ m{/artist/\Q$LH\E\?inc=aliases\+artist-rels\+release-groups&fmt=json$}),
+ok(scalar(($URLS[0] // '') =~ m{/artist/\Q$LH\E\?inc=aliases\+artist-rels\+release-groups\+url-rels&fmt=json$}),
    '9: ... the artist read, and no browse');
 ok(ref $viaRead eq 'ARRAY' && scalar(@$viaRead) == 24 && !$err9, '9: ... answering all 24 groups');
 ok(scalar($viaRead && $viaBrowse && $canon->encode($viaRead) eq $canon->encode($viaBrowse)),
@@ -389,7 +390,7 @@ ok(scalar("@readOrder" ne "@browseOrder"),
    '9: control: MusicBrainz orders the two replies differently');
 ok(scalar(grep { $_->{aliases} } @{ $viaRead || [] }) == 1,
    "9: ... and her one aliased group ('Magic') keeps its alias");
-ok(ref $CACHE{"dsc:rg:v2:$LH"} eq 'ARRAY' && scalar(@{ $CACHE{"dsc:rg:v2:$LH"} }) == 24,
+ok(ref $CACHE{"dsc:rg:v3:$LH"} eq 'ARRAY' && scalar(@{ $CACHE{"dsc:rg:v3:$LH"} }) == 24,
    '9: the spine is cached under the key the browse uses');
 @URLS = ();
 my $n9 = 0;
@@ -415,7 +416,7 @@ reset_all();
 my $r10;
 Plugins::Discography::API::_readArtist($ENO, sub { $r10 = shift });
 ok(ref $r10 eq 'HASH' && !exists $r10->{rgs}, '10: a read listing 25 groups answers no spine');
-ok(!defined $CACHE{"dsc:rg:v2:$ENO"}, '10: ... and caches none');
+ok(!defined $CACHE{"dsc:rg:v3:$ENO"}, '10: ... and caches none');
 reset_all();
 my $rgs10;
 $API->getReleaseGroups(mbid => $RH, read => 1, onDone => sub { $rgs10 = shift });
@@ -611,6 +612,124 @@ ok(scalar(@URLS) == 0, '17: ... and with all three cached, nothing is asked');
 # Refresh forgets it with the bands.
 $API->clearArtistCache(mbid => $OPT);
 ok(!defined $API->peekEponymous($OPT), '17: Refresh (clearArtistCache) forgets the eponymous member');
+
+# ---------------------------------------------------------------------------
+# 18. THE ARTIST'S OWN SERVICE PAGES (the biography ladder, 2026-10-08): the
+#     same read asks for url-rels, and MusicBrainz's Qobuz and Deezer links are
+#     kept as ids. Radiohead's reply WITH url-rels is captured from the rig's
+#     mirror the same day (tools/fixtures/mb_artist_radiohead_aliases_artistrels_
+#     releasegroups_urlrels.json): two Deezer artists (399, 323887691) and one
+#     Qobuz artist under two forms, open.qobuz.com/artist/43840 and
+#     qobuz.com/us-en/interpreter/radiohead/43840, each linked twice.
+# ---------------------------------------------------------------------------
+my $RHU = JSON::PP::decode_json(slurp('mb_artist_radiohead_aliases_artistrels_releasegroups_urlrels.json'));
+reset_all();
+$FAKEREAD{$RH} = $RHU;
+my $lk;
+$API->warmServiceLinks($RH, sub { $lk = $_[0] });
+ok(scalar(@URLS) == 1, '18: a cold link lookup is the one artist read');
+ok(ref $lk eq 'HASH' && join(',', @{ $lk->{deezer} }) eq '399,323887691',
+   '18: Deezer: both artists, lowest id first (' . join(',', @{ ($lk || {})->{deezer} || [] }) . ')');
+ok(ref $lk eq 'HASH' && join(',', @{ $lk->{qobuz} }) eq '43840',
+   '18: Qobuz: one artist, its two link forms and repeats kept once');
+ok(ref $API->peekBands($RH) eq 'ARRAY', '18: ... and the bands came from the same reply');
+@URLS = ();
+my $lk2;
+$API->warmServiceLinks(uc $RH, sub { $lk2 = $_[0] });
+ok(scalar(@URLS) == 0 && ref $lk2 eq 'HASH', '18: a second lookup (any case) costs no request');
+@URLS = ();
+$API->warmBandMembers($RH, sub {});
+ok(scalar(@URLS) == 0, '18: the band lookup finds everything cached, links included');
+
+# A band list cached without the links (written before them) is read again.
+delete $CACHE{"dsc:svclinks:v1:$RH"};
+@URLS = ();
+$API->warmBandMembers($RH, sub {});
+ok(scalar(@URLS) == 1 && ref $API->peekServiceLinks($RH) eq 'HASH',
+   '18: bands cached but no links -> read again, and the links are filled');
+
+# The old captures carry no url-rels: no links, an empty answer, never undef.
+reset_all();
+$API->warmServiceLinks($ENO, sub { $lk = $_[0] });
+ok(ref $lk eq 'HASH' && !@{ $lk->{qobuz} } && !@{ $lk->{deezer} },
+   '18: a reply with no service links caches empty lists (read, none)');
+
+# A failed read caches nothing and answers undef (the ladder: could not tell).
+reset_all();
+$FAILMODE = 1;
+undef $lk;
+my $called = 0;
+$API->warmServiceLinks($RH, sub { $lk = $_[0]; $called++ });
+ok($called == 1 && !defined $lk && !defined $API->peekServiceLinks($RH),
+   '18: a failed read answers undef once and caches nothing');
+$FAILMODE = 0;
+
+# The parser on the forms seen, and the ones it must refuse.
+my $p = Plugins::Discography::API::_svcLinks([
+    { url => { resource => 'https://www.deezer.com/artist/12' } },
+    { url => { resource => 'https://www.deezer.com/fr/artist/3' } },
+    { url => { resource => 'https://www.qobuz.com/gb-en/interpreter/adelitas-way/93203' } },
+    { url => { resource => 'https://www.qobuz.com/de-de/interpreter/-/93203' } },
+    { url => { resource => 'https://www.qobuz.com/us-en/interpreter/stan-getz-6/35381' } },
+    { url => { resource => 'https://www.qobuz.com/gb-en/interpreter/somebody/download-streaming-albums' } },
+    { url => { resource => 'https://www.deezer.com/album/302127' } },
+    { url => { resource => 'https://tidal.com/artist/64518' } },
+    { url => { resource => 'https://www.discogs.com/artist/252310-Bill-Evans' } },
+    { url => { resource => 'https://www.discogs.com/fr/artist/7' } },
+    { url => { resource => 'https://www.discogs.com/master/178735' } },
+    { url => { resource => 'https://www.discogs.com/artist/x-no-id' } },
+    { artist => { id => 'x', name => 'not a url' } },
+]);
+ok(join(',', @{ $p->{deezer} }) eq '3,12', '18: parser: Deezer artist ids, a locale path too, never an album');
+ok(join(',', @{ $p->{qobuz} }) eq '35381,93203',
+   '18: parser: Qobuz interpreter ids (a numbered slug, a "-" slug); the id-less path skipped');
+ok(join(',', @{ $p->{discogs} }) eq '7,252310',
+   '18: parser: Discogs artist ids (a slug after the id, a locale path), never a master, never an id-less path');
+
+# Refresh forgets the links, the ladder's pick and the Deezer id its search found.
+reset_all();
+$FAKEREAD{$RH} = $RHU;
+$API->warmServiceLinks($RH, sub {});
+$CACHE{"dsc:bio:3:$RH"}  = [ 'a bio', 86400 ];
+$CACHE{"dsc:dzid:1:$RH"} = [ '399', 86400 ];
+$API->clearArtistCache(mbid => $RH);
+ok(!defined $API->peekServiceLinks($RH) && !exists $CACHE{"dsc:bio:3:$RH"} && !exists $CACHE{"dsc:dzid:1:$RH"},
+   "18: Refresh forgets the links, the ladder's pick and the Deezer id");
+
+# 19. A group's Discogs entry from the browse's url-rels (2026-10-09, Discogs
+#     first for a tile with no cover of its own): the master, by id.
+{
+    my $of = Plugins::Discography::API->can('_discogsOf');
+    ok(($of->([ { type => 'discogs', url => { resource => 'https://www.discogs.com/master/178735' } } ]) // '') eq 'master:178735',
+       '19: a discogs.com/master link -> master:<id>');
+    ok(($of->([ { url => { resource => 'https://www.discogs.com/master/178735-Bill-Evans-New-Jazz-Conceptions' } } ]) // '') eq 'master:178735',
+       '19: ... a slug after the id');
+    ok(($of->([ { url => { resource => 'https://www.discogs.com/release/5432' } } ]) // '') eq 'release:5432',
+       '19: a release link -> release:<id>');
+    ok(($of->([ { url => { resource => 'https://www.allmusic.com/album/mw0000' } },
+                { url => { resource => 'https://www.discogs.com/master/9' } } ]) // '') eq 'master:9',
+       '19: ... found among other links');
+    ok(!defined $of->([ { url => { resource => 'https://www.discogs.com/artist/252310' } } ])
+       && !defined $of->([]) && !defined $of->(undef) && !defined $of->('x'),
+       '19: an artist link, none, or not a list -> undef');
+    my $e = Plugins::Discography::API::_rgEntry({ id => 'ABC', title => 'Interplay', 'first-release-date' => '1963',
+        'primary-type' => 'Album', relations => [ { url => { resource => 'https://www.discogs.com/master/195279' } } ] });
+    ok(($e->{discogs} // '') eq 'master:195279' && $e->{mbid} eq 'abc', '19: the spine entry carries it');
+    my $n = Plugins::Discography::API::_rgEntry({ id => 'DEF', title => 'X' });
+    ok(!exists $n->{discogs}, '19: ... and none when MusicBrainz links none (the cached spine stays small)');
+
+    # MusicBrainz's completed list's links, read for the covers before it
+    # replaces the page's list (Discogs::_map).
+    my $A9 = 'AAAAAAAA-0000-4000-8000-000000000009';
+    delete $CACHE{'dsc:rgnext:1:' . lc $A9};
+    ok(!defined Plugins::Discography::API->peekNextDiscogsLinks($A9), '19: no completed list waiting -> undef');
+    $CACHE{'dsc:rgnext:1:' . lc $A9} = [ { mbid => 'ABC', discogs => 'master:1' }, { mbid => 'def' },
+                                         { mbid => 'ghi', discogs => 'release:2' }, 'junk' ];
+    my $l = Plugins::Discography::API->peekNextDiscogsLinks($A9);
+    ok(ref $l eq 'HASH' && join(',', map { "$_=$l->{$_}" } sort keys %$l) eq 'abc=master:1,ghi=release:2',
+       "19: a completed list waiting -> its groups' Discogs links by group mbid (lower case; none, junk left out)");
+    ok(!defined Plugins::Discography::API->peekNextDiscogsLinks(undef), '19: no artist -> undef');
+}
 
 print "\n$pass passed, $fail failed\n";
 exit($fail ? 1 : 0);

@@ -185,8 +185,8 @@ my @RH_GROUPS = map { sprintf('%08x-0000-4000-8000-%012x', 0x7000 + $_, $_) } 1 
 sub responder {
     my ($url) = @_;
     return JSON::PP::decode_json($READ{$1})
-        if $url =~ m{/artist/([0-9a-f-]{36})\?inc=aliases\+artist-rels\+release-groups&fmt=json$};
-    if ($url =~ m{/release-group\?artist=\Q$RH\E&limit=100&offset=0&inc=aliases&fmt=json$}) {
+        if $url =~ m{/artist/([0-9a-f-]{36})\?inc=aliases\+artist-rels\+release-groups\+url-rels&fmt=json$};
+    if ($url =~ m{/release-group\?artist=\Q$RH\E&limit=100&offset=0&inc=aliases\+url-rels&fmt=json$}) {
         return { 'release-group-count' => 30, 'release-groups' => [ map {
             { id => $RH_GROUPS[$_], title => "Group $_", 'primary-type' => 'Album',
               'secondary-types' => [], 'first-release-date' => '2000' } } 0 .. 29 ] };
@@ -242,7 +242,7 @@ fresh();
 my $p1 = page($LH, 'Ladyhawke');
 my @before = gets(upto('render', @EV));
 ok(scalar(@before) == 2, '1: a cold 24-group page renders after TWO requests');
-ok(scalar(($before[0] // '') =~ m{/artist/\Q$LH\E\?inc=aliases\+artist-rels\+release-groups&fmt=json$}),
+ok(scalar(($before[0] // '') =~ m{/artist/\Q$LH\E\?inc=aliases\+artist-rels\+release-groups\+url-rels&fmt=json$}),
    '1: ... first the artist read (bands, aliases AND her spine)');
 ok(($before[1] // '') eq "GET $LH_URL", '1: ... then the by-id check, the exact URL her reply was captured from');
 ok(scalar(!grep { m{release-group\?artist=|release\?query=reid|release\?artist=} } @EV),
@@ -396,6 +396,10 @@ fresh();
 @BYID8 = ();
 $RESPONDER = \&fast_responder;
 $LOCAL = [ { _mbid => "$RH_GROUPS[4]-r", _albumid => 1 } ];
+# The covers are told when MusicBrainz's links change (Discogs::linksChanged).
+my @lc8;
+my $lcOrig = Plugins::Discography::Discogs->can('linksChanged');
+{ no warnings 'redefine'; *Plugins::Discography::Discogs::linksChanged = sub { push @lc8, $_[1] } }
 page($RH, 'Radiohead');
 my @pre8 = gets(upto('render', @EV));
 ok(scalar(@pre8) == 4 && $pre8[0] =~ m{/artist/\Q$RH\E\?} && $pre8[1] =~ m{api\.listenbrainz\.org/}
@@ -419,8 +423,9 @@ my $next8 = $CACHE{"dsc:rgnext:1:$RH"};
 my %n8 = map { $_->{mbid} => 1 } @{ $next8 || [] };
 ok(ref $next8 eq 'ARRAY' && scalar(@$next8) == 30 && $n8{ $RH_GROUPS[29] } && !$n8{$STALE} && !$n8{$CMONLY},
    "8: MusicBrainz's completed list is stored for the next entry: its 30 (the newest added, what it lacks dropped)");
+ok(scalar(@lc8 == 1 && $lc8[0] eq $RH), "8: ... and the covers told its Discogs links are here (Discogs::linksChanged)");
 ok(!defined $CACHE{"dsc:rgfast:1:$RH"} && !defined $CACHE{"dsc:cmdisco:1:$RH"}
-   && scalar(@{ $CACHE{"dsc:rg:v2:$RH"} || [] }) == 31,
+   && scalar(@{ $CACHE{"dsc:rg:v3:$RH"} || [] }) == 31,
    '8: ... the first-list markers go, and the drawn list stays for the visit in progress');
 ok(($API->peekOfficial($RH)->{ $RH_GROUPS[25] } // -1) == 1 && ($API->peekOfficial($RH)->{$CMONLY} // -1) == 1,
    "8: ... MusicBrainz's verdicts replace the community's where it gave one, the community's stay elsewhere");
@@ -433,6 +438,8 @@ ok(scalar(gets(@EV)) == 0 && scalar(@{ $BUILT[0]{rgs} || [] }) == 31 && ref $CAC
 page($RH, 'Radiohead', fresh => 1);             # the next entry
 ok(scalar(gets(@EV)) == 0 && scalar(@{ $BUILT[0]{rgs} || [] }) == 30 && !defined $CACHE{"dsc:rgnext:1:$RH"},
    "8: the next fresh entry draws MusicBrainz's completed list, and sends nothing");
+ok(scalar(@lc8 == 2 && $lc8[1] eq $RH), '8: ... the covers told again when it is promoted');
+{ no warnings 'redefine'; *Plugins::Discography::Discogs::linksChanged = $lcOrig }
 
 # The completion failing keeps the first list's marker, so the next visit tries
 # again; a page re-entered meanwhile does not start a second one.
@@ -760,6 +767,161 @@ ok(!defined $CACHE{"dsc:rgfull:1:$RH"} && !defined $CACHE{"dsc:rgfast:1:$RH"} &&
     ok(scalar(grep { m{^GET https://api\.listenbrainz\.org/1/metadata/artist/\?artist_mbids=\Q$LH\E&inc=release_group \[bg\]$} } @EV) == 1,
        "15: listenBrainzGroups: ListenBrainz's artist list, background work when the caller is");
     ok(!defined $got, '15: ... calling back with undef when it has no list');
+}
+
+# ---------------------------------------------------------------------------
+# 16. THE BIOGRAPHY LADDER ON THE REAL PAGE (2026-10-08, Browse::_bioStart). It
+#     is told the page's releases (Deezer's search checks a hit against them),
+#     and a source that never answers holds the page for BIO_WAIT at most (the
+#     page used to wait on MAI with no bound). An MB error draws the error row
+#     at once, not after BIO_WAIT.
+# ---------------------------------------------------------------------------
+{
+    no strict 'refs'; no warnings 'redefine';
+    require Plugins::Discography::Prose;
+    my @find;
+    local *{'Plugins::Discography::Prose::deezerFindArtist'} = sub { push @find, [ @_[1 .. 3] ] };   # never answers
+    local *{"${API}::sharesNameWithProminentAsync"} = sub { $_[-1]->(0) };
+    local *{"${B}::_fetchArtistBio"} = sub { $_[-1]->('NAME BIO') };
+
+    fresh(); $PREF{show_bio} = 1;
+    my $p = page($LH, 'Ladyhawke');
+    flush();
+    ok(scalar(@find == 1 && ref $find[0][1] eq 'HASH' && scalar(keys %{ $find[0][1] }) >= 20
+              && $find[0][2] eq 'Ladyhawke' && grep { $_ eq 'ladyhawke' } @{ $find[0][0] }),
+       "16: the ladder searches Deezer (no link in her read) with the page's releases and names");
+    ok(scalar(!@BUILT), '16: ... and while Deezer has not answered, MAI\'s text (below it) waits: no render yet');
+    ok(scalar(@TIMERS >= 1), '16: ... the BIO_WAIT deadline is armed');
+    $_->() for splice @TIMERS;
+    ok(scalar(@BUILT == 1 && ($BUILT[0]{bio} // '') eq 'NAME BIO'),
+       '16: on the deadline the page draws, with MAI\'s biography');
+    ok(scalar(($CACHE{"dsc:bio:3:$LH"} // '') eq 'NAME BIO'), '16: ... and the pick is kept under the mbid');
+
+    # The next visit: the kept pick, nothing searched, no wait.
+    @find = (); @BUILT = (); @TIMERS = (); @EV = ();
+    page($LH, 'Ladyhawke');
+    flush();
+    ok(scalar(@BUILT == 1 && $BUILT[0]{bio} eq 'NAME BIO' && !@find), '16: the next visit: the kept pick, at once');
+
+    # An MB error: the error row at once, not held for the biography - with MAI
+    # never answering, so the ladder itself is still out.
+    fresh(); $PREF{show_bio} = 1;
+    $RESPONDER = sub { 'FAIL' };
+    local *{"${B}::_fetchArtistBio"} = sub { };   # never answers
+    my $pe = page($LH, 'Ladyhawke');
+    flush();
+    ok(scalar(ref $$pe eq 'HASH' && ($$pe->{items}[0]{name} // '') eq 'PLUGIN_DISCOGRAPHY_ERROR'),
+       '16: MusicBrainz fails: the error row is drawn at once, though the biography is still out');
+}
+
+# ---------------------------------------------------------------------------
+# 17. DISCOGS BEFORE THE DRAW (2026-10-09; Simon: "I said dicogs first CAA nex",
+#     and the first visit's empty tiles). The page asks for the artist's
+#     Discogs list as it starts, beside MusicBrainz, and waits for its FIRST
+#     page, DG_PAGE_WAIT (5 s) at most, so a first visit's tiles carry their
+#     Discogs covers. A kept list, MAI off and official_wait 0 wait for nothing.
+#     Review 2026-10-09 (finding 1): only a FRESH entry waits, and at most 5 s
+#     from when the read STARTED, however often the page is built; a rebuild
+#     for a tap (a walk, a strip's More, a toggle) draws at once; a read that
+#     failed is not asked for, or waited on, again for two minutes.
+# ---------------------------------------------------------------------------
+{
+    no strict 'refs'; no warnings 'redefine';
+    my (@dg, @timers, $mai);
+    local *{'Slim::Utils::PluginManager::isEnabled'} = sub { $mai ? 1 : 0 };
+    local *{'Plugins::MusicArtistInfo::Discogs::_call'} = sub { push @dg, [ @_ ] };
+    local *{"${API}::warmServiceLinks"} = sub { $_[2]->({ discogs => [ 999 ] }) };
+    local *{'Slim::Utils::Timers::setTimer'} = sub {
+        push @timers, [ int($_[1] - time() + 0.5), $_[2] ]; return scalar @timers;
+    };
+    my $D = 'Plugins::Discography::Discogs';
+    my $open = sub {
+        fresh(); @dg = (); @timers = ();
+        $D->can('_resetForSuite')->();
+        %PREF = (%PREF, @_);
+        page($LH, 'Ladyhawke', fresh => 1);
+        flush();
+    };
+    my $dgTimer = sub { my ($t) = grep { $_->[0] == 5 } @timers; $t };
+    my $page1 = sub {
+        my $c = shift @dg or return 0;
+        $c->[2]->({ releases => [ { role => 'Main', type => 'master', id => 1, title => 'Time Flies',
+                                    year => 2016, thumb => 'https://i.discogs.com/1.jpg' } ],
+                    pagination => { pages => 1 } }, {});
+        return 1;
+    };
+
+    $mai = 1; $open->();
+    ok(scalar(@BUILT == 0 && @dg == 1 && $dg[0][0] eq 'artists/999/releases' && $dg[0][1]{page} == 1),
+       "17: a cold page asks for the Discogs list's first page and waits for it before drawing");
+    ok(scalar($dgTimer->()), '17: ... capped at 5 s');
+    ok(scalar($page1->() && @BUILT == 1), '17: page 1 lands -> the page draws');
+    $dgTimer->()->[1]->();
+    ok(scalar(@BUILT == 1), '17: ... the cap firing after that draws nothing more');
+
+    $open->();
+    ok(scalar(@BUILT == 0), '17: Discogs slow -> still waiting');
+    $dgTimer->()->[1]->();
+    ok(scalar(@BUILT == 1), '17: ... the 5 s cap draws the page without it');
+    ok(scalar($page1->() && @BUILT == 1), '17: ... a late page 1 does not draw it twice');
+
+    $open->();
+    $DEFER = 1;
+    fresh(); @dg = (); @timers = (); $D->can('_resetForSuite')->(); $DEFER = 1;
+    page($LH, 'Ladyhawke', fresh => 1);
+    ok(scalar(@dg == 1 && @DEFERRED >= 1 && @BUILT == 0),
+       "17: asked as the page starts, while MusicBrainz's read is still out (beside it, not after)");
+    $DEFER = 0; flush(); $page1->();
+    ok(scalar(@BUILT == 1), '17: ... and the page draws once both are in');
+
+    fresh(); @dg = (); @timers = (); $D->can('_resetForSuite')->();
+    $CACHE{"dsc:dg:v2:$LH"} = [];
+    page($LH, 'Ladyhawke', fresh => 1); flush();
+    ok(scalar(@BUILT == 1 && !@dg && !$dgTimer->()), '17: the list already kept -> draws at once, nothing asked, no wait armed');
+
+    $mai = 0; $open->();
+    ok(scalar(@BUILT == 1 && !@dg && !$dgTimer->()), '17: MAI off -> draws at once, nothing asked, no wait armed');
+
+    # A rebuild for a tap (not a fresh entry) never waits; the read still goes on.
+    $mai = 1; fresh(); @dg = (); @timers = (); $D->can('_resetForSuite')->();
+    page($LH, 'Ladyhawke', fresh => 0); flush();
+    ok(scalar(@BUILT == 1 && @dg == 1 && !grep { $_->[0] > 0 && $_->[0] <= 5 } @timers),
+       '17: a rebuild for a tap while page 1 is out -> draws at once, no wait armed; the read is still asked');
+
+    # A read that failed: the next entry neither asks nor waits (two minutes).
+    $open->();
+    ok(scalar(@BUILT == 0 && @dg == 1), '17: (a fresh entry, page 1 out)');
+    (shift @dg)->[2]->({}, {});                      # MAI's failure: an empty reply
+    ok(scalar(@BUILT == 1), '17: page 1 not read -> the page draws at once');
+    @BUILT = (); @timers = ();
+    page($LH, 'Ladyhawke', fresh => 1); flush();
+    ok(scalar(@BUILT == 1 && !@dg && !$dgTimer->()),
+       '17: ... the next entry draws at once: nothing asked, no wait armed');
+
+    # The 5 s are counted from the read's start, not per build: a toggle's
+    # refresh while a slow page 1 is still out does not wait another 5 s.
+    {
+        my $ago;
+        local *{"${D}::readSince"} = sub { time() - $ago };
+        $ago = 6; fresh(); @dg = (); @timers = (); $D->can('_resetForSuite')->();
+        page($LH, 'Ladyhawke', fresh => 1); flush();
+        ok(scalar(@BUILT == 1 && @dg == 1 && !grep { $_->[0] > 0 && $_->[0] <= 5 } @timers),
+           '17: a fresh entry while a read that started 6 s ago is still out -> draws at once');
+        $ago = 2; fresh(); @dg = (); @timers = (); $D->can('_resetForSuite')->();
+        page($LH, 'Ladyhawke', fresh => 1); flush();
+        ok(scalar(@BUILT == 0 && (grep { $_->[0] == 3 } @timers) && !$dgTimer->()),
+           '17: ... started 2 s ago -> waits the 3 s left');
+    }
+
+    $mai = 1; fresh(); @dg = (); @timers = (); $D->can('_resetForSuite')->();
+    $RESPONDER = sub { 'FAIL' };
+    my $pe = page($LH, 'Ladyhawke', fresh => 1); flush();
+    ok(scalar(ref $$pe eq 'HASH' && ($$pe->{items}[0]{name} // '') eq 'PLUGIN_DISCOGRAPHY_ERROR' && @dg == 1),
+       '17: MusicBrainz fails while Discogs is out -> the error row at once');
+
+    $mai = 1; $open->(official_wait => 0);
+    ok(scalar(@BUILT == 1 && @dg == 1), '17: official_wait 0 -> draws at once; the read still goes on for the covers');
+    $D->can('_resetForSuite')->();
 }
 
 package T::Client; sub id { 'c1' }

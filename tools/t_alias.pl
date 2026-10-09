@@ -242,7 +242,7 @@ ok(scalar(@{ $byId{'rg-mensch'}{aliases} || [] } == 2),
    'multiple aliases are all kept');
 
 # The cache key changed with the shape, so a v1 entry cannot be served as v2.
-ok(scalar(grep { /^dsc:rg:v2:/ } keys %CACHE), 'the spine caches under the v2 key');
+ok(scalar(grep { /^dsc:rg:v3:/ } keys %CACHE), 'the spine caches under the v3 key');
 
 # ---------------------------------------------------------------------------
 # 2. MATCHING — the whole point. A streaming/local copy under the ENGLISH

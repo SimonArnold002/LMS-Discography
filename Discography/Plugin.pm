@@ -159,6 +159,9 @@ sub initPlugin {
     require Plugins::Discography::API;
     require Plugins::Discography::Sources;
     require Plugins::Discography::Browse;
+    # The biography and review ladder's service clients (Browse also loads it
+    # at first use, so the suites need not).
+    require Plugins::Discography::Prose;
 
     $class->SUPER::initPlugin(
         tag    => 'discography',

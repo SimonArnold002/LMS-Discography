@@ -179,7 +179,7 @@ my $CMQ = 'https://api.lms-community.org/music/artist/';
 my $BRQ = $MB_BASE . 'release-group?artist=' . $ART . '&';
 my $IDQ = $MB_BASE . 'release-group?query=';
 my $RDQ = $MB_BASE . 'artist/' . $ART . '?';
-my $RG   = 'dsc:rg:v2:' . $ART;
+my $RG   = 'dsc:rg:v3:' . $ART;
 my $FAST = 'dsc:rgfast:1:' . $ART;
 my $NEXT = 'dsc:rgnext:1:' . $ART;
 my $FULL = 'dsc:rgfull:1:' . $ART;

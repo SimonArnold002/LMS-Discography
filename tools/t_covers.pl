@@ -40,6 +40,15 @@
 #  13  init deletes leftover downloads, nothing else
 #  14  one wake-up timer, moved earlier when needed
 #  15  the source: Plugin.pm registers our route; API::caaImage's url
+#  16  at most two device requests held (2026-10-09): the third answered at once
+#      with the placeholder, its cover downloaded as one on screen
+#  17  Discogs first (2026-10-09): a thumbnail at once, a held request waiting
+#      for the artist's list (no archive request, however long it takes; a page
+#      that lands may answer it), the archive only once the list is complete
+#      without it, a wanted cover not downloaded once Discogs has it
+#  18  (review 2026-10-09) the page in front gets the held places: an older
+#      page's request still waiting gives its place (the placeholder), a
+#      download in flight keeps it; the same page: the cap as before
 #
 # Standalone, no LMS install needed:  perl tools/t_covers.pl
 #
@@ -101,6 +110,24 @@ BEGIN {
     *{'Plugins::Discography::API::caaImage'} = sub {
         'https://coverartarchive.org/release-group/' . $_[1] . '/front-' . ($_[2] || 250) . '.jpg' };
     *{'Plugins::Discography::DB::store'} = sub { bless {}, 'T::Store' };
+}
+
+# A stand-in for Discogs.pm (section 17): the suite says what it knows.
+our (%DG_THUMB, %DG_PENDING, %DG_LIST, @DG_WARM, @DG_LISTEN);
+{
+    package Plugins::Discography::Discogs;
+    sub thumbFor { my (undef, $a, $rg) = @_; $main::DG_THUMB{"$a|$rg"} }
+    sub pending  { my (undef, $a) = @_; $main::DG_PENDING{$a} ? 1 : 0 }
+    sub peekList { my (undef, $a) = @_; $main::DG_LIST{$a} }
+    sub listen   { my (undef, $s) = @_; push @main::DG_LISTEN, $s unless grep { $_ == $s } @main::DG_LISTEN }
+    sub warm {
+        my (undef, $a, $cb) = @_;
+        $cb ||= sub {};
+        return $cb->() if defined $main::DG_LIST{$a};
+        $main::DG_PENDING{$a} = 1;
+        push @main::DG_WARM, [ $a, $cb ];
+        return;
+    }
 }
 
 package T::Null;  our $AUTOLOAD; sub AUTOLOAD { return } sub DESTROY {}
@@ -492,12 +519,12 @@ my @SPECS = ('', '_150x150_f', '_300x300_f', '_600x600_f');
 {
     fresh();
     for my $i (1 .. 5) { ask(rg($i)); $NOW += 0.01 }
-    tick();                                          # four out, the fifth waiting
+    tick();                                          # four out, the fifth asked (past the cap)
     $C->can('newPage')->();
     $C->can('want')->(rg(1000 + $_)) for 1 .. 450;
     my $s = snap();
     ok(scalar(keys %$s <= 400), '9: 450 wanted -> at most 400 queued (got ' . scalar(keys %$s) . ')');
-    ok(scalar($s->{ rg(5) } && $s->{ rg(5) }{waiters} == 1), '9: ... the cover a device waits for is kept');
+    ok(scalar($s->{ rg(5) } && !$s->{ rg(5) }{running}), '9: ... the cover a device asked for past the cap is kept');
     ok(scalar($s->{ rg(1001) } && !$s->{ rg(1450) }), "9: ... the page's last ones went, its first stayed");
     later(11);
     ok(scalar(exists $STORE{+WANT}{ rg(1450) }), '9: a dropped one is still wanted (05:00)');
@@ -511,14 +538,22 @@ my @SPECS = ('', '_150x150_f', '_300x300_f', '_600x600_f');
     ok(scalar(!keys %{ snap() } && exists $STORE{+WANT}{ rg(1) }),
        '9: not reached within the hour -> dropped from the queue, still wanted');
 
+    # WAIT_MAX: a HELD request whose download cannot start (the four on-screen
+    # slots taken by covers asked past the cap) gets the placeholder at 90 s.
     fresh();
     for my $i (1 .. 6) { ask(rg($i)); $NOW += 0.01 }
     tick();
+    answer(rg(1), 'ok'); answer(rg(2), 'ok');      # the two held ones land
+    tick();                                          # 3-6 out, nobody held
+    ask(rg(7));                                      # held, no slot
+    tick();
+    ok(scalar(snap()->{ rg(7) }{waiters} == 1 && !snap()->{ rg(7) }{running}), '9: a held cover with no free slot waits');
     later(91);
-    ok(scalar(@ANS == 2 && !grep { $_->[1] ne '' } @ANS), "9: two still waiting after 90 s -> '' (the placeholder)");
+    ok(scalar(join(',', answersFor(rg(7))) eq ''  && scalar(answersFor(rg(7))) == 1),
+       "9: ... and at 90 s gets '' (the placeholder)");
     $s = snap();
-    ok(scalar($s->{ rg(5) } && $s->{ rg(6) } && !$s->{ rg(5) }{waiters} && grep { $_ eq rg(5) } out()),
-       '9: ... and their covers carry on in the background (nobody browsing: at once)');
+    ok(scalar($s->{ rg(7) } && !$s->{ rg(7) }{waiters}),
+       '9: ... and its cover stays queued for the background');
 
     fresh();
     for my $i (1 .. 300) { $HELD{ key(rg($i), $_) } = 1 for @SPECS }
@@ -676,6 +711,219 @@ my @SPECS = ('', '_150x150_f', '_300x300_f', '_600x600_f');
     ok(scalar($api =~ m{CAA_RG_BASE_URL\s*=>\s*'https://coverartarchive\.org/release-group/'}
               && $api =~ m{return CAA_RG_BASE_URL \. \$rgMbid \. '/front-' \. \(\$size \|\| 250\) \. '\.jpg';}),
        '15: API::caaImage builds https://coverartarchive.org/release-group/<group>/front-<size>.jpg, as stubbed here');
+}
+
+# 16. At most two device requests held (2026-10-09). A browser keeps about six
+#     connections to a server; every held request is one of them, and the alpha
+#     tester's taps and Play queued behind the held covers (CLAUDE.md dev log
+#     `REPRODUCED with no streaming service`).
+{
+    fresh();
+    ok(scalar(!defined ask(rg(1)) && !defined ask(rg(2))), '16: the first two asked are held (undef)');
+    my $r3 = ask(rg(3));
+    ok(scalar(defined $r3 && $r3 eq ''), "16: a third is answered at once with '' (the placeholder), not held");
+    ok(scalar(snap()->{ rg(3) } && snap()->{ rg(3) }{waiters} == 0), '16: ... its cover is queued, nobody held');
+    $C->can('noteBrowse')->();                       # browsing: background work would wait the grace
+    tick();
+    ok(scalar(join(',', sort(out())) eq join(',', sort map { rg($_) } 1 .. 3)),
+       '16: ... and downloads at once as a cover on screen, beside the two held');
+    answer(rg(1), 'ok');
+    tick();
+    ok(scalar((answersFor(rg(1)))[0] =~ /^file:/), '16: a held one gets its file when it lands');
+    ok(scalar(!defined ask(rg(4))), '16: ... which frees a place: the next ask is held again');
+    my $r5 = ask(rg(5));
+    ok(scalar(defined $r5 && $r5 eq ''), '16: ... and the cap is two again');
+    answer(rg(3), 'ok');
+    tick();
+    my @a3 = answersFor(rg(3));
+    ok(scalar(@a3 == 0), '16: the one answered early is not answered again when its cover lands (its reply was the return value)');
+}
+
+# 17. Discogs first (2026-10-09, Discogs.pm; Simon: "it needs to use discogs first
+#     not after CAA"). The artist is noted by tileImage; the stand-in above says
+#     what Discogs knows.
+{
+    my $ART = '11111111-2222-4333-8444-555555555555';
+    my $T   = $C->can('tileImage');
+    my $dgReset = sub { %DG_THUMB = (); %DG_PENDING = (); %DG_LIST = (); @DG_WARM = (); @DG_LISTEN = () };
+    # A page of the artist's list lands: Discogs.pm tells its listeners.
+    my $landed = sub { $_->($ART) for @DG_LISTEN };
+
+    fresh(); $dgReset->();
+    $T->(rg(1), $ART);
+    $DG_THUMB{"$ART|" . rg(1)} = 'https://i.discogs.com/t1.jpg';
+    ok(scalar((ask(rg(1)) // '') eq 'https://i.discogs.com/t1.jpg'), '17: a Discogs thumbnail -> handed to the proxy at once');
+    tick();
+    ok(scalar(!@REQ && !keys %{ snap() }), '17: ... nothing held, nothing asked of the archive');
+
+    fresh(); $dgReset->();
+    $DG_THUMB{"$ART|" . rg(1)} = 'https://i.discogs.com/t1.jpg';
+    ok(scalar(!defined ask(rg(1))), '17: (control) the same group with no artist noted -> held for the archive');
+
+    fresh(); $dgReset->();
+    $STORE{+MISS} = { rg(2) => [ int($NOW) - 60, 3 ] };   # given up on the archive
+    $T->(rg(2), $ART);
+    $DG_THUMB{"$ART|" . rg(2)} = 'https://i.discogs.com/t2.jpg';
+    ok(scalar((ask(rg(2)) // '') eq 'https://i.discogs.com/t2.jpg'), '17: an archive cover given up -> Discogs still answers');
+
+    fresh(); $dgReset->();
+    $DG_PENDING{$ART} = 1;
+    $T->(rg(3), $ART);
+    ok(scalar(!defined ask(rg(3))), "17: the artist's list being read -> held");
+    tick();
+    ok(scalar(!@REQ), '17: ... the archive not asked while it is read');
+    ok(scalar(@DG_WARM == 1 && $DG_WARM[0][0] eq $ART), '17: ... the wait joins the read');
+    later(2);
+    ok(scalar(!@REQ && !answersFor(rg(3))), '17: ... 2 s on, still waiting');
+    $DG_PENDING{$ART} = 0;
+    $DG_THUMB{"$ART|" . rg(3)} = 'https://i.discogs.com/t3.jpg';
+    $_->[1]->() for @DG_WARM;
+    tick();
+    ok(scalar(join(',', answersFor(rg(3))) eq 'https://i.discogs.com/t3.jpg' && !@REQ),
+       '17: the list lands -> the held request gets the thumbnail; the archive never asked');
+
+    # THE ARCHIVE ONLY ONCE DISCOGS HAS ANSWERED (Simon: "I said dicogs first
+    # CAA nex"): no time limit of its own; 0.56.67 went to the archive at 6 s.
+    fresh(); $dgReset->();
+    $DG_PENDING{$ART} = 1;
+    $T->(rg(4), $ART);
+    ask(rg(4));
+    tick();
+    later(6.1);
+    ok(scalar(!@REQ), '17: still being read after 6 s -> the archive NOT asked (0.56.67 asked it here)');
+    later(30);
+    ok(scalar(!@REQ && !answersFor(rg(4))), '17: ... nor 36 s in: the request still waits');
+    ok(scalar(@DG_LISTEN == 1), '17: ... the queue listens for the pages that land (once)');
+    $DG_THUMB{"$ART|" . rg(4)} = 'https://i.discogs.com/t4.jpg';     # its page lands, the read goes on
+    $landed->();
+    tick();
+    ok(scalar(join(',', answersFor(rg(4))) eq 'https://i.discogs.com/t4.jpg' && !@REQ),
+       '17: a page with its thumbnail lands mid-read -> the held request gets it; the archive never asked');
+
+    fresh(); $dgReset->();
+    $DG_PENDING{$ART} = 1;
+    $T->(rg(9), $ART);
+    ask(rg(9));
+    tick();
+    later(3);
+    $landed->();                                      # a page with nothing for it
+    tick();
+    ok(scalar(!@REQ && !answersFor(rg(9))), '17: a page without it lands -> still waiting, no archive');
+    $DG_PENDING{$ART} = 0;                            # the read ends without it
+    $_->[1]->() for @DG_WARM;
+    tick();
+    ok(scalar(grep { $_ eq rg(9) } out()), '17: the list complete without it -> the archive is asked');
+
+    fresh(); $dgReset->();
+    $DG_PENDING{$ART} = 1;
+    $T->(rg(10), $ART);
+    ask(rg(10));
+    tick();
+    later(91);
+    my @a10 = answersFor(rg(10));
+    ok(scalar(@a10 == 1 && $a10[0] eq '' && !@REQ),
+       '17: a device still waiting at WAIT_MAX -> the placeholder; the archive still not asked');
+
+    fresh(); $dgReset->();
+    $DG_LIST{$ART} = [];                              # read: nothing for this group
+    $T->(rg(5), $ART);
+    ask(rg(5));
+    tick();
+    ok(scalar(grep { $_ eq rg(5) } out()), '17: the list read with no thumbnail for the group -> the archive at once');
+
+    fresh(); $dgReset->();
+    $T->(rg(6), $ART);
+    ask(rg(6));
+    tick();
+    ok(scalar(@DG_WARM == 1 && !@REQ), '17: a list never read -> the first look asks for it, and waits');
+
+    fresh(); $dgReset->();
+    $DG_LIST{$ART} = [];
+    $T->(rg(7), $ART);
+    $C->can('want')->(rg(7));
+    $DG_THUMB{"$ART|" . rg(7)} = 'https://i.discogs.com/t7.jpg';    # came after the page wanted it
+    later(4);
+    ok(scalar(!@REQ && !keys %{ snap() }), '17: a wanted cover with a Discogs thumbnail by launch -> no archive download');
+    later(11);
+    ok(scalar(!exists(($STORE{+WANT} || {})->{ rg(7) })), '17: ... and no longer wanted for 05:00');
+    $DG_THUMB{"$ART|" . rg(8)} = undef;
+    $T->(rg(8), $ART);
+    $C->can('want')->(rg(8));
+    later(4);
+    ok(scalar(grep { $_ eq rg(8) } out()), '17: (control) a wanted cover Discogs has nothing for -> downloaded');
+}
+
+# 18. The page in front gets the held places (review 2026-10-09, finding 2).
+#     Requests a page left behind still hold their browser connections; a
+#     request from the page now in front takes a place held by one of them
+#     that is still waiting (nothing downloading for it), and that one gets the
+#     placeholder (no-cache: drawn again, it is asked again). A download in
+#     flight keeps its place: it lands in seconds.
+{
+    my $ART = '11111111-2222-4333-8444-555555555555';
+    my $T   = $C->can('tileImage');
+    my $NP  = $C->can('newPage');
+    my $dgReset = sub { %DG_THUMB = (); %DG_PENDING = (); %DG_LIST = (); @DG_WARM = (); @DG_LISTEN = () };
+
+    fresh(); $dgReset->();
+    $DG_PENDING{$ART} = 1;                            # the artist's list being read
+    $NP->();
+    $T->($_, $ART) for rg(1), rg(2);
+    ask(rg(1)); ask(rg(2));
+    tick();
+    ok(scalar(!@REQ && snap()->{ rg(1) }{waiters} == 1 && snap()->{ rg(2) }{waiters} == 1),
+       '18: (two held on a page, waiting for Discogs, nothing downloading)');
+    $NP->();                                          # the user opens another page
+    $T->(rg(3), $ART);
+    my $r3 = ask(rg(3));
+    ok(scalar(!defined $r3), "18: a request from the page in front is held, though the older page's two fill the cap");
+    my @a1 = answersFor(rg(1));
+    ok(scalar(@a1 == 1 && $a1[0] eq '' && !answersFor(rg(2))),
+       "18: ... the older page's oldest request gets the placeholder, and only that one");
+    ok(scalar(snap()->{ rg(1) } && snap()->{ rg(1) }{waiters} == 0), '18: ... its cover stays queued (fetched as the page left behind)');
+    $T->(rg(4), $ART);
+    ask(rg(4));
+    my $r5;
+    $T->(rg(5), $ART);
+    $r5 = ask(rg(5));
+    my @a2 = answersFor(rg(2));
+    ok(scalar(@a2 == 1 && $a2[0] eq '' && defined $r5 && $r5 eq ''),
+       '18: ... the next takes the other place; with none of the older page left, the cap holds');
+
+    # The OLDEST request is the one given up, whatever order the covers were
+    # queued in (rg(9) queued first, asked second).
+    fresh(); $dgReset->();
+    $DG_PENDING{$ART} = 1;
+    $NP->();
+    $T->($_, $ART) for rg(9), rg(10), rg(11);
+    $C->can('want')->(rg(9)); $C->can('want')->(rg(10));
+    ask(rg(10)); later(1); ask(rg(9));
+    $NP->();
+    ask(rg(11));
+    my @a10 = answersFor(rg(10));
+    ok(scalar(@a10 == 1 && $a10[0] eq '' && !answersFor(rg(9))),
+       '18: the request asked first gives its place, not the cover queued first');
+
+    # Same page: the cap as before.
+    fresh(); $dgReset->();
+    $DG_PENDING{$ART} = 1;
+    $NP->();
+    $T->($_, $ART) for rg(1), rg(2), rg(3);
+    ask(rg(1)); ask(rg(2));
+    my $same = ask(rg(3));
+    ok(scalar(defined $same && $same eq '' && !answersFor(rg(1)) && !answersFor(rg(2))),
+       '18: (control) a third request from the same page -> the placeholder, the two held keep their places');
+
+    # An older page's download in flight keeps its place.
+    fresh(); $dgReset->();
+    $NP->();
+    ask(rg(6)); ask(rg(7));                           # no artist noted: the archive at once
+    tick();
+    ok(scalar(join(',', sort(out())) eq join(',', sort(rg(6), rg(7)))), '18: (two held, both downloading)');
+    $NP->();
+    my $r8 = ask(rg(8));
+    ok(scalar(defined $r8 && $r8 eq '' && !answersFor(rg(6)) && !answersFor(rg(7))),
+       '18: an older page whose two are downloading -> they keep their places, the new one gets the placeholder');
 }
 
 print "\n$pass passed, $fail failed\n";

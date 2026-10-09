@@ -133,6 +133,15 @@ BEGIN {
     *{"${A}::peekArtistName"}     = sub { undef };
     *{"${A}::peekArtistAliases"}  = sub { undef };
     *{"${A}::peekArtistEnglishName"} = sub { undef };
+    # The biography ladder (2026-10-08): no links, no cached list, no Qobuz -
+    # the works page's bio comes from MAI, as this suite stubs it below.
+    *{"${A}::_bioPickKey"}        = sub { 'dsc:bio:3:' . lc($_[0] // '') };
+    *{"${A}::_dzIdKey"}           = sub { 'dsc:dzid:1:' . lc($_[0] // '') };
+    *{"${A}::warmServiceLinks"}   = sub { $_[-1]->({ qobuz => [], deezer => [] }) };
+    *{"${A}::peekReleaseGroups"}  = sub { undef };
+    *{"${S}::orderedAdapters"}    = sub { () };
+    *{"${S}::peekPoolMeta"}       = sub { undef };
+    *{'Slim::Utils::Timers::killSpecific'} = sub { };
 }
 our @TAGGED;
 our @RESOLVE;   # every getArtistMbid call's arguments (section 6)

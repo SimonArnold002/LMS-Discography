@@ -354,3 +354,6 @@ PLUGIN_DISCOGRAPHY_DEBUG_LOG
 
 PLUGIN_DISCOGRAPHY_DEBUG_LOG_DESC
 	EN	Log matching decisions and fetch details to server.log (visible at the default log level). For diagnosing missed matches.
+
+PLUGIN_DISCOGRAPHY_SOURCE
+	EN	(Source: %s)

@@ -3,7 +3,7 @@
     <title lang="EN">Discography</title>
   </details>
   <plugins>
-    <plugin name="Discography" version="0.56.66" minTarget="9.0.0" maxTarget="*">
+    <plugin name="Discography" version="0.56.70" minTarget="9.0.0" maxTarget="*">
       <title lang="EN">Discography</title>
       <desc lang="EN">Browse an artist's full discography (via MusicBrainz) and play each release from your local library or streaming service (Qobuz / Tidal / Deezer / Spotify)</desc>
       <category>musicservices</category>
@@ -14,7 +14,7 @@
       <!-- On EVERY zip rebuild: bump the version (install.xml + here) AND recompute
            this sha (shasum -a 1 Discography.zip) — a same-version/stale-sha zip
            won't reinstall. -->
-      <sha>100d52fe4c39d880963774b48ddab802fcd273bf</sha>
+      <sha>f7a9f7559e589c5a4042a80a8295f574c8263a4a</sha>
     </plugin>
   </plugins>
 </extensions>
